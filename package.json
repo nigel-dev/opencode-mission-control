@@ -1,0 +1,38 @@
+{
+  "name": "opencode-mission-control",
+  "version": "0.1.0",
+  "description": "OpenCode plugin for parallel AI coding sessions in isolated git worktrees",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "bun build ./src/index.ts --outdir ./dist --target node",
+    "test": "vitest run",
+    "prepublishOnly": "bun run build"
+  },
+  "dependencies": {
+    "@opencode-ai/plugin": "^1.0.85",
+    "zod": "^3.22.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.0.0",
+    "vitest": "^1.0.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/nigel-dev/opencode-mission-control"
+  }
+}
