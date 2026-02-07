@@ -80,7 +80,8 @@ async function getSisyphusPath(basePath: string = '.'): Promise<string | null> {
   try {
     const sisyphusPath = join(basePath, '.sisyphus');
     const exists = existsSync(sisyphusPath);
-    return exists ? sisyphusPath : null;
+    // Return relative path without leading ./
+    return exists ? '.sisyphus' : null;
   } catch {
     return null;
   }

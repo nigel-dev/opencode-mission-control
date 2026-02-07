@@ -1,25 +1,14 @@
 import { describe, it, expect, beforeEach, vi, type Mock } from 'vitest';
 import type { Job } from '../../src/lib/job-state';
-
-vi.mock('../../src/lib/job-state', () => ({
-  getJobByName: vi.fn(),
-  updateJob: vi.fn(),
-}));
-
-vi.mock('../../src/lib/tmux', () => ({
-  killSession: vi.fn(),
-  killWindow: vi.fn(),
-}));
-
-const jobState = await import('../../src/lib/job-state');
-const tmux = await import('../../src/lib/tmux');
-
-const mockGetJobByName = jobState.getJobByName as Mock;
-const mockUpdateJob = jobState.updateJob as Mock;
-const mockKillSession = tmux.killSession as Mock;
-const mockKillWindow = tmux.killWindow as Mock;
+import * as jobState from '../../src/lib/job-state';
+import * as tmux from '../../src/lib/tmux';
 
 const { mc_kill } = await import('../../src/tools/kill');
+
+let mockGetJobByName: Mock;
+let mockUpdateJob: Mock;
+let mockKillSession: Mock;
+let mockKillWindow: Mock;
 
 const mockContext = {
   sessionID: 'test-session',
@@ -41,6 +30,10 @@ function setupDefaultMocks() {
 describe('mc_kill', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockGetJobByName = vi.spyOn(jobState, 'getJobByName').mockImplementation(() => undefined as any);
+    mockUpdateJob = vi.spyOn(jobState, 'updateJob').mockImplementation(() => undefined as any);
+    mockKillSession = vi.spyOn(tmux, 'killSession').mockImplementation(() => undefined as any);
+    mockKillWindow = vi.spyOn(tmux, 'killWindow').mockImplementation(() => undefined as any);
     setupDefaultMocks();
   });
 

@@ -3,22 +3,11 @@ import type { Job } from '../../src/lib/job-state';
 import * as jobState from '../../src/lib/job-state';
 import * as worktree from '../../src/lib/worktree';
 
-vi.mock('../../src/lib/job-state', () => ({
-  getJobByName: vi.fn(),
-  removeJob: vi.fn(),
-  getRunningJobs: vi.fn(),
-  loadJobState: vi.fn(),
-}));
-
-vi.mock('../../src/lib/worktree', () => ({
-  removeWorktree: vi.fn(),
-}));
-
-const mockGetJobByName = vi.spyOn(jobState, 'getJobByName') as Mock;
-const mockRemoveJob = vi.spyOn(jobState, 'removeJob') as Mock;
-const mockGetRunningJobs = vi.spyOn(jobState, 'getRunningJobs') as Mock;
-const mockLoadJobState = vi.spyOn(jobState, 'loadJobState') as Mock;
-const mockRemoveWorktree = vi.spyOn(worktree, 'removeWorktree') as Mock;
+let mockGetJobByName: Mock;
+let mockRemoveJob: Mock;
+let mockGetRunningJobs: Mock;
+let mockLoadJobState: Mock;
+let mockRemoveWorktree: Mock;
 
 const mockContext = {
   sessionID: 'test-session',
@@ -50,6 +39,11 @@ function createMockJob(overrides?: Partial<Job>): Job {
 describe('mc_cleanup', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockGetJobByName = vi.spyOn(jobState, 'getJobByName').mockImplementation(() => undefined as any);
+    mockRemoveJob = vi.spyOn(jobState, 'removeJob').mockImplementation(() => undefined as any);
+    mockGetRunningJobs = vi.spyOn(jobState, 'getRunningJobs').mockImplementation(() => [] as any);
+    mockLoadJobState = vi.spyOn(jobState, 'loadJobState').mockImplementation(() => ({ version: 1, jobs: [], updatedAt: new Date().toISOString() } as any));
+    mockRemoveWorktree = vi.spyOn(worktree, 'removeWorktree').mockImplementation(() => undefined as any);
   });
 
   describe('tool definition', () => {

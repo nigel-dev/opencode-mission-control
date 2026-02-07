@@ -18,7 +18,7 @@
   "files": ["dist"],
   "scripts": {
     "build": "bun build ./src/index.ts --outdir ./dist --target bun",
-    "test": "vitest run",
+    "test": "bun test",
     "prepublishOnly": "bun run build"
   },
   "dependencies": {
@@ -27,8 +27,7 @@
   },
   "devDependencies": {
     "@types/bun": "latest",
-    "typescript": "^5.0.0",
-    "vitest": "^1.0.0"
+    "typescript": "^5.0.0"
   },
   "license": "MIT",
   "homepage": "https://github.com/nigel-dev/opencode-mission-control#readme",

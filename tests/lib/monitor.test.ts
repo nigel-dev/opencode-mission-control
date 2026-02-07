@@ -1,17 +1,21 @@
+import { mock } from 'bun:test';
 import { describe, it, expect, beforeEach, afterEach, vi, type Mock } from 'vitest';
-import { JobMonitor } from '../../src/lib/monitor';
 import type { Job } from '../../src/lib/job-state';
-import * as jobState from '../../src/lib/job-state';
-import * as tmux from '../../src/lib/tmux';
 
-vi.mock('../../src/lib/job-state', () => ({
+mock.module('../../src/lib/job-state', () => ({
   getRunningJobs: vi.fn(),
   updateJob: vi.fn(),
 }));
 
-vi.mock('../../src/lib/tmux', () => ({
+mock.module('../../src/lib/tmux', () => ({
   isPaneRunning: vi.fn(),
 }));
+
+const { JobMonitor } = await import('../../src/lib/monitor');
+const jobState = await import('../../src/lib/job-state');
+const tmux = await import('../../src/lib/tmux');
+
+mock.restore();
 
 const mockGetRunningJobs = jobState.getRunningJobs as Mock;
 const mockUpdateJob = jobState.updateJob as Mock;
@@ -152,7 +156,7 @@ describe('JobMonitor', () => {
 
       mockGetRunningJobs.mockResolvedValue([mockJob]);
       mockIsPaneRunning.mockResolvedValue(false);
-      mockUpdateJob.mockResolvedValue();
+      mockUpdateJob.mockResolvedValue(undefined);
 
       const monitor = new JobMonitor();
       monitor.start();
@@ -230,7 +234,7 @@ describe('JobMonitor', () => {
       mockIsPaneRunning
         .mockResolvedValueOnce(false)
         .mockResolvedValueOnce(true);
-      mockUpdateJob.mockResolvedValue();
+      mockUpdateJob.mockResolvedValue(undefined);
 
       const monitor = new JobMonitor();
       monitor.start();
@@ -296,7 +300,7 @@ describe('JobMonitor', () => {
 
       mockGetRunningJobs.mockResolvedValue([mockJob]);
       mockIsPaneRunning.mockResolvedValue(false);
-      mockUpdateJob.mockResolvedValue();
+      mockUpdateJob.mockResolvedValue(undefined);
 
       const monitor = new JobMonitor();
       const completeHandler = vi.fn();
@@ -333,7 +337,7 @@ describe('JobMonitor', () => {
 
       mockGetRunningJobs.mockResolvedValue([mockJob]);
       mockIsPaneRunning.mockResolvedValue(false);
-      mockUpdateJob.mockResolvedValue();
+      mockUpdateJob.mockResolvedValue(undefined);
 
       const monitor = new JobMonitor();
       const handler1 = vi.fn();

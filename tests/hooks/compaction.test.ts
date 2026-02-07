@@ -1,17 +1,14 @@
 import { describe, it, expect, beforeEach, vi, type Mock } from 'vitest';
 import * as jobState from '../../src/lib/job-state';
 
-vi.mock('../../src/lib/job-state', () => ({
-  getRunningJobs: vi.fn(),
-}));
-
-const mockGetRunningJobs = jobState.getRunningJobs as Mock;
-
 const { getCompactionContext } = await import('../../src/hooks/compaction');
+
+let mockGetRunningJobs: Mock;
 
 describe('compaction hook', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockGetRunningJobs = vi.spyOn(jobState, 'getRunningJobs').mockImplementation(() => [] as any);
   });
 
   it('should return "No Mission Control jobs running" when no jobs are running', async () => {

@@ -1,27 +1,14 @@
 import { describe, it, expect, beforeEach, vi, type Mock } from 'vitest';
 import type { Job } from '../../src/lib/job-state';
-
-vi.mock('../../src/lib/job-state', () => ({
-  getJobByName: vi.fn(),
-}));
-
-vi.mock('../../src/lib/tmux', () => ({
-  capturePane: vi.fn(),
-}));
-
-vi.mock('../../src/lib/worktree', () => ({
-  isInManagedWorktree: vi.fn(),
-}));
-
-const jobState = await import('../../src/lib/job-state');
-const tmux = await import('../../src/lib/tmux');
-const worktree = await import('../../src/lib/worktree');
-
-const mockGetJobByName = jobState.getJobByName as Mock;
-const mockCapturePane = tmux.capturePane as Mock;
-const mockIsInManagedWorktree = worktree.isInManagedWorktree as Mock;
+import * as jobState from '../../src/lib/job-state';
+import * as tmux from '../../src/lib/tmux';
+import * as worktree from '../../src/lib/worktree';
 
 const { mc_status } = await import('../../src/tools/status');
+
+let mockGetJobByName: Mock;
+let mockCapturePane: Mock;
+let mockIsInManagedWorktree: Mock;
 
 const mockContext = {
   sessionID: 'test-session',
@@ -53,6 +40,9 @@ function createMockJob(overrides?: Partial<Job>): Job {
 describe('mc_status', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockGetJobByName = vi.spyOn(jobState, 'getJobByName').mockImplementation(() => undefined as any);
+    mockCapturePane = vi.spyOn(tmux, 'capturePane').mockImplementation(() => '' as any);
+    mockIsInManagedWorktree = vi.spyOn(worktree, 'isInManagedWorktree').mockImplementation(() => false as any);
   });
 
   describe('tool definition', () => {

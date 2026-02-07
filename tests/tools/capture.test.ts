@@ -1,21 +1,12 @@
 import { describe, it, expect, beforeEach, vi, type Mock } from 'vitest';
 import type { Job } from '../../src/lib/job-state';
-
-vi.mock('../../src/lib/job-state', () => ({
-  getJobByName: vi.fn(),
-}));
-
-vi.mock('../../src/lib/tmux', () => ({
-  capturePane: vi.fn(),
-}));
-
-const jobState = await import('../../src/lib/job-state');
-const tmux = await import('../../src/lib/tmux');
-
-const mockGetJobByName = jobState.getJobByName as Mock;
-const mockCapturePane = tmux.capturePane as Mock;
+import * as jobState from '../../src/lib/job-state';
+import * as tmux from '../../src/lib/tmux';
 
 const { mc_capture } = await import('../../src/tools/capture');
+
+let mockGetJobByName: Mock;
+let mockCapturePane: Mock;
 
 function setupDefaultMocks() {
   mockGetJobByName.mockResolvedValue({
@@ -30,6 +21,8 @@ function setupDefaultMocks() {
 describe('mc_capture', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockGetJobByName = vi.spyOn(jobState, 'getJobByName').mockImplementation(() => undefined as any);
+    mockCapturePane = vi.spyOn(tmux, 'capturePane').mockImplementation(() => '' as any);
     setupDefaultMocks();
   });
 

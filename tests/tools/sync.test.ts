@@ -1,21 +1,12 @@
 import { describe, it, expect, beforeEach, vi, type Mock } from 'vitest';
 import type { Job } from '../../src/lib/job-state';
-
-vi.mock('../../src/lib/job-state', () => ({
-  getJobByName: vi.fn(),
-}));
-
-vi.mock('../../src/lib/worktree', () => ({
-  syncWorktree: vi.fn(),
-}));
-
-const jobState = await import('../../src/lib/job-state');
-const worktree = await import('../../src/lib/worktree');
-
-const mockGetJobByName = jobState.getJobByName as Mock;
-const mockSyncWorktree = worktree.syncWorktree as Mock;
+import * as jobState from '../../src/lib/job-state';
+import * as worktree from '../../src/lib/worktree';
 
 const { mc_sync } = await import('../../src/tools/sync');
+
+let mockGetJobByName: Mock;
+let mockSyncWorktree: Mock;
 
 const mockContext = {
   sessionID: 'test-session',
@@ -47,6 +38,8 @@ function createMockJob(overrides?: Partial<Job>): Job {
 describe('mc_sync', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockGetJobByName = vi.spyOn(jobState, 'getJobByName').mockImplementation(() => undefined as any);
+    mockSyncWorktree = vi.spyOn(worktree, 'syncWorktree').mockImplementation(() => undefined as any);
   });
 
   describe('tool definition', () => {

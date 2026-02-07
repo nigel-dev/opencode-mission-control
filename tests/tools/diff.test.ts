@@ -1,14 +1,10 @@
 import { describe, it, expect, beforeEach, vi, type Mock } from 'vitest';
 import type { Job } from '../../src/lib/job-state';
-
-vi.mock('../../src/lib/job-state', () => ({
-  getJobByName: vi.fn(),
-}));
-
-const jobState = await import('../../src/lib/job-state');
-const mockGetJobByName = jobState.getJobByName as Mock;
+import * as jobState from '../../src/lib/job-state';
 
 const { mc_diff } = await import('../../src/tools/diff');
+
+let mockGetJobByName: Mock;
 
 const mockContext = {
   sessionID: 'test-session',
@@ -40,6 +36,7 @@ function createMockJob(overrides?: Partial<Job>): Job {
 describe('mc_diff', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockGetJobByName = vi.spyOn(jobState, 'getJobByName').mockImplementation(() => undefined as any);
   });
 
   describe('tool definition', () => {

@@ -1,11 +1,40 @@
+import { mock } from 'bun:test';
+import { spawnSync } from 'node:child_process';
 import { describe, it, expect, beforeEach, vi, type Mock } from 'vitest';
 import type { Job, JobState } from '../../src/lib/job-state';
+
+if (process.env.MC_WORKFLOWS_ISOLATED !== '1') {
+  describe('Workflow integration suite', () => {
+    it('runs in an isolated subprocess', () => {
+      const result = spawnSync(
+        'bun',
+        ['test', 'tests/integration/z-workflows.test.ts'],
+        {
+          cwd: process.cwd(),
+          env: { ...process.env, MC_WORKFLOWS_ISOLATED: '1' },
+          encoding: 'utf8',
+        },
+      );
+
+      if (result.status !== 0) {
+        throw new Error(
+          [result.stdout, result.stderr].filter(Boolean).join('\n'),
+        );
+      }
+
+      const output = [result.stdout, result.stderr].filter(Boolean).join('\n');
+
+      expect(output).toContain('24 pass');
+      expect(output).toContain('0 fail');
+    }, 120000);
+  });
+} else {
 
 // ============================================================================
 // Mock all external dependencies
 // ============================================================================
 
-vi.mock('../../src/lib/job-state', () => {
+mock.module('../../src/lib/job-state', () => {
   // In-memory job store for integration testing
   let jobs: Job[] = [];
 
@@ -48,7 +77,7 @@ vi.mock('../../src/lib/job-state', () => {
   };
 });
 
-vi.mock('../../src/lib/worktree', () => ({
+mock.module('../../src/lib/worktree', () => ({
   createWorktree: vi.fn(async (opts: { branch: string }) => {
     const sanitized = opts.branch.replace(/\//g, '-');
     return `/tmp/mc-worktrees/${sanitized}`;
@@ -60,7 +89,7 @@ vi.mock('../../src/lib/worktree', () => ({
   })),
 }));
 
-vi.mock('../../src/lib/tmux', () => ({
+mock.module('../../src/lib/tmux', () => ({
   createSession: vi.fn(async () => {}),
   createWindow: vi.fn(async () => {}),
   killSession: vi.fn(async () => {}),
@@ -79,7 +108,7 @@ vi.mock('../../src/lib/tmux', () => ({
   getPanePid: vi.fn(async () => 12345),
 }));
 
-vi.mock('../../src/lib/config', () => ({
+mock.module('../../src/lib/config', () => ({
   loadConfig: vi.fn(async () => ({
     defaultPlacement: 'session',
     pollInterval: 10000,
@@ -89,7 +118,7 @@ vi.mock('../../src/lib/config', () => ({
   })),
 }));
 
-vi.mock('../../src/lib/omo', () => ({
+mock.module('../../src/lib/omo', () => ({
   detectOMO: vi.fn(async () => ({
     detected: true,
     configSource: 'local',
@@ -97,13 +126,13 @@ vi.mock('../../src/lib/omo', () => ({
   })),
 }));
 
-vi.mock('../../src/lib/plan-copier', () => ({
+mock.module('../../src/lib/plan-copier', () => ({
   copyPlansToWorktree: vi.fn(async () => ({
     copied: ['plan-a.md', 'plan-b.md'],
   })),
 }));
 
-vi.mock('crypto', () => {
+mock.module('crypto', () => {
   let counter = 0;
   return {
     randomUUID: vi.fn(() => `test-uuid-${++counter}`),
@@ -127,7 +156,11 @@ const { mc_capture } = await import('../../src/tools/capture');
 const { mc_kill } = await import('../../src/tools/kill');
 const { mc_cleanup } = await import('../../src/tools/cleanup');
 const { mc_jobs } = await import('../../src/tools/jobs');
-const { mc_pr, executeGhCommand } = await import('../../src/tools/pr');
+const { mc_pr } = await import('../../src/tools/pr');
+
+// Keep mocked module instances for this file, then stop global module mocking
+// so other test files can import real implementations.
+mock.restore();
 
 // ============================================================================
 // Typed mock references
@@ -915,3 +948,4 @@ describe('Workflow 4: Multiple jobs in parallel', () => {
     expect(getJobs()).toHaveLength(0);
   });
 });
+}

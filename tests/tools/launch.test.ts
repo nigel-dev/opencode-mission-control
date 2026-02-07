@@ -1,53 +1,28 @@
 import { describe, it, expect, beforeEach, vi, type Mock } from 'vitest';
 import type { Job } from '../../src/lib/job-state';
-
-vi.mock('../../src/lib/job-state', () => ({
-  getJobByName: vi.fn(),
-  addJob: vi.fn(),
-}));
-
-vi.mock('../../src/lib/worktree', () => ({
-  createWorktree: vi.fn(),
-  removeWorktree: vi.fn(),
-}));
-
-vi.mock('../../src/lib/tmux', () => ({
-  createSession: vi.fn(),
-  createWindow: vi.fn(),
-  setPaneDiedHook: vi.fn(),
-  sendKeys: vi.fn(),
-  killSession: vi.fn(),
-  getCurrentSession: vi.fn(),
-  isInsideTmux: vi.fn(),
-}));
-
-vi.mock('../../src/lib/config', () => ({
-  loadConfig: vi.fn(),
-}));
+import * as jobState from '../../src/lib/job-state';
+import * as worktree from '../../src/lib/worktree';
+import * as tmux from '../../src/lib/tmux';
+import * as configMod from '../../src/lib/config';
 
 vi.mock('crypto', () => ({
   randomUUID: vi.fn(() => 'test-uuid-1234'),
 }));
 
-const jobState = await import('../../src/lib/job-state');
-const worktree = await import('../../src/lib/worktree');
-const tmux = await import('../../src/lib/tmux');
-const configMod = await import('../../src/lib/config');
-
-const mockGetJobByName = jobState.getJobByName as Mock;
-const mockAddJob = jobState.addJob as Mock;
-const mockCreateWorktree = worktree.createWorktree as Mock;
-const mockRemoveWorktree = worktree.removeWorktree as Mock;
-const mockCreateSession = tmux.createSession as Mock;
-const mockCreateWindow = tmux.createWindow as Mock;
-const mockSetPaneDiedHook = tmux.setPaneDiedHook as Mock;
-const mockSendKeys = tmux.sendKeys as Mock;
-const mockKillSession = tmux.killSession as Mock;
-const mockGetCurrentSession = tmux.getCurrentSession as Mock;
-const mockIsInsideTmux = tmux.isInsideTmux as Mock;
-const mockLoadConfig = configMod.loadConfig as Mock;
-
 const { mc_launch } = await import('../../src/tools/launch');
+
+let mockGetJobByName: Mock;
+let mockAddJob: Mock;
+let mockCreateWorktree: Mock;
+let mockRemoveWorktree: Mock;
+let mockCreateSession: Mock;
+let mockCreateWindow: Mock;
+let mockSetPaneDiedHook: Mock;
+let mockSendKeys: Mock;
+let mockKillSession: Mock;
+let mockGetCurrentSession: Mock;
+let mockIsInsideTmux: Mock;
+let mockLoadConfig: Mock;
 
 const mockContext = {
   sessionID: 'test-session',
@@ -84,6 +59,18 @@ function setupDefaultMocks() {
 describe('mc_launch', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockGetJobByName = vi.spyOn(jobState, 'getJobByName').mockImplementation(() => undefined as any);
+    mockAddJob = vi.spyOn(jobState, 'addJob').mockImplementation(() => undefined as any);
+    mockCreateWorktree = vi.spyOn(worktree, 'createWorktree').mockImplementation(() => undefined as any);
+    mockRemoveWorktree = vi.spyOn(worktree, 'removeWorktree').mockImplementation(() => undefined as any);
+    mockCreateSession = vi.spyOn(tmux, 'createSession').mockImplementation(() => undefined as any);
+    mockCreateWindow = vi.spyOn(tmux, 'createWindow').mockImplementation(() => undefined as any);
+    mockSetPaneDiedHook = vi.spyOn(tmux, 'setPaneDiedHook').mockImplementation(() => undefined as any);
+    mockSendKeys = vi.spyOn(tmux, 'sendKeys').mockImplementation(() => undefined as any);
+    mockKillSession = vi.spyOn(tmux, 'killSession').mockImplementation(() => undefined as any);
+    mockGetCurrentSession = vi.spyOn(tmux, 'getCurrentSession').mockImplementation(() => 'main-session' as any);
+    mockIsInsideTmux = vi.spyOn(tmux, 'isInsideTmux').mockImplementation(() => true as any);
+    mockLoadConfig = vi.spyOn(configMod, 'loadConfig').mockImplementation(() => ({ defaultPlacement: 'session', pollInterval: 10000, idleThreshold: 300000, worktreeBasePath: '/tmp/mc-worktrees', omo: { enabled: false, defaultMode: 'vanilla' } } as any));
     setupDefaultMocks();
   });
 

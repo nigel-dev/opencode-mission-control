@@ -3,22 +3,16 @@ import type { Job } from '../../src/lib/job-state';
 import * as worktree from '../../src/lib/worktree';
 import * as jobState from '../../src/lib/job-state';
 
-vi.mock('../../src/lib/worktree', () => ({
-  isInManagedWorktree: vi.fn(),
-}));
-
-vi.mock('../../src/lib/job-state', () => ({
-  loadJobState: vi.fn(),
-}));
-
 const { getWorktreeContext } = await import('../../src/hooks/awareness');
 
-const mockIsInManagedWorktree = worktree.isInManagedWorktree as Mock;
-const mockLoadJobState = jobState.loadJobState as Mock;
+let mockIsInManagedWorktree: Mock;
+let mockLoadJobState: Mock;
 
 describe('getWorktreeContext', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockIsInManagedWorktree = vi.spyOn(worktree, 'isInManagedWorktree').mockImplementation(() => ({ isManaged: false } as any));
+    mockLoadJobState = vi.spyOn(jobState, 'loadJobState').mockImplementation(() => ({ version: 1, jobs: [], updatedAt: new Date().toISOString() } as any));
   });
 
   describe('not in managed worktree', () => {

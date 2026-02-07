@@ -5,26 +5,20 @@ import { join } from 'path';
 import * as jobState from '../../src/lib/job-state';
 import * as worktree from '../../src/lib/worktree';
 
-vi.mock('../../src/lib/job-state', () => ({
-  getRunningJobs: vi.fn(),
-}));
-
-vi.mock('../../src/lib/worktree', () => ({
-  isInManagedWorktree: vi.fn(),
-}));
-
 const { shouldShowAutoStatus, getAutoStatusMessage } = await import(
   '../../src/hooks/auto-status'
 );
 
-const mockGetRunningJobs = jobState.getRunningJobs as Mock;
-const mockIsInManagedWorktree = worktree.isInManagedWorktree as Mock;
+let mockGetRunningJobs: Mock;
+let mockIsInManagedWorktree: Mock;
 
 describe('auto-status hook', () => {
   let testDir: string;
 
   beforeEach(async () => {
     vi.clearAllMocks();
+    mockGetRunningJobs = vi.spyOn(jobState, 'getRunningJobs').mockImplementation(() => [] as any);
+    mockIsInManagedWorktree = vi.spyOn(worktree, 'isInManagedWorktree').mockImplementation(() => ({ isManaged: false } as any));
     testDir = join(tmpdir(), `mc-test-${Date.now()}`);
     const fs = await import('fs');
     fs.mkdirSync(testDir, { recursive: true });

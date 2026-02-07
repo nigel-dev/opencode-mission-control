@@ -1,14 +1,10 @@
 import { describe, it, expect, beforeEach, vi, type Mock } from 'vitest';
 import type { Job } from '../../src/lib/job-state';
-
-vi.mock('../../src/lib/job-state', () => ({
-  loadJobState: vi.fn(),
-}));
-
-const jobState = await import('../../src/lib/job-state');
-const mockLoadJobState = jobState.loadJobState as Mock;
+import * as jobState from '../../src/lib/job-state';
 
 const { mc_jobs } = await import('../../src/tools/jobs');
+
+let mockLoadJobState: Mock;
 
 const mockContext = {
   sessionID: 'test-session',
@@ -24,6 +20,7 @@ const mockContext = {
 describe('mc_jobs', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockLoadJobState = vi.spyOn(jobState, 'loadJobState').mockImplementation(() => ({ version: 1, jobs: [], updatedAt: new Date().toISOString() } as any));
   });
 
   describe('tool definition', () => {
