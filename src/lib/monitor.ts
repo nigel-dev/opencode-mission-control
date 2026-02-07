@@ -103,22 +103,33 @@ export class JobMonitor extends EventEmitter {
     } catch {}
   }
 
-  private async checkAgentReport(job: Job): Promise<void> {
+  private async checkAgentReport(job: Job): Promise<boolean> {
     try {
       const report = await readReport(job.id);
       if (!report) {
-        return;
+        return false;
       }
 
       this.emit('agent_report', job, report);
 
-      if (report.status === 'blocked') {
+      if (report.status === 'completed' || report.status === 'needs_review') {
+        // Agent explicitly signaled completion — mark job done immediately
+        const now = new Date().toISOString();
+        this.idleTrackers.delete(job.id);
+        await updateJob(job.id, { status: 'completed', completedAt: now });
+        this.emit('complete', { ...job, status: 'completed', completedAt: now });
+        if (report.status === 'needs_review') {
+          this.emit('needs_review', { ...job, status: 'completed', completedAt: now }, report);
+        }
+        return true;
+      } else if (report.status === 'blocked') {
         this.emit('blocked', job, report);
-      } else if (report.status === 'needs_review') {
-        this.emit('needs_review', job, report);
       }
+
+      return false;
     } catch {
       // Non-fatal: report read failures should not disrupt monitoring
+      return false;
     }
   }
 
@@ -154,6 +165,10 @@ export class JobMonitor extends EventEmitter {
            continue;
          }
 
+        // Check agent reports first — agent completion signal takes priority
+        const reportHandled = await this.checkAgentReport(job);
+        if (reportHandled) continue;
+
         const output = await capturePane(job.tmuxTarget, 50);
         const currentHash = hashOutput(output);
         const now = Date.now();
@@ -180,8 +195,6 @@ export class JobMonitor extends EventEmitter {
           await updateJob(job.id, { status: 'completed', completedAt });
           this.emit('complete', { ...job, status: 'completed', completedAt });
         }
-
-        await this.checkAgentReport(job);
       } catch (error) {
         console.error(`Error checking job ${job.id}:`, error);
       }
