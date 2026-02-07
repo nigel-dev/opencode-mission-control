@@ -3,6 +3,7 @@ import { getJobByName, removeJob, getRunningJobs, loadJobState } from '../lib/jo
 import { removeWorktree } from '../lib/worktree';
 import { killSession, sessionExists } from '../lib/tmux';
 import { gitCommand } from '../lib/git';
+import { removeReport } from '../lib/reports';
 
 async function deleteBranch(branchName: string): Promise<void> {
   const result = await gitCommand(['branch', '-D', branchName]);
@@ -61,6 +62,7 @@ async function cleanupJobs(
       if (shouldDeleteBranch) {
         await deleteBranchWithFallback(job.branch);
       }
+      await removeReport(job.id).catch(() => {});
       await removeJob(job.id);
 
       results.push(

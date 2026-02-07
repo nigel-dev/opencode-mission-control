@@ -18,6 +18,7 @@ import { mc_plan } from './tools/plan';
 import { mc_plan_status } from './tools/plan-status';
 import { mc_plan_cancel } from './tools/plan-cancel';
 import { mc_plan_approve } from './tools/plan-approve';
+import { mc_report } from './tools/report';
 
 export const MissionControl: Plugin = async ({ client }) => {
   const monitor = new JobMonitor();
@@ -44,6 +45,7 @@ export const MissionControl: Plugin = async ({ client }) => {
       mc_plan_status,
       mc_plan_cancel,
       mc_plan_approve,
+      mc_report,
     },
     event: async ({ event }) => {
       if (event.type === 'session.idle') {

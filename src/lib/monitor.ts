@@ -2,8 +2,9 @@ import { EventEmitter } from 'events';
 import { getRunningJobs, updateJob, type Job } from './job-state.js';
 import { isPaneRunning, capturePane, captureExitStatus } from './tmux.js';
 import { loadConfig } from './config.js';
+import { readReport, type AgentReport } from './reports.js';
 
-type JobEventType = 'complete' | 'failed';
+type JobEventType = 'complete' | 'failed' | 'blocked' | 'needs_review' | 'agent_report';
 type JobEventHandler = (job: Job) => void;
 
 interface IdleTracker {
@@ -102,6 +103,25 @@ export class JobMonitor extends EventEmitter {
     } catch {}
   }
 
+  private async checkAgentReport(job: Job): Promise<void> {
+    try {
+      const report = await readReport(job.id);
+      if (!report) {
+        return;
+      }
+
+      this.emit('agent_report', job, report);
+
+      if (report.status === 'blocked') {
+        this.emit('blocked', job, report);
+      } else if (report.status === 'needs_review') {
+        this.emit('needs_review', job, report);
+      }
+    } catch {
+      // Non-fatal: report read failures should not disrupt monitoring
+    }
+  }
+
   private async poll(): Promise<void> {
     const jobs = await getRunningJobs();
     const activeJobIds = new Set(jobs.map(j => j.id));
@@ -160,6 +180,8 @@ export class JobMonitor extends EventEmitter {
           await updateJob(job.id, { status: 'completed', completedAt });
           this.emit('complete', { ...job, status: 'completed', completedAt });
         }
+
+        await this.checkAgentReport(job);
       } catch (error) {
         console.error(`Error checking job ${job.id}:`, error);
       }

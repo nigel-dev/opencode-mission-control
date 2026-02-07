@@ -3,6 +3,7 @@ import { getJobByName, type Job } from '../lib/job-state';
 import { capturePane } from '../lib/tmux';
 import { isInManagedWorktree } from '../lib/worktree';
 import { gitCommand } from '../lib/git';
+import { readReport } from '../lib/reports';
 
 async function getGitStatus(
   worktreePath: string,
@@ -78,7 +79,10 @@ export const mc_status: ToolDefinition = tool({
     // 3. Check if worktree is managed
     const managedCheck = await isInManagedWorktree(job.worktreePath);
 
-    // 4. Capture recent output from tmux pane (last 10 lines)
+    // 4. Check for agent report
+    const report = await readReport(job.id);
+
+    // 5. Capture recent output from tmux pane (last 10 lines)
     let recentOutput = '';
     try {
       recentOutput = await capturePane(job.tmuxTarget, 10);
@@ -86,7 +90,7 @@ export const mc_status: ToolDefinition = tool({
       recentOutput = '(unable to capture pane output)';
     }
 
-    // 5. Calculate duration if running
+    // 6. Calculate duration if running
     let duration = '';
     if (job.status === 'running') {
       const createdTime = new Date(job.createdAt).getTime();
@@ -100,7 +104,7 @@ export const mc_status: ToolDefinition = tool({
       duration = formatDuration(durationMs);
     }
 
-    // 6. Format output
+    // 7. Format output
     const lines: string[] = [
       `Job: ${job.name}`,
       `Status: ${job.status}`,
@@ -127,6 +131,18 @@ export const mc_status: ToolDefinition = tool({
       `  Ahead: ${gitStatus.ahead}`,
       `  Behind: ${gitStatus.behind}`,
       '',
+      ...(report
+        ? [
+            'Agent Report:',
+            `  Status: ${report.status}`,
+            `  Message: ${report.message}`,
+            ...(report.progress !== undefined
+              ? [`  Progress: ${report.progress}%`]
+              : []),
+            `  Reported At: ${report.timestamp}`,
+            '',
+          ]
+        : []),
       'Recent Output (last 10 lines):',
       '---',
       recentOutput || '(no output)',
