@@ -15,6 +15,7 @@ import { loadConfig } from '../lib/config';
 import { detectOMO } from '../lib/omo';
 import { copyPlansToWorktree } from '../lib/plan-copier';
 import { resolvePostCreateHook } from '../lib/worktree-setup';
+import { writePromptFile, cleanupPromptFile, buildPromptFileCommand } from '../lib/prompt-file';
 
 /**
  * Sleep for a given number of milliseconds
@@ -31,7 +32,7 @@ const MC_REPORT_SUFFIX = `
 
 STATUS REPORTING: Use the mc_report tool to keep Mission Control informed of your progress. Call mc_report with status "working" and a progress percentage (0-100) at key milestones, "blocked" if you encounter an issue you cannot resolve, "needs_review" when your work is complete and ready for human review. Report at least once when starting and once when finishing.`;
 
-function buildLaunchCommand(opts: {
+function buildFullPrompt(opts: {
   prompt: string;
   mode: string;
   planFile?: string;
@@ -41,21 +42,20 @@ function buildLaunchCommand(opts: {
   if (opts.autoCommit !== false) {
     prompt += AUTO_COMMIT_SUFFIX;
   }
-  const escapedPrompt = prompt.replace(/'/g, "'\\''");
 
   switch (opts.mode) {
     case 'plan':
       if (opts.planFile) {
-        return `opencode --prompt '${escapedPrompt} Plan file: ${opts.planFile}'`;
+        return `${prompt} Plan file: ${opts.planFile}`;
       }
-      return `opencode --prompt '${escapedPrompt}'`;
+      return prompt;
     case 'ralph':
-      return `opencode --prompt '/ralph-loop ${escapedPrompt}'`;
+      return `/ralph-loop ${prompt}`;
     case 'ulw':
-      return `opencode --prompt '/ulw-loop ${escapedPrompt}'`;
+      return `/ulw-loop ${prompt}`;
     case 'vanilla':
     default:
-      return `opencode --prompt '${escapedPrompt}'`;
+      return prompt;
   }
 }
 
@@ -218,18 +218,21 @@ export const mc_launch: ToolDefinition = tool({
       }
     }
 
-    // 8. Send launch command to tmux pane
+    // 8. Send launch command to tmux pane via temp file (avoids shell injection)
+    let promptFilePath: string | undefined;
     try {
-      const launchCmd = buildLaunchCommand({
+      const fullPrompt = buildFullPrompt({
         prompt: args.prompt,
         mode,
         planFile: args.planFile,
         autoCommit: config.autoCommit,
       });
+      promptFilePath = await writePromptFile(worktreePath, fullPrompt);
+      const launchCmd = buildPromptFileCommand(promptFilePath);
       await sendKeys(tmuxTarget, launchCmd);
       await sendKeys(tmuxTarget, 'Enter');
+      cleanupPromptFile(promptFilePath);
 
-      // For OMO modes, send the mode-specific command after opencode starts
       if (mode !== 'vanilla') {
         await sleep(2000);
         switch (mode) {
@@ -248,7 +251,9 @@ export const mc_launch: ToolDefinition = tool({
         }
       }
     } catch (error) {
-      // Cleanup on failure
+      if (promptFilePath) {
+        cleanupPromptFile(promptFilePath, 0);
+      }
       try {
         if (placement === 'session') {
           await killSession(tmuxSessionName);
