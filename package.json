@@ -17,7 +17,7 @@
   },
   "files": ["dist"],
   "scripts": {
-    "build": "bun build ./src/index.ts --outdir ./dist --target node",
+    "build": "bun build ./src/index.ts --outdir ./dist --target bun",
     "test": "vitest run",
     "prepublishOnly": "bun run build"
   },
@@ -31,6 +31,19 @@
     "vitest": "^1.0.0"
   },
   "license": "MIT",
+  "homepage": "https://github.com/nigel-dev/opencode-mission-control#readme",
+  "bugs": {
+    "url": "https://github.com/nigel-dev/opencode-mission-control/issues"
+  },
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "worktree",
+    "tmux",
+    "parallel",
+    "ai-coding",
+    "git"
+  ],
   "repository": {
     "type": "git",
     "url": "https://github.com/nigel-dev/opencode-mission-control"
