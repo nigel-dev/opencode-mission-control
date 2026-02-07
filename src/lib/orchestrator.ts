@@ -8,6 +8,7 @@ import { addJob, getRunningJobs, updateJob, type Job } from './job-state';
 import { JobMonitor } from './monitor';
 import { createWorktree, removeWorktree } from './worktree';
 import { resolvePostCreateHook } from './worktree-setup';
+import { writePromptFile, cleanupPromptFile, buildPromptFileCommand } from './prompt-file';
 import {
   createSession,
   createWindow,
@@ -507,6 +508,7 @@ export class Orchestrator {
     await updatePlanJob(planId, job.name, { status: 'running', branch });
 
     let worktreePath = '';
+    let promptFilePath: string | undefined;
     try {
       const postCreate = resolvePostCreateHook(
         this.config.worktreeSetup,
@@ -546,10 +548,12 @@ If your work needs human review before it can proceed: mc_report(status: "needs_
         ? `\n\nIMPORTANT: When you have completed ALL of your work, you MUST commit your changes before finishing. Stage all modified and new files, then create a commit with a conventional commit message (e.g. "feat: ...", "fix: ...", "docs: ...", "refactor: ...", "chore: ..."). Do NOT skip this step.`
         : '';
       const jobPrompt = job.prompt + mcReportSuffix + autoCommitSuffix;
-      const launchCommand = `opencode --prompt '${jobPrompt.replace(/'/g, "'\\''")}'`;
+      promptFilePath = await writePromptFile(worktreePath, jobPrompt);
+      const launchCommand = buildPromptFileCommand(promptFilePath);
       await setPaneDiedHook(tmuxTarget, `run-shell "echo '${job.id}' >> .mission-control/completed-jobs.log"`);
       await sendKeys(tmuxTarget, launchCommand);
       await sendKeys(tmuxTarget, 'Enter');
+      cleanupPromptFile(promptFilePath);
 
       await addJob({
         id: randomUUID(),
@@ -572,6 +576,10 @@ If your work needs human review before it can proceed: mc_report(status: "needs_
         tmuxTarget,
       });
     } catch (error) {
+      if (promptFilePath) {
+        cleanupPromptFile(promptFilePath, 0);
+      }
+
       try {
         if (placement === 'session') {
           await killSession(tmuxSessionName);
