@@ -2,6 +2,7 @@ import { join } from 'path';
 import { getDataDir } from './paths';
 import { GitMutex } from './git-mutex';
 import type { PlanSpec, JobSpec } from './plan-types';
+import { isValidPlanTransition, isValidJobTransition } from './plan-types';
 
 const PLAN_FILE = 'plan.json';
 
@@ -44,6 +45,12 @@ export async function savePlan(plan: PlanSpec): Promise<void> {
       throw new Error('active plan already exists');
     }
 
+    if (existing && existing.status !== plan.status) {
+      if (!isValidPlanTransition(existing.status, plan.status)) {
+        console.warn(`[MC] Invalid plan transition: ${existing.status} → ${plan.status} (plan: ${plan.name})`);
+      }
+    }
+
     const ghAuthenticated = await validateGhAuth();
     const planToSave = { ...plan, ghAuthenticated };
 
@@ -82,6 +89,12 @@ export async function updatePlanJob(
     const jobIndex = plan.jobs.findIndex((j) => j.name === jobName);
     if (jobIndex === -1) {
       throw new Error(`Job "${jobName}" not found in plan "${plan.name}"`);
+    }
+
+    if (updates.status && updates.status !== plan.jobs[jobIndex].status) {
+      if (!isValidJobTransition(plan.jobs[jobIndex].status, updates.status)) {
+        console.warn(`[MC] Invalid job transition: ${plan.jobs[jobIndex].status} → ${updates.status} (job: ${jobName})`);
+      }
     }
 
     plan.jobs[jobIndex] = {

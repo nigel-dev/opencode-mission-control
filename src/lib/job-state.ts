@@ -1,6 +1,8 @@
 import { join } from 'path';
 import { getDataDir } from './paths';
 import { GitMutex } from './git-mutex';
+import { isValidJobTransition, VALID_JOB_TRANSITIONS } from './plan-types';
+import type { JobStatus } from './plan-types';
 
 export interface Job {
   id: string;
@@ -120,6 +122,17 @@ export async function updateJob(
 
     if (jobIndex === -1) {
       throw new Error(`Job with id ${id} not found`);
+    }
+
+    const job = state.jobs[jobIndex];
+    if (updates.status && job.status !== updates.status) {
+      const fromStatus = job.status as string;
+      const toStatus = updates.status as string;
+      if (fromStatus in VALID_JOB_TRANSITIONS && toStatus in VALID_JOB_TRANSITIONS) {
+        if (!isValidJobTransition(fromStatus as JobStatus, toStatus as JobStatus)) {
+          console.warn(`[MC] Invalid job transition: ${fromStatus} → ${toStatus} (job: ${job.name})`);
+        }
+      }
     }
 
     state.jobs[jobIndex] = {
