@@ -1,5 +1,7 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { join } from 'path';
+import { tmpdir } from 'os';
+import * as paths from '../../src/lib/paths';
 import {
   loadJobState,
   saveJobState,
@@ -13,35 +15,29 @@ import {
   type JobState,
 } from '../../src/lib/job-state';
 
-const TEST_STATE_DIR = '.mission-control';
-const TEST_STATE_FILE = join(TEST_STATE_DIR, 'jobs.json');
+let testStateDir: string;
 
-async function cleanupTestState(): Promise<void> {
-  const file = Bun.file(TEST_STATE_FILE);
-  if (await file.exists()) {
-    await Bun.file(TEST_STATE_FILE).delete();
-  }
-  const tempFile = Bun.file(`${TEST_STATE_FILE}.tmp`);
-  if (await tempFile.exists()) {
-    await tempFile.delete();
-  }
+function getTestStateFile(): string {
+  return join(testStateDir, 'jobs.json');
 }
 
-async function ensureTestDir(): Promise<void> {
+async function createTempDir(): Promise<string> {
   const fs = await import('fs');
-  if (!fs.existsSync(TEST_STATE_DIR)) {
-    fs.mkdirSync(TEST_STATE_DIR, { recursive: true });
-  }
+  return fs.promises.mkdtemp(join(tmpdir(), 'mc-job-state-test-'));
 }
 
 describe('job-state', () => {
   beforeEach(async () => {
-    await cleanupTestState();
-    await ensureTestDir();
+    testStateDir = await createTempDir();
+    vi.spyOn(paths, 'getDataDir').mockResolvedValue(testStateDir);
   });
 
   afterEach(async () => {
-    await cleanupTestState();
+    vi.restoreAllMocks();
+    const fs = await import('fs');
+    if (fs.existsSync(testStateDir)) {
+      fs.rmSync(testStateDir, { recursive: true, force: true });
+    }
   });
 
   describe('loadJobState', () => {
@@ -72,7 +68,7 @@ describe('job-state', () => {
         updatedAt: new Date().toISOString(),
       };
 
-      await Bun.write(TEST_STATE_FILE, JSON.stringify(testState));
+      await Bun.write(getTestStateFile(), JSON.stringify(testState));
       const loaded = await loadJobState();
 
       expect(loaded.version).toBe(1);
@@ -104,10 +100,10 @@ describe('job-state', () => {
       };
 
       await saveJobState(state);
-      const file = Bun.file(TEST_STATE_FILE);
+      const file = Bun.file(getTestStateFile());
       expect(await file.exists()).toBe(true);
 
-      const tempFile = Bun.file(`${TEST_STATE_FILE}.tmp`);
+      const tempFile = Bun.file(`${getTestStateFile()}.tmp`);
       expect(await tempFile.exists()).toBe(false);
     });
   });

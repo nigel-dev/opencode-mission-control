@@ -43,7 +43,14 @@ export const MissionControl: Plugin = async ({ client }) => {
         if (shouldShow) {
           const message = await getAutoStatusMessage();
           if (message) {
-            console.log(message);
+            await client.tui.showToast({
+              body: {
+                title: 'Mission Control',
+                message,
+                variant: 'info',
+                duration: 8000,
+              },
+            }).catch(() => {});
           }
         }
       }

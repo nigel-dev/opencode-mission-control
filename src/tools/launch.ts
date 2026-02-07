@@ -32,16 +32,16 @@ function buildLaunchCommand(opts: {
   switch (opts.mode) {
     case 'plan':
       if (opts.planFile) {
-        return `opencode -p '${escapedPrompt} Plan file: ${opts.planFile}'`;
+        return `opencode --prompt '${escapedPrompt} Plan file: ${opts.planFile}'`;
       }
-      return `opencode -p '${escapedPrompt}'`;
+      return `opencode --prompt '${escapedPrompt}'`;
     case 'ralph':
-      return `opencode -p '/ralph-loop ${escapedPrompt}'`;
+      return `opencode --prompt '/ralph-loop ${escapedPrompt}'`;
     case 'ulw':
-      return `opencode -p '/ulw-loop ${escapedPrompt}'`;
+      return `opencode --prompt '/ulw-loop ${escapedPrompt}'`;
     case 'vanilla':
     default:
-      return `opencode -p '${escapedPrompt}'`;
+      return `opencode --prompt '${escapedPrompt}'`;
   }
 }
 

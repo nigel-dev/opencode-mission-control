@@ -1,6 +1,7 @@
 import { tool, type ToolDefinition } from '@opencode-ai/plugin';
 import { getJobByName, removeJob, getRunningJobs, loadJobState } from '../lib/job-state';
 import { removeWorktree } from '../lib/worktree';
+import { killSession, sessionExists } from '../lib/tmux';
 import { spawn } from 'bun';
 
 async function deleteBranch(branchName: string): Promise<void> {
@@ -57,6 +58,10 @@ async function cleanupJobs(
 
   for (const job of jobs) {
     try {
+      if (job.placement === 'session' && await sessionExists(job.tmuxTarget)) {
+        try { await killSession(job.tmuxTarget); } catch {}
+      }
+
       await removeWorktreeWithFallback(job.worktreePath);
       if (shouldDeleteBranch) {
         await deleteBranchWithFallback(job.branch);

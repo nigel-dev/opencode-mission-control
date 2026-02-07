@@ -1,9 +1,10 @@
 import { join } from 'path';
 import { getRunningJobs } from '../lib/job-state';
+import { getDataDir } from '../lib/paths';
 import { isInManagedWorktree } from '../lib/worktree';
 
 const RATE_LIMIT_MS = 5 * 60 * 1000; // 5 minutes
-const LAST_STATUS_FILE = '.mission-control/last-status-time';
+const LAST_STATUS_FILE = 'last-status-time';
 
 /**
  * Check if we should show auto-status on idle
@@ -90,7 +91,8 @@ async function checkIsCommandCenter(): Promise<boolean> {
  */
 async function checkJobsFileExists(): Promise<boolean> {
   try {
-    const jobsPath = join(process.cwd(), '.mission-control', 'jobs.json');
+    const dataDir = await getDataDir();
+    const jobsPath = join(dataDir, 'jobs.json');
     const file = Bun.file(jobsPath);
     return await file.exists();
   } catch {
@@ -103,7 +105,8 @@ async function checkJobsFileExists(): Promise<boolean> {
  */
 async function checkRateLimit(): Promise<boolean> {
   try {
-    const lastStatusPath = join(process.cwd(), LAST_STATUS_FILE);
+    const dataDir = await getDataDir();
+    const lastStatusPath = join(dataDir, LAST_STATUS_FILE);
     const file = Bun.file(lastStatusPath);
     const exists = await file.exists();
 
@@ -130,7 +133,8 @@ async function checkRateLimit(): Promise<boolean> {
  */
 async function updateLastStatusTime(): Promise<void> {
   try {
-    const lastStatusPath = join(process.cwd(), LAST_STATUS_FILE);
+    const dataDir = await getDataDir();
+    const lastStatusPath = join(dataDir, LAST_STATUS_FILE);
     const timestamp = Date.now().toString();
     await Bun.write(lastStatusPath, timestamp);
   } catch {

@@ -1,7 +1,7 @@
 import { spawn } from 'bun';
-import { homedir } from 'os';
-import { join, basename, resolve } from 'path';
+import { join, resolve } from 'path';
 import { GitMutex } from './git-mutex';
+import { getProjectId, getXdgDataDir } from './paths';
 import type {
   WorktreeInfo,
   SyncResult,
@@ -11,12 +11,7 @@ import type {
 
 export type { WorktreeInfo, SyncResult, PostCreateHook };
 
-const XDG_DATA_DIR = join(
-  homedir(),
-  '.local',
-  'share',
-  'opencode-mission-control',
-);
+const XDG_DATA_DIR = getXdgDataDir();
 
 const mutex = new GitMutex();
 
@@ -51,17 +46,6 @@ async function gitUnsafe(
   ]);
   const exitCode = await proc.exited;
   return { stdout: stdout.trim(), stderr: stderr.trim(), exitCode };
-}
-
-async function getProjectId(cwd?: string): Promise<string> {
-  const { stdout, exitCode } = await gitUnsafe(
-    ['rev-parse', '--show-toplevel'],
-    { cwd },
-  );
-  if (exitCode !== 0) {
-    throw new Error('Not inside a git repository');
-  }
-  return basename(stdout);
 }
 
 function parseWorktreeListPorcelain(output: string): WorktreeInfo[] {

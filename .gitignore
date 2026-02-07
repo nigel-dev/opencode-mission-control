@@ -32,5 +32,11 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
+# Local opencode config (dogfooding)
+.opencode/
+
+# Legacy Mission Control local state
+.mission-control/
+
 # Sisyphus planning (local only)
 .sisyphus/

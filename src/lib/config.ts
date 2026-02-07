@@ -1,5 +1,6 @@
 import { join } from 'path';
 import { homedir } from 'os';
+import { getDataDir } from './paths';
 
 export interface MCConfig {
   defaultPlacement: 'session' | 'window';
@@ -23,10 +24,11 @@ const DEFAULT_CONFIG: MCConfig = {
   },
 };
 
-const CONFIG_FILE_PATH = '.mission-control/config.json';
+const CONFIG_FILE = 'config.json';
 
-export function getConfigPath(): string {
-  return join(process.cwd(), CONFIG_FILE_PATH);
+export async function getConfigPath(): Promise<string> {
+  const dataDir = await getDataDir();
+  return join(dataDir, CONFIG_FILE);
 }
 
 async function atomicWrite(filePath: string, data: string): Promise<void> {
@@ -38,7 +40,7 @@ async function atomicWrite(filePath: string, data: string): Promise<void> {
 }
 
 export async function loadConfig(): Promise<MCConfig> {
-  const filePath = getConfigPath();
+  const filePath = await getConfigPath();
   const file = Bun.file(filePath);
   const exists = await file.exists();
 
@@ -64,7 +66,7 @@ export async function loadConfig(): Promise<MCConfig> {
 }
 
 export async function saveConfig(config: MCConfig): Promise<void> {
-  const filePath = getConfigPath();
+  const filePath = await getConfigPath();
 
   try {
     const data = JSON.stringify(config, null, 2);

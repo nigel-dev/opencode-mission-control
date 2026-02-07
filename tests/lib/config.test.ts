@@ -1,6 +1,8 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { join } from 'path';
 import { homedir } from 'os';
+import { tmpdir } from 'os';
+import * as paths from '../../src/lib/paths';
 import {
   loadConfig,
   saveConfig,
@@ -8,41 +10,35 @@ import {
   type MCConfig,
 } from '../../src/lib/config';
 
-const TEST_CONFIG_DIR = '.mission-control';
-const TEST_CONFIG_FILE = join(TEST_CONFIG_DIR, 'config.json');
+let testConfigDir: string;
 
-async function cleanupTestConfig(): Promise<void> {
-  const file = Bun.file(TEST_CONFIG_FILE);
-  if (await file.exists()) {
-    await file.delete();
-  }
-  const tempFile = Bun.file(`${TEST_CONFIG_FILE}.tmp`);
-  if (await tempFile.exists()) {
-    await tempFile.delete();
-  }
+function getTestConfigFile(): string {
+  return join(testConfigDir, 'config.json');
 }
 
-async function ensureTestDir(): Promise<void> {
+async function createTempDir(): Promise<string> {
   const fs = await import('fs');
-  if (!fs.existsSync(TEST_CONFIG_DIR)) {
-    fs.mkdirSync(TEST_CONFIG_DIR, { recursive: true });
-  }
+  return fs.promises.mkdtemp(join(tmpdir(), 'mc-config-test-'));
 }
 
 describe('config', () => {
   beforeEach(async () => {
-    await cleanupTestConfig();
-    await ensureTestDir();
+    testConfigDir = await createTempDir();
+    vi.spyOn(paths, 'getDataDir').mockResolvedValue(testConfigDir);
   });
 
   afterEach(async () => {
-    await cleanupTestConfig();
+    vi.restoreAllMocks();
+    const fs = await import('fs');
+    if (fs.existsSync(testConfigDir)) {
+      fs.rmSync(testConfigDir, { recursive: true, force: true });
+    }
   });
 
   describe('getConfigPath', () => {
-    it('should return config file path', () => {
-      const path = getConfigPath();
-      expect(path).toBe(join(process.cwd(), '.mission-control/config.json'));
+    it('should return config file path', async () => {
+      const path = await getConfigPath();
+      expect(path).toBe(getTestConfigFile());
     });
   });
 
@@ -72,7 +68,7 @@ describe('config', () => {
         },
       };
 
-      await Bun.write(TEST_CONFIG_FILE, JSON.stringify(testConfig));
+      await Bun.write(getTestConfigFile(), JSON.stringify(testConfig));
       const loaded = await loadConfig();
 
       expect(loaded.defaultPlacement).toBe('window');
@@ -91,7 +87,7 @@ describe('config', () => {
         },
       };
 
-      await Bun.write(TEST_CONFIG_FILE, JSON.stringify(partialConfig));
+      await Bun.write(getTestConfigFile(), JSON.stringify(partialConfig));
       const loaded = await loadConfig();
 
       expect(loaded.pollInterval).toBe(15000);
@@ -102,7 +98,7 @@ describe('config', () => {
     });
 
     it('should throw error on invalid JSON', async () => {
-      await Bun.write(TEST_CONFIG_FILE, 'invalid json {');
+      await Bun.write(getTestConfigFile(), 'invalid json {');
 
       await expect(loadConfig()).rejects.toThrow('Failed to load config');
     });
@@ -122,7 +118,7 @@ describe('config', () => {
       };
 
       await saveConfig(config);
-      const file = Bun.file(TEST_CONFIG_FILE);
+      const file = Bun.file(getTestConfigFile());
       expect(await file.exists()).toBe(true);
 
       const content = await file.text();
@@ -149,10 +145,10 @@ describe('config', () => {
       };
 
       await saveConfig(config);
-      const file = Bun.file(TEST_CONFIG_FILE);
+      const file = Bun.file(getTestConfigFile());
       expect(await file.exists()).toBe(true);
 
-      const tempFile = Bun.file(`${TEST_CONFIG_FILE}.tmp`);
+      const tempFile = Bun.file(`${getTestConfigFile()}.tmp`);
       expect(await tempFile.exists()).toBe(false);
     });
 
@@ -169,7 +165,7 @@ describe('config', () => {
       };
 
       await saveConfig(config);
-      const file = Bun.file(TEST_CONFIG_FILE);
+      const file = Bun.file(getTestConfigFile());
       const content = await file.text();
 
       expect(content).toContain('\n');

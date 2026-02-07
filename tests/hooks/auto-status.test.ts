@@ -1,29 +1,35 @@
-import { describe, it, expect, beforeEach, vi, type Mock, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import type { Job } from '../../src/lib/job-state';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import * as jobState from '../../src/lib/job-state';
+import * as paths from '../../src/lib/paths';
 import * as worktree from '../../src/lib/worktree';
 
 const { shouldShowAutoStatus, getAutoStatusMessage } = await import(
   '../../src/hooks/auto-status'
 );
 
-let mockGetRunningJobs: Mock;
-let mockIsInManagedWorktree: Mock;
+let mockGetRunningJobs: any;
+let mockIsInManagedWorktree: any;
+let mockGetDataDir: any;
 
 describe('auto-status hook', () => {
   let testDir: string;
+  let testStateDir: string;
 
   beforeEach(async () => {
     vi.clearAllMocks();
     mockGetRunningJobs = vi.spyOn(jobState, 'getRunningJobs').mockImplementation(() => [] as any);
     mockIsInManagedWorktree = vi.spyOn(worktree, 'isInManagedWorktree').mockImplementation(() => ({ isManaged: false } as any));
+    mockGetDataDir = vi.spyOn(paths, 'getDataDir');
     testDir = join(tmpdir(), `mc-test-${Date.now()}`);
+    testStateDir = join(testDir, 'state');
     const fs = await import('fs');
     fs.mkdirSync(testDir, { recursive: true });
-    fs.mkdirSync(join(testDir, '.mission-control'), { recursive: true });
-    fs.writeFileSync(join(testDir, '.mission-control', 'jobs.json'), '{}');
+    fs.mkdirSync(testStateDir, { recursive: true });
+    fs.writeFileSync(join(testStateDir, 'jobs.json'), '{}');
+    mockGetDataDir.mockResolvedValue(testStateDir);
     vi.spyOn(process, 'cwd').mockReturnValue(testDir);
   });
 
@@ -47,7 +53,7 @@ describe('auto-status hook', () => {
 
     it('should return false when jobs.json does not exist', async () => {
       const fs = await import('fs');
-      fs.rmSync(join(testDir, '.mission-control', 'jobs.json'));
+      fs.rmSync(join(testStateDir, 'jobs.json'));
       mockIsInManagedWorktree.mockResolvedValue({ isManaged: false });
       mockGetRunningJobs.mockResolvedValue([]);
 
@@ -79,7 +85,7 @@ describe('auto-status hook', () => {
       ]);
 
       const recentTime = (Date.now() - 60000).toString();
-      fs.writeFileSync(join(testDir, '.mission-control', 'last-status-time'), recentTime);
+      fs.writeFileSync(join(testStateDir, 'last-status-time'), recentTime);
 
       const result = await shouldShowAutoStatus();
 
@@ -100,7 +106,7 @@ describe('auto-status hook', () => {
       ]);
 
       const oldTime = (Date.now() - 6 * 60 * 1000).toString();
-      fs.writeFileSync(join(testDir, '.mission-control', 'last-status-time'), oldTime);
+      fs.writeFileSync(join(testStateDir, 'last-status-time'), oldTime);
 
       const result = await shouldShowAutoStatus();
 
@@ -271,7 +277,7 @@ describe('auto-status hook', () => {
 
       await getAutoStatusMessage();
 
-      const lastStatusPath = join(testDir, '.mission-control', 'last-status-time');
+      const lastStatusPath = join(testStateDir, 'last-status-time');
       expect(fs.existsSync(lastStatusPath)).toBe(true);
     });
 

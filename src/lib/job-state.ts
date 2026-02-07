@@ -1,4 +1,5 @@
 import { join } from 'path';
+import { getDataDir } from './paths';
 
 export interface Job {
   id: string;
@@ -22,10 +23,11 @@ export interface JobState {
   updatedAt: string;
 }
 
-const STATE_FILE_PATH = '.mission-control/jobs.json';
+const STATE_FILE = 'jobs.json';
 
-function getStateFilePath(): string {
-  return join(process.cwd(), STATE_FILE_PATH);
+async function getStateFilePath(): Promise<string> {
+  const dataDir = await getDataDir();
+  return join(dataDir, STATE_FILE);
 }
 
 async function atomicWrite(filePath: string, data: string): Promise<void> {
@@ -37,7 +39,7 @@ async function atomicWrite(filePath: string, data: string): Promise<void> {
 }
 
 export async function loadJobState(): Promise<JobState> {
-  const filePath = getStateFilePath();
+  const filePath = await getStateFilePath();
   const file = Bun.file(filePath);
   const exists = await file.exists();
 
@@ -58,7 +60,7 @@ export async function loadJobState(): Promise<JobState> {
 }
 
 export async function saveJobState(state: JobState): Promise<void> {
-  const filePath = getStateFilePath();
+  const filePath = await getStateFilePath();
   const updatedState: JobState = {
     ...state,
     updatedAt: new Date().toISOString(),
