@@ -44,26 +44,39 @@ export const mc_pr: ToolDefinition = tool({
       throw new Error(`Job "${args.name}" not found`);
     }
 
-    // 2. Determine PR title (default to job prompt)
+    // 2. Push branch to remote before creating PR
+    const pushProc = Bun.spawn(['git', 'push', 'origin', job.branch], {
+      cwd: job.worktreePath || undefined,
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    const pushStderr = await new Response(pushProc.stderr).text();
+    const pushExitCode = await pushProc.exited;
+    if (pushExitCode !== 0) {
+      throw new Error(`Failed to push branch "${job.branch}": ${pushStderr}`);
+    }
+
+    // 3. Determine PR title (default to job prompt)
     const prTitle = args.title || job.prompt;
 
-    // 3. Build gh pr create arguments
+    // 4. Build gh pr create arguments
     const ghArgs: string[] = [
       '--title', prTitle,
       '--head', job.branch,
+      '--base', 'main',
     ];
 
-    // 4. Add optional body
+    // 5. Add optional body
     if (args.body) {
       ghArgs.push('--body', args.body);
     }
 
-    // 5. Add draft flag if specified
+    // 6. Add draft flag if specified
     if (args.draft) {
       ghArgs.push('--draft');
     }
 
-    // 6. Execute gh pr create
+    // 7. Execute gh pr create
     const prUrl = await executeGhCommand(ghArgs);
 
     return prUrl;
