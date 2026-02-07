@@ -7,6 +7,9 @@ export interface MCConfig {
   pollInterval: number;
   idleThreshold: number;
   worktreeBasePath: string;
+  maxParallel?: number;
+  testCommand?: string;
+  testTimeout?: number;
   omo: {
     enabled: boolean;
     defaultMode: 'vanilla' | 'plan' | 'ralph' | 'ulw';
@@ -18,6 +21,8 @@ const DEFAULT_CONFIG: MCConfig = {
   pollInterval: 10000,
   idleThreshold: 300000,
   worktreeBasePath: join(homedir(), '.local', 'share', 'opencode-mission-control'),
+  maxParallel: 3,
+  testTimeout: 600000,
   omo: {
     enabled: false,
     defaultMode: 'vanilla',
@@ -51,8 +56,7 @@ export async function loadConfig(): Promise<MCConfig> {
   try {
     const content = await file.text();
     const fileConfig = JSON.parse(content) as Partial<MCConfig>;
-    // Merge file config with defaults
-    return {
+    const result: MCConfig = {
       ...DEFAULT_CONFIG,
       ...fileConfig,
       omo: {
@@ -60,6 +64,7 @@ export async function loadConfig(): Promise<MCConfig> {
         ...(fileConfig.omo || {}),
       },
     };
+    return result;
   } catch (error) {
     throw new Error(`Failed to load config from ${filePath}: ${error}`);
   }
@@ -69,7 +74,10 @@ export async function saveConfig(config: MCConfig): Promise<void> {
   const filePath = await getConfigPath();
 
   try {
-    const data = JSON.stringify(config, null, 2);
+    const configToSave = Object.fromEntries(
+      Object.entries(config).filter(([, value]) => value !== undefined)
+    ) as MCConfig;
+    const data = JSON.stringify(configToSave, null, 2);
     await atomicWrite(filePath, data);
   } catch (error) {
     throw new Error(`Failed to save config to ${filePath}: ${error}`);
