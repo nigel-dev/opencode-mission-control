@@ -1,5 +1,5 @@
 import type { Plugin } from '@opencode-ai/plugin';
-import { JobMonitor } from './lib/monitor';
+import { getSharedMonitor } from './lib/orchestrator-singleton';
 import { getCompactionContext } from './hooks/compaction';
 import { shouldShowAutoStatus, getAutoStatusMessage } from './hooks/auto-status';
 import { setupNotifications } from './hooks/notifications';
@@ -101,7 +101,7 @@ export const MissionControl: Plugin = async ({ client }) => {
     console.warn('[Mission Control] tmux is not installed or not in PATH. Job launching will be unavailable.');
   }
 
-  const monitor = new JobMonitor();
+  const monitor = getSharedMonitor();
   let activeSessionID: string | undefined;
 
   const getActiveSessionID = async (): Promise<string | undefined> => {
