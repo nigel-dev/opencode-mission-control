@@ -1,5 +1,6 @@
 import { join } from 'path';
 import { getDataDir } from './paths';
+import { GitMutex } from './git-mutex';
 
 export interface Job {
   id: string;
@@ -24,6 +25,12 @@ export interface JobState {
 }
 
 const STATE_FILE = 'jobs.json';
+
+/**
+ * In-process mutex for serializing job state operations.
+ * Prevents concurrent read-modify-write cycles from losing updates.
+ */
+const stateMutex = new GitMutex();
 
 async function getStateFilePath(): Promise<string> {
   const dataDir = await getDataDir();
@@ -75,40 +82,46 @@ export async function saveJobState(state: JobState): Promise<void> {
 }
 
 export async function addJob(job: Job): Promise<void> {
-  const state = await loadJobState();
-  state.jobs.push(job);
-  await saveJobState(state);
+  await stateMutex.withLock(async () => {
+    const state = await loadJobState();
+    state.jobs.push(job);
+    await saveJobState(state);
+  });
 }
 
 export async function updateJob(
   id: string,
   updates: Partial<Job>
 ): Promise<void> {
-  const state = await loadJobState();
-  const jobIndex = state.jobs.findIndex((j) => j.id === id);
+  await stateMutex.withLock(async () => {
+    const state = await loadJobState();
+    const jobIndex = state.jobs.findIndex((j) => j.id === id);
 
-  if (jobIndex === -1) {
-    throw new Error(`Job with id ${id} not found`);
-  }
+    if (jobIndex === -1) {
+      throw new Error(`Job with id ${id} not found`);
+    }
 
-  state.jobs[jobIndex] = {
-    ...state.jobs[jobIndex],
-    ...updates,
-  };
+    state.jobs[jobIndex] = {
+      ...state.jobs[jobIndex],
+      ...updates,
+    };
 
-  await saveJobState(state);
+    await saveJobState(state);
+  });
 }
 
 export async function removeJob(id: string): Promise<void> {
-  const state = await loadJobState();
-  const initialLength = state.jobs.length;
-  state.jobs = state.jobs.filter((j) => j.id !== id);
+  await stateMutex.withLock(async () => {
+    const state = await loadJobState();
+    const initialLength = state.jobs.length;
+    state.jobs = state.jobs.filter((j) => j.id !== id);
 
-  if (state.jobs.length === initialLength) {
-    throw new Error(`Job with id ${id} not found`);
-  }
+    if (state.jobs.length === initialLength) {
+      throw new Error(`Job with id ${id} not found`);
+    }
 
-  await saveJobState(state);
+    await saveJobState(state);
+  });
 }
 
 export async function getJob(id: string): Promise<Job | undefined> {
