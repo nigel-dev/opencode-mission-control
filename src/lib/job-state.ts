@@ -16,12 +16,28 @@ export interface Job {
   createdAt: string;
   completedAt?: string;
   exitCode?: number;
+  planId?: string;
 }
 
 export interface JobState {
-  version: 1;
+  version: 1 | 2;
   jobs: Job[];
   updatedAt: string;
+}
+
+export function migrateJobState(state: Record<string, unknown>): JobState {
+  const version = (state.version as number) ?? 1;
+
+  if (version < 2) {
+    const jobs = (state.jobs as Job[]) ?? [];
+    return {
+      version: 2,
+      jobs: jobs.map((job) => ({ ...job, planId: job.planId ?? undefined })),
+      updatedAt: (state.updatedAt as string) ?? new Date().toISOString(),
+    };
+  }
+
+  return state as unknown as JobState;
 }
 
 const STATE_FILE = 'jobs.json';
@@ -52,7 +68,7 @@ export async function loadJobState(): Promise<JobState> {
 
   if (!exists) {
     return {
-      version: 1,
+      version: 2,
       jobs: [],
       updatedAt: new Date().toISOString(),
     };
@@ -60,7 +76,11 @@ export async function loadJobState(): Promise<JobState> {
 
   try {
     const content = await file.text();
-    return JSON.parse(content) as JobState;
+    const parsed = JSON.parse(content);
+    if (!parsed.version || parsed.version < 2) {
+      return migrateJobState(parsed);
+    }
+    return parsed as JobState;
   } catch (error) {
     throw new Error(`Failed to load job state from ${filePath}: ${error}`);
   }
@@ -70,6 +90,7 @@ export async function saveJobState(state: JobState): Promise<void> {
   const filePath = await getStateFilePath();
   const updatedState: JobState = {
     ...state,
+    version: 2,
     updatedAt: new Date().toISOString(),
   };
 

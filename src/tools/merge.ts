@@ -1,6 +1,7 @@
 import { tool, type ToolDefinition } from '@opencode-ai/plugin';
 import { getJobByName } from '../lib/job-state';
 import { gitCommand } from '../lib/git';
+import { loadPlan } from '../lib/plan-state';
 
 async function getBaseBranch(cwd: string): Promise<string> {
   const mainCheck = await gitCommand(['rev-parse', '--verify', 'main'], { cwd });
@@ -68,9 +69,19 @@ export const mc_merge: ToolDefinition = tool({
       );
     }
 
-    // 7. Return success message
+    // 7. Check if job belongs to active plan
+    let planWarning = '';
+    if (job.planId) {
+      const activePlan = await loadPlan();
+      if (activePlan && activePlan.id === job.planId) {
+        planWarning =
+          '⚠️  This job is part of an active plan. Use mc_plan_status to check progress.\n\n';
+      }
+    }
+
+    // 8. Return success message
     const lines: string[] = [
-      `Successfully merged '${job.branch}' into '${baseBranch}'`,
+      `${planWarning}Successfully merged '${job.branch}' into '${baseBranch}'`,
       '',
       'Merge details:',
       `  Branch: ${job.branch}`,

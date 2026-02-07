@@ -1,0 +1,123 @@
+import { join } from 'path';
+import { getDataDir } from './paths';
+import { GitMutex } from './git-mutex';
+import type { PlanSpec, JobSpec } from './plan-types';
+
+const PLAN_FILE = 'plan.json';
+
+const planMutex = new GitMutex();
+
+async function getPlanFilePath(): Promise<string> {
+  const dataDir = await getDataDir();
+  return join(dataDir, PLAN_FILE);
+}
+
+async function atomicWrite(filePath: string, data: string): Promise<void> {
+  const tempPath = `${filePath}.tmp`;
+  await Bun.write(tempPath, data);
+  const fs = await import('fs');
+  fs.renameSync(tempPath, filePath);
+}
+
+export async function loadPlan(): Promise<PlanSpec | null> {
+  const filePath = await getPlanFilePath();
+  const file = Bun.file(filePath);
+  const exists = await file.exists();
+
+  if (!exists) {
+    return null;
+  }
+
+  try {
+    const content = await file.text();
+    return JSON.parse(content) as PlanSpec;
+  } catch (error) {
+    throw new Error(`Failed to load plan state from ${filePath}: ${error}`);
+  }
+}
+
+export async function savePlan(plan: PlanSpec): Promise<void> {
+  await planMutex.withLock(async () => {
+    const existing = await loadPlan();
+
+    if (existing && existing.id !== plan.id) {
+      throw new Error('active plan already exists');
+    }
+
+    const ghAuthenticated = await validateGhAuth();
+    const planToSave = { ...plan, ghAuthenticated };
+
+    const filePath = await getPlanFilePath();
+    try {
+      const data = JSON.stringify(planToSave, null, 2);
+      await atomicWrite(filePath, data);
+    } catch (error) {
+      throw new Error(`Failed to save plan state to ${filePath}: ${error}`);
+    }
+  });
+}
+
+export async function getActivePlan(): Promise<PlanSpec | null> {
+  return loadPlan();
+}
+
+export async function updatePlanJob(
+  planId: string,
+  jobName: string,
+  updates: Partial<JobSpec>,
+): Promise<void> {
+  await planMutex.withLock(async () => {
+    const plan = await loadPlan();
+
+    if (!plan) {
+      throw new Error('No active plan exists');
+    }
+
+    if (plan.id !== planId) {
+      throw new Error(
+        `Plan ID mismatch: expected ${planId}, got ${plan.id}`,
+      );
+    }
+
+    const jobIndex = plan.jobs.findIndex((j) => j.name === jobName);
+    if (jobIndex === -1) {
+      throw new Error(`Job "${jobName}" not found in plan "${plan.name}"`);
+    }
+
+    plan.jobs[jobIndex] = {
+      ...plan.jobs[jobIndex],
+      ...updates,
+    };
+
+    const filePath = await getPlanFilePath();
+    try {
+      const data = JSON.stringify(plan, null, 2);
+      await atomicWrite(filePath, data);
+    } catch (error) {
+      throw new Error(`Failed to save plan state to ${filePath}: ${error}`);
+    }
+  });
+}
+
+export async function clearPlan(): Promise<void> {
+  await planMutex.withLock(async () => {
+    const filePath = await getPlanFilePath();
+    const fs = await import('fs');
+    if (fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
+    }
+  });
+}
+
+export async function validateGhAuth(): Promise<boolean> {
+  try {
+    const proc = Bun.spawn(['gh', 'auth', 'status'], {
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    const exitCode = await proc.exited;
+    return exitCode === 0;
+  } catch {
+    return false;
+  }
+}

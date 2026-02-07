@@ -43,14 +43,14 @@ describe('job-state', () => {
   describe('loadJobState', () => {
     it('should return default state when file does not exist', async () => {
       const state = await loadJobState();
-      expect(state.version).toBe(1);
+      expect(state.version).toBe(2);
       expect(state.jobs).toEqual([]);
       expect(state.updatedAt).toBeDefined();
     });
 
     it('should load existing state from file', async () => {
       const testState: JobState = {
-        version: 1,
+        version: 2,
         jobs: [
           {
             id: 'test-1',
@@ -71,7 +71,7 @@ describe('job-state', () => {
       await Bun.write(getTestStateFile(), JSON.stringify(testState));
       const loaded = await loadJobState();
 
-      expect(loaded.version).toBe(1);
+      expect(loaded.version).toBe(2);
       expect(loaded.jobs).toHaveLength(1);
       expect(loaded.jobs[0].id).toBe('test-1');
     });
@@ -80,7 +80,7 @@ describe('job-state', () => {
   describe('saveJobState', () => {
     it('should save state to file with updated timestamp', async () => {
       const state: JobState = {
-        version: 1,
+        version: 2,
         jobs: [],
         updatedAt: '2024-01-01T00:00:00Z',
       };
@@ -88,13 +88,13 @@ describe('job-state', () => {
       await saveJobState(state);
       const loaded = await loadJobState();
 
-      expect(loaded.version).toBe(1);
+      expect(loaded.version).toBe(2);
       expect(loaded.updatedAt).not.toBe('2024-01-01T00:00:00Z');
     });
 
     it('should use atomic write pattern', async () => {
       const state: JobState = {
-        version: 1,
+        version: 2,
         jobs: [],
         updatedAt: new Date().toISOString(),
       };

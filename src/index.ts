@@ -14,6 +14,10 @@ import { mc_cleanup } from './tools/cleanup';
 import { mc_kill } from './tools/kill';
 import { mc_attach } from './tools/attach';
 import { mc_capture } from './tools/capture';
+import { mc_plan } from './tools/plan';
+import { mc_plan_status } from './tools/plan-status';
+import { mc_plan_cancel } from './tools/plan-cancel';
+import { mc_plan_approve } from './tools/plan-approve';
 
 export const MissionControl: Plugin = async ({ client }) => {
   const monitor = new JobMonitor();
@@ -36,6 +40,10 @@ export const MissionControl: Plugin = async ({ client }) => {
       mc_kill,
       mc_attach,
       mc_capture,
+      mc_plan,
+      mc_plan_status,
+      mc_plan_cancel,
+      mc_plan_approve,
     },
     event: async ({ event }) => {
       if (event.type === 'session.idle') {
