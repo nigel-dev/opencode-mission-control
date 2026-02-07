@@ -180,6 +180,9 @@ describe('config', () => {
         pollInterval: 25000,
         idleThreshold: 500000,
         worktreeBasePath: '/integration/test/path',
+        maxParallel: 3,
+        autoCommit: true,
+        testTimeout: 600000,
         omo: {
           enabled: true,
           defaultMode: 'ulw',
