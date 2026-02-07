@@ -8,9 +8,9 @@ export const mc_report: ToolDefinition = tool({
     'Report agent status back to Mission Control. Auto-detects which job is calling based on the current worktree.',
   args: {
     status: tool.schema
-      .enum(['working', 'blocked', 'needs_review', 'progress'])
+      .enum(['working', 'blocked', 'needs_review', 'completed', 'progress'])
       .describe(
-        'Current status: working (actively coding), blocked (waiting/stuck), needs_review (done, needs human review), progress (milestone update)',
+        'Current status: working (actively coding), blocked (waiting/stuck), needs_review (done but needs human review), completed (work finished successfully), progress (milestone update)',
       ),
     message: tool.schema
       .string()

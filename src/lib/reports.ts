@@ -1,7 +1,7 @@
 import { join } from 'path';
 import { getDataDir } from './paths';
 
-export type ReportStatus = 'working' | 'blocked' | 'needs_review' | 'progress';
+export type ReportStatus = 'working' | 'blocked' | 'needs_review' | 'completed' | 'progress';
 
 export interface AgentReport {
   jobId: string;
