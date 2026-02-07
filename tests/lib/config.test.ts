@@ -183,6 +183,7 @@ describe('config', () => {
         maxParallel: 3,
         autoCommit: true,
         testTimeout: 600000,
+        mergeStrategy: 'squash',
         omo: {
           enabled: true,
           defaultMode: 'ulw',

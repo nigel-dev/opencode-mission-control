@@ -4,6 +4,8 @@ import * as jobState from '../../src/lib/job-state';
 import * as worktree from '../../src/lib/worktree';
 import * as tmux from '../../src/lib/tmux';
 import * as configMod from '../../src/lib/config';
+import * as promptFile from '../../src/lib/prompt-file';
+import * as worktreeSetup from '../../src/lib/worktree-setup';
 
 vi.mock('crypto', () => ({
   randomUUID: vi.fn(() => 'test-uuid-1234'),
@@ -23,6 +25,11 @@ let mockKillSession: Mock;
 let mockGetCurrentSession: Mock;
 let mockIsInsideTmux: Mock;
 let mockLoadConfig: Mock;
+let mockIsTmuxAvailable: Mock;
+let mockWritePromptFile: Mock;
+let mockCleanupPromptFile: Mock;
+let mockBuildPromptFileCommand: Mock;
+let mockResolvePostCreateHook: Mock;
 
 const mockContext = {
   sessionID: 'test-session',
@@ -70,7 +77,12 @@ describe('mc_launch', () => {
     mockKillSession = vi.spyOn(tmux, 'killSession').mockImplementation(() => undefined as any);
     mockGetCurrentSession = vi.spyOn(tmux, 'getCurrentSession').mockImplementation(() => 'main-session' as any);
     mockIsInsideTmux = vi.spyOn(tmux, 'isInsideTmux').mockImplementation(() => true as any);
+    mockIsTmuxAvailable = vi.spyOn(tmux, 'isTmuxAvailable').mockImplementation(() => Promise.resolve(true) as any);
     mockLoadConfig = vi.spyOn(configMod, 'loadConfig').mockImplementation(() => ({ defaultPlacement: 'session', pollInterval: 10000, idleThreshold: 300000, worktreeBasePath: '/tmp/mc-worktrees', omo: { enabled: false, defaultMode: 'vanilla' } } as any));
+    mockWritePromptFile = vi.spyOn(promptFile, 'writePromptFile').mockImplementation(() => Promise.resolve('/tmp/mc-worktrees/test-job/.mc-prompt.txt') as any);
+    mockCleanupPromptFile = vi.spyOn(promptFile, 'cleanupPromptFile').mockImplementation(() => undefined as any);
+    mockBuildPromptFileCommand = vi.spyOn(promptFile, 'buildPromptFileCommand').mockImplementation((path) => `opencode --prompt "$(cat '${path}')"` as any);
+    mockResolvePostCreateHook = vi.spyOn(worktreeSetup, 'resolvePostCreateHook').mockImplementation(() => ({ symlinkDirs: ['.opencode'] } as any));
     setupDefaultMocks();
   });
 
@@ -303,22 +315,22 @@ describe('mc_launch', () => {
       );
     });
 
-    it('should include plan file reference for plan mode', async () => {
-      await mc_launch.execute(
-        {
-          name: 'test',
-          prompt: 'Do stuff',
-          mode: 'plan',
-          planFile: 'my-plan.md',
-        },
-        mockContext,
-      );
+     it('should include plan file reference for plan mode', async () => {
+       await mc_launch.execute(
+         {
+           name: 'test',
+           prompt: 'Do stuff',
+           mode: 'plan',
+           planFile: 'my-plan.md',
+         },
+         mockContext,
+       );
 
-      expect(mockSendKeys).toHaveBeenCalledWith(
-        'mc-test',
-        expect.stringContaining('my-plan.md'),
-      );
-    });
+       expect(mockWritePromptFile).toHaveBeenCalledWith(
+         '/tmp/mc-worktrees/test-job',
+         expect.stringContaining('my-plan.md'),
+       );
+     });
 
     it('should store planFile in job state', async () => {
       await mc_launch.execute(

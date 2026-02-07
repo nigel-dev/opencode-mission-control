@@ -146,14 +146,16 @@ export class Orchestrator {
   private jobsLaunchedCount = 0;
   private firstJobCompleted = false;
 
-  private getMergeTrainConfig(): { testCommand?: string; testTimeout?: number } {
+  private getMergeTrainConfig(): { testCommand?: string; testTimeout?: number; mergeStrategy?: 'squash' | 'ff-only' | 'merge' } {
     const config = this.config as MCConfig & {
       testCommand?: string;
       testTimeout?: number;
+      mergeStrategy?: 'squash' | 'ff-only' | 'merge';
     };
     return {
       testCommand: config.testCommand,
       testTimeout: config.testTimeout,
+      mergeStrategy: config.mergeStrategy,
     };
   }
 

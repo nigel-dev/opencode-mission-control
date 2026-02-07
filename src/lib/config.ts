@@ -17,6 +17,7 @@ export interface MCConfig {
   autoCommit?: boolean;
   testCommand?: string;
   testTimeout?: number;
+  mergeStrategy?: 'squash' | 'ff-only' | 'merge';
   worktreeSetup?: WorktreeSetup;
   omo: {
     enabled: boolean;
@@ -32,6 +33,7 @@ const DEFAULT_CONFIG: MCConfig = {
   maxParallel: 3,
   autoCommit: true,
   testTimeout: 600000,
+  mergeStrategy: 'squash',
   omo: {
     enabled: false,
     defaultMode: 'vanilla',

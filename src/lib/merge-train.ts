@@ -15,6 +15,7 @@ export type MergeResult =
 type MergeTrainConfig = {
   testCommand?: string;
   testTimeout?: number;
+  mergeStrategy?: 'squash' | 'ff-only' | 'merge';
 };
 
 const DEFAULT_TEST_TIMEOUT_MS = 600000;
@@ -39,12 +40,21 @@ function extractConflicts(stderr: string): string[] {
 }
 
 async function rollbackMerge(worktreePath: string): Promise<void> {
-  const abortResult = await gitCommand(['-C', worktreePath, 'merge', '--abort']);
-  if (abortResult.exitCode === 0) {
-    return;
-  }
+  // Try merge --abort first
+  await gitCommand(['-C', worktreePath, 'merge', '--abort']).catch(() => {});
 
-  await gitCommand(['-C', worktreePath, 'reset', '--hard', 'HEAD~1']);
+  // Always reset the index and working tree to be safe
+  await gitCommand(['-C', worktreePath, 'reset', '--hard', 'HEAD']).catch(() => {});
+  await gitCommand(['-C', worktreePath, 'clean', '-fd']).catch(() => {});
+}
+
+async function rollbackMergeToHead(worktreePath: string, targetHead: string): Promise<void> {
+  // Try merge --abort first
+  await gitCommand(['-C', worktreePath, 'merge', '--abort']).catch(() => {});
+
+  // Reset to the target HEAD
+  await gitCommand(['-C', worktreePath, 'reset', '--hard', targetHead]).catch(() => {});
+  await gitCommand(['-C', worktreePath, 'clean', '-fd']).catch(() => {});
 }
 
 export async function detectTestCommand(worktreePath: string): Promise<string | null> {
@@ -140,25 +150,117 @@ export class MergeTrain {
       };
     }
 
-    const mergeResult = await gitCommand([
-      '-C',
-      this.integrationWorktree,
-      'merge',
-      '--no-ff',
-      job.branch,
-    ]);
+    // Save the HEAD before the merge so we can rollback if needed
+    const headBeforeMerge = await gitCommand(['-C', this.integrationWorktree, 'rev-parse', 'HEAD']);
+    const headBeforeStr = headBeforeMerge.stdout.trim();
 
-    if (mergeResult.exitCode !== 0) {
-      const conflicts = extractConflicts(
-        [mergeResult.stdout, mergeResult.stderr].filter(Boolean).join('\n'),
-      );
-      await gitCommand(['-C', this.integrationWorktree, 'merge', '--abort']).catch(() => {});
+    const mergeStrategy = this.config?.mergeStrategy ?? 'squash';
+    let mergeResult;
 
-      return {
-        success: false,
-        type: 'conflict',
-        files: conflicts.length > 0 ? conflicts : undefined,
-      };
+    if (mergeStrategy === 'squash') {
+      // Squash: merge --squash then commit
+      mergeResult = await gitCommand([
+        '-C',
+        this.integrationWorktree,
+        'merge',
+        '--squash',
+        job.branch,
+      ]);
+
+      if (mergeResult.exitCode !== 0) {
+        const conflicts = extractConflicts(
+          [mergeResult.stdout, mergeResult.stderr].filter(Boolean).join('\n'),
+        );
+        await rollbackMerge(this.integrationWorktree);
+
+        return {
+          success: false,
+          type: 'conflict',
+          files: conflicts.length > 0 ? conflicts : undefined,
+        };
+      }
+
+      // Commit the squashed changes
+      const commitResult = await gitCommand([
+        '-C',
+        this.integrationWorktree,
+        'commit',
+        '-m',
+        `Merge ${job.name}`,
+      ]);
+
+      if (commitResult.exitCode !== 0) {
+        await rollbackMerge(this.integrationWorktree);
+        return {
+          success: false,
+          type: 'test_failure',
+          output: `Failed to commit squashed merge: ${commitResult.stderr || commitResult.stdout}`,
+        };
+      }
+    } else if (mergeStrategy === 'ff-only') {
+      // FF-only in merge train context: treat as squash since integration branch accumulates merges
+      mergeResult = await gitCommand([
+        '-C',
+        this.integrationWorktree,
+        'merge',
+        '--squash',
+        job.branch,
+      ]);
+
+      if (mergeResult.exitCode !== 0) {
+        const conflicts = extractConflicts(
+          [mergeResult.stdout, mergeResult.stderr].filter(Boolean).join('\n'),
+        );
+        await rollbackMerge(this.integrationWorktree);
+
+        return {
+          success: false,
+          type: 'conflict',
+          files: conflicts.length > 0 ? conflicts : undefined,
+        };
+      }
+
+      // Commit the squashed changes
+      const commitResult = await gitCommand([
+        '-C',
+        this.integrationWorktree,
+        'commit',
+        '-m',
+        `Merge ${job.name}`,
+      ]);
+
+      if (commitResult.exitCode !== 0) {
+        await rollbackMerge(this.integrationWorktree);
+        return {
+          success: false,
+          type: 'test_failure',
+          output: `Failed to commit squashed merge: ${commitResult.stderr || commitResult.stdout}`,
+        };
+      }
+    } else {
+      // Merge: standard merge with --no-ff to create merge commit
+      mergeResult = await gitCommand([
+        '-C',
+        this.integrationWorktree,
+        'merge',
+        '--no-ff',
+        '-m',
+        `Merge ${job.name}`,
+        job.branch,
+      ]);
+
+      if (mergeResult.exitCode !== 0) {
+        const conflicts = extractConflicts(
+          [mergeResult.stdout, mergeResult.stderr].filter(Boolean).join('\n'),
+        );
+        await rollbackMerge(this.integrationWorktree);
+
+        return {
+          success: false,
+          type: 'conflict',
+          files: conflicts.length > 0 ? conflicts : undefined,
+        };
+      }
     }
 
     const testCommand = this.config?.testCommand
@@ -179,7 +281,7 @@ export class MergeTrain {
     const testResult = await runTestCommand(this.integrationWorktree, testCommand, timeoutMs);
 
     if (testResult.timedOut) {
-      await rollbackMerge(this.integrationWorktree);
+      await rollbackMergeToHead(this.integrationWorktree, headBeforeStr);
       return {
         success: false,
         type: 'test_failure',
@@ -188,7 +290,7 @@ export class MergeTrain {
     }
 
     if (!testResult.success) {
-      await rollbackMerge(this.integrationWorktree);
+      await rollbackMergeToHead(this.integrationWorktree, headBeforeStr);
       return {
         success: false,
         type: 'test_failure',

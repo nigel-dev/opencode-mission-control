@@ -431,11 +431,11 @@ describe('orchestration integration', () => {
     expect(indexText).toContain('bug-fixed');
     expect(featureText).toContain('featureEnabled');
 
-    const mergeCount = await mustExec(
-      ['git', 'rev-list', '--count', '--merges', `${finalPlan!.baseCommit}..${finalPlan!.integrationBranch}`],
+    const commitCount = await mustExec(
+      ['git', 'rev-list', '--count', `${finalPlan!.baseCommit}..${finalPlan!.integrationBranch}`],
       activeRepo!.path,
     );
-    expect(Number(mergeCount)).toBeGreaterThanOrEqual(3);
+    expect(Number(commitCount)).toBeGreaterThanOrEqual(3);
 
     expect(gh.prCreate).toHaveBeenCalledTimes(1);
     const ghCommand = gh.prCreate.mock.calls[0][0] as string[];

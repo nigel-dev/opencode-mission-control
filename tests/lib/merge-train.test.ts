@@ -122,7 +122,7 @@ describe('MergeTrain', () => {
     await createBranchCommit(testRepo.repoDir, 'feature-a', 'a.txt', 'a\n');
     await createBranchCommit(testRepo.repoDir, 'feature-b', 'b.txt', 'b\n');
 
-    const train = new MergeTrain(testRepo.integrationWorktree);
+    const train = new MergeTrain(testRepo.integrationWorktree, { mergeStrategy: 'merge' });
     train.enqueue(makeJob('feature-a'));
     train.enqueue(makeJob('feature-b'));
 

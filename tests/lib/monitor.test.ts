@@ -12,15 +12,21 @@ mock.module('../../src/lib/tmux', () => ({
   captureExitStatus: mock(),
 }));
 
+mock.module('../../src/lib/reports', () => ({
+  readReport: mock(),
+}));
+
 const { JobMonitor } = await import('../../src/lib/monitor');
 const jobState = await import('../../src/lib/job-state');
 const tmux = await import('../../src/lib/tmux');
+const reports = await import('../../src/lib/reports');
 
 const mockGetRunningJobs = jobState.getRunningJobs as Mock<any>;
 const mockUpdateJob = jobState.updateJob as Mock<any>;
 const mockIsPaneRunning = tmux.isPaneRunning as Mock<any>;
 const mockCapturePane = (tmux as any).capturePane as Mock<any>;
 const mockCaptureExitStatus = (tmux as any).captureExitStatus as Mock<any>;
+const mockReadReport = reports.readReport as Mock<any>;
 
 const IDLE_OUTPUT = 'Some response\n  ctrl+t variants  tab agents  ctrl+p commands\n';
 const STREAMING_OUTPUT = 'Working...\n  ⬝⬝⬝⬝  esc interrupt  ctrl+p commands\n';
@@ -32,6 +38,8 @@ describe('JobMonitor', () => {
     mockIsPaneRunning.mockReset();
     mockCapturePane.mockReset();
     mockCaptureExitStatus.mockReset();
+    mockReadReport.mockReset();
+    mockReadReport.mockResolvedValue(null);
   });
 
   describe('constructor', () => {

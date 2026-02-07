@@ -132,6 +132,20 @@ mock.module('../../src/lib/plan-copier', () => ({
   })),
 }));
 
+mock.module('../../src/lib/prompt-file', () => ({
+  writePromptFile: vi.fn(async (worktreePath: string, _prompt: string) => `${worktreePath}/.mc-prompt.txt`),
+  cleanupPromptFile: vi.fn(() => {}),
+  buildPromptFileCommand: vi.fn((filePath: string) => `opencode --prompt "$(cat '${filePath}')"`),
+}));
+
+mock.module('../../src/lib/worktree-setup', () => ({
+  resolvePostCreateHook: vi.fn((_globalConfig: any, perJob: any) => ({
+    symlinkDirs: ['.opencode', ...(perJob?.symlinkDirs ?? [])],
+    copyFiles: perJob?.copyFiles ?? [],
+    commands: perJob?.commands ?? [],
+  })),
+}));
+
 mock.module('crypto', () => {
   let counter = 0;
   return {
@@ -147,6 +161,8 @@ const jobState = await import('../../src/lib/job-state');
 const tmux = await import('../../src/lib/tmux');
 const worktree = await import('../../src/lib/worktree');
 const planCopier = await import('../../src/lib/plan-copier');
+const promptFile = await import('../../src/lib/prompt-file');
+const worktreeSetup = await import('../../src/lib/worktree-setup');
 const omoMod = await import('../../src/lib/omo');
 const configMod = await import('../../src/lib/config');
 
@@ -423,11 +439,11 @@ describe('Workflow 2: OMO mode launch with plans', () => {
       '/tmp/mc-worktrees/mc-plan-job/.sisyphus/plans',
     );
 
-    // Verify opencode command was sent with plan reference
-    expect(mockSendKeys).toHaveBeenCalledWith(
-      'mc-plan-job',
-      expect.stringContaining('my-plan.md'),
-    );
+     // Verify /start-work command was sent for plan mode
+     expect(mockSendKeys).toHaveBeenCalledWith(
+       'mc-plan-job',
+       expect.stringContaining('/start-work'),
+     );
 
     // Verify job state has plan mode
     const jobs = getJobs();
