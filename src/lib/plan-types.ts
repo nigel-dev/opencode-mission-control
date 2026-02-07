@@ -28,6 +28,7 @@ export interface PlanSpec {
   id: string;
   name: string;
   mode: 'autopilot' | 'copilot' | 'supervisor';
+  placement?: 'session' | 'window';
   status: PlanStatus;
   jobs: JobSpec[];
   integrationBranch: string;

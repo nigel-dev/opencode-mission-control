@@ -138,6 +138,7 @@ export class Orchestrator {
   private isRunning = false;
   private isReconciling = false;
   private activePlanId: string | null = null;
+  private planPlacement: 'session' | 'window' | null = null;
   private subscriptionsActive = false;
   private checkpoint: CheckpointType | null = null;
   private toastCallback: ToastCallback | null = null;
@@ -239,6 +240,7 @@ export class Orchestrator {
     await savePlan(plan);
 
     this.activePlanId = plan.id;
+    this.planPlacement = spec.placement ?? null;
     this.mergeTrain = new MergeTrain(plan.integrationWorktree, this.getMergeTrainConfig());
     this.subscribeToMonitorEvents();
     this.startReconciler();
@@ -487,7 +489,7 @@ export class Orchestrator {
       throw new Error('No active plan for job launch');
     }
 
-    const placement = this.config.defaultPlacement ?? 'session';
+    const placement = this.planPlacement ?? this.config.defaultPlacement ?? 'session';
     const branch = job.branch ?? `mc/${job.name}`;
     const sanitizedName = job.name.replace(/[^a-zA-Z0-9_-]/g, '-');
     const tmuxSessionName = `mc-${sanitizedName}`;
@@ -529,7 +531,11 @@ export class Orchestrator {
         });
       }
 
-      const launchCommand = `opencode --prompt '${job.prompt.replace(/'/g, "'\\''")}'`;
+      const autoCommitSuffix = (this.config.autoCommit !== false)
+        ? `\n\nIMPORTANT: When you have completed ALL of your work, you MUST commit your changes before finishing. Stage all modified and new files, then create a commit with a conventional commit message (e.g. "feat: ...", "fix: ...", "docs: ...", "refactor: ...", "chore: ..."). Do NOT skip this step.`
+        : '';
+      const jobPrompt = job.prompt + autoCommitSuffix;
+      const launchCommand = `opencode --prompt '${jobPrompt.replace(/'/g, "'\\''")}'`;
       await setPaneDiedHook(tmuxTarget, `run-shell "echo '${job.id}' >> .mission-control/completed-jobs.log"`);
       await sendKeys(tmuxTarget, launchCommand);
       await sendKeys(tmuxTarget, 'Enter');
@@ -674,6 +680,7 @@ export class Orchestrator {
     this.checkpoint = null;
 
     this.activePlanId = plan.id;
+    this.planPlacement = plan.placement ?? null;
     this.mergeTrain = new MergeTrain(plan.integrationWorktree!, this.getMergeTrainConfig());
 
     const runningJobs = (await getRunningJobs()).filter((job) => job.planId === plan.id);

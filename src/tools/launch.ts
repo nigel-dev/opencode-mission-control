@@ -23,12 +23,20 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+const AUTO_COMMIT_SUFFIX = `
+
+IMPORTANT: When you have completed ALL of your work, you MUST commit your changes before finishing. Stage all modified and new files, then create a commit with a conventional commit message (e.g. "feat: ...", "fix: ...", "docs: ...", "refactor: ...", "chore: ..."). Do NOT skip this step.`;
+
 function buildLaunchCommand(opts: {
   prompt: string;
   mode: string;
   planFile?: string;
+  autoCommit?: boolean;
 }): string {
-  const escapedPrompt = opts.prompt.replace(/'/g, "'\\''");
+  const prompt = opts.autoCommit !== false
+    ? opts.prompt + AUTO_COMMIT_SUFFIX
+    : opts.prompt;
+  const escapedPrompt = prompt.replace(/'/g, "'\\''");
 
   switch (opts.mode) {
     case 'plan':
@@ -211,6 +219,7 @@ export const mc_launch: ToolDefinition = tool({
         prompt: args.prompt,
         mode,
         planFile: args.planFile,
+        autoCommit: config.autoCommit,
       });
       await sendKeys(tmuxTarget, launchCmd);
       await sendKeys(tmuxTarget, 'Enter');

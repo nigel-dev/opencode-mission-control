@@ -14,6 +14,7 @@ export interface MCConfig {
   idleThreshold: number;
   worktreeBasePath: string;
   maxParallel?: number;
+  autoCommit?: boolean;
   testCommand?: string;
   testTimeout?: number;
   worktreeSetup?: WorktreeSetup;
@@ -29,6 +30,7 @@ const DEFAULT_CONFIG: MCConfig = {
   idleThreshold: 300000,
   worktreeBasePath: join(homedir(), '.local', 'share', 'opencode-mission-control'),
   maxParallel: 3,
+  autoCommit: true,
   testTimeout: 600000,
   omo: {
     enabled: false,

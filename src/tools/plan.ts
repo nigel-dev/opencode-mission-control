@@ -44,6 +44,10 @@ export const mc_plan: ToolDefinition = tool({
       .enum(['autopilot', 'copilot', 'supervisor'])
       .optional()
       .describe('Execution mode (default: autopilot)'),
+    placement: tool.schema
+      .enum(['session', 'window'])
+      .optional()
+      .describe('tmux placement for jobs: session (default) or window in current session'),
   },
   async execute(args) {
     const mode = args.mode ?? 'autopilot';
@@ -103,6 +107,7 @@ export const mc_plan: ToolDefinition = tool({
       id: planId,
       name: args.name,
       mode,
+      placement: args.placement,
       status: 'pending',
       jobs: jobSpecs,
       integrationBranch: `mc/integration/${planId.slice(0, 8)}`,
