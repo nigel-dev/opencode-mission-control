@@ -1,8 +1,8 @@
 import { tool, type ToolDefinition } from '@opencode-ai/plugin';
 import { loadPlan, savePlan } from '../lib/plan-state';
 import { Orchestrator } from '../lib/orchestrator';
+import { getSharedMonitor } from '../lib/orchestrator-singleton';
 import type { CheckpointType } from '../lib/plan-types';
-import { JobMonitor } from '../lib/monitor';
 import { loadConfig } from '../lib/config';
 
 export const mc_plan_approve: ToolDefinition = tool({
@@ -27,8 +27,7 @@ export const mc_plan_approve: ToolDefinition = tool({
       await savePlan(plan);
 
       const config = await loadConfig();
-      const monitor = new JobMonitor();
-      const orchestrator = new Orchestrator(monitor, config);
+      const orchestrator = new Orchestrator(getSharedMonitor(), config);
       await orchestrator.resumePlan();
 
       return [
@@ -51,8 +50,7 @@ export const mc_plan_approve: ToolDefinition = tool({
     await savePlan(plan);
 
     const config = await loadConfig();
-    const monitor = new JobMonitor();
-    const orchestrator = new Orchestrator(monitor, config);
+    const orchestrator = new Orchestrator(getSharedMonitor(), config);
     await orchestrator.resumePlan();
 
     return [

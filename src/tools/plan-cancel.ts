@@ -1,7 +1,7 @@
 import { tool, type ToolDefinition } from '@opencode-ai/plugin';
 import { loadPlan } from '../lib/plan-state';
 import { Orchestrator } from '../lib/orchestrator';
-import { JobMonitor } from '../lib/monitor';
+import { getSharedMonitor } from '../lib/orchestrator-singleton';
 import { loadConfig } from '../lib/config';
 
 export const mc_plan_cancel: ToolDefinition = tool({
@@ -17,8 +17,7 @@ export const mc_plan_cancel: ToolDefinition = tool({
     const planId = plan.id;
 
     const config = await loadConfig();
-    const monitor = new JobMonitor();
-    const orchestrator = new Orchestrator(monitor, config);
+    const orchestrator = new Orchestrator(getSharedMonitor(), config);
     await orchestrator.cancelPlan();
 
     return [
