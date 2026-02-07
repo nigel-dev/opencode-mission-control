@@ -1,50 +1,105 @@
+import type { PluginInput } from '@opencode-ai/plugin';
 import type { Job } from '../lib/job-state';
+import { readReport } from '../lib/reports';
 
-/**
- * JobMonitor interface for event-based job monitoring
- * This will be implemented in src/lib/monitor.ts
- */
-export interface JobMonitor {
-  on(event: 'complete' | 'failed', handler: (job: Job) => void): void;
-  off?(event: 'complete' | 'failed', handler: (job: Job) => void): void;
+type Client = PluginInput['client'];
+type NotificationEvent = 'complete' | 'failed' | 'blocked' | 'needs_review';
+
+interface JobMonitorLike {
+  on(event: NotificationEvent, handler: (job: Job) => void): void;
 }
 
-/**
- * Set up toast notifications for job completion and failure events
- * Subscribes to monitor events and displays notifications in the terminal
- *
- * @param monitor - JobMonitor instance to subscribe to
- */
-export function setupNotifications(monitor: JobMonitor): void {
-  // Handle job completion
-  monitor.on('complete', (job: Job) => {
-    const message = `✓ Job '${job.name}' completed successfully`;
-    console.log(`\n${message}\n`);
-  });
-
-  // Handle job failure
-  monitor.on('failed', (job: Job) => {
-    const exitCode = job.exitCode ?? 'unknown';
-    const message = `✗ Job '${job.name}' failed (exit code ${exitCode})`;
-    console.log(`\n${message}\n`);
-  });
+interface SetupNotificationsOptions {
+  client: Client;
+  monitor: JobMonitorLike;
+  getActiveSessionID: () => Promise<string | undefined>;
 }
 
-/**
- * Tear down notifications by unsubscribing from monitor events
- * Optional cleanup function for when notifications are no longer needed
- *
- * @param monitor - JobMonitor instance to unsubscribe from
- * @param completeHandler - The complete event handler to remove
- * @param failedHandler - The failed event handler to remove
- */
-export function teardownNotifications(
-  monitor: JobMonitor,
-  completeHandler: (job: Job) => void,
-  failedHandler: (job: Job) => void
-): void {
-  if (monitor.off) {
-    monitor.off('complete', completeHandler);
-    monitor.off('failed', failedHandler);
+function formatDuration(createdAt: string): string {
+  const start = Date.parse(createdAt);
+  if (Number.isNaN(start)) {
+    return 'unknown duration';
   }
+
+  const totalSeconds = Math.max(0, Math.floor((Date.now() - start) / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  if (hours > 0) {
+    return `${hours}h ${minutes}m ${seconds}s`;
+  }
+  if (minutes > 0) {
+    return `${minutes}m ${seconds}s`;
+  }
+  return `${seconds}s`;
+}
+
+async function sendMessage(client: Client, sessionID: string, text: string): Promise<void> {
+  await client.session.prompt({
+    path: { id: sessionID },
+    body: {
+      noReply: true,
+      parts: [{ type: 'text' as const, text, ignored: true }],
+    },
+  });
+}
+
+function getDedupKey(event: NotificationEvent, job: Job, reportTimestamp?: string): string {
+  if (event === 'complete' || event === 'failed') {
+    return `${event}:${job.id}:${job.completedAt ?? ''}`;
+  }
+  return `${event}:${job.id}:${reportTimestamp ?? ''}`;
+}
+
+export function setupNotifications(options: SetupNotificationsOptions): void {
+  const { client, monitor, getActiveSessionID } = options;
+  const sent = new Set<string>();
+
+  const notify = async (event: NotificationEvent, job: Job): Promise<void> => {
+    const report = event === 'blocked' || event === 'needs_review' ? await readReport(job.id) : null;
+    const dedupKey = getDedupKey(event, job, report?.timestamp);
+    if (sent.has(dedupKey)) {
+      return;
+    }
+
+    const sessionID = await getActiveSessionID();
+    if (!sessionID) {
+      return;
+    }
+
+    const duration = formatDuration(job.createdAt);
+    let message = '';
+
+    if (event === 'complete') {
+      message = `🟢 Job '${job.name}' completed in ${duration}. Branch: ${job.branch}. Next: run mc_diff(name: '${job.name}') to review changes, then mc_pr or mc_merge.`;
+    } else if (event === 'failed') {
+      message = `🔴 Job '${job.name}' failed after ${duration}. Branch: ${job.branch}. Next: run mc_capture(name: '${job.name}') for logs, then mc_attach(name: '${job.name}') to investigate.`;
+    } else if (event === 'blocked') {
+      const detail = report?.message ? ` Agent says: ${report.message}` : '';
+      message = `⚠️ Job '${job.name}' is blocked (${duration} elapsed). Branch: ${job.branch}.${detail} Next: run mc_status(name: '${job.name}') and unblock, then continue or relaunch.`;
+    } else {
+      const detail = report?.message ? ` Reviewer note: ${report.message}` : '';
+      message = `👀 Job '${job.name}' needs review (${duration} elapsed). Branch: ${job.branch}.${detail} Next: run mc_diff(name: '${job.name}') and mc_capture(name: '${job.name}') before approving next steps.`;
+    }
+
+    await sendMessage(client, sessionID, message);
+    sent.add(dedupKey);
+  };
+
+  monitor.on('complete', (job) => {
+    void notify('complete', job).catch(() => {});
+  });
+
+  monitor.on('failed', (job) => {
+    void notify('failed', job).catch(() => {});
+  });
+
+  monitor.on('blocked', (job) => {
+    void notify('blocked', job).catch(() => {});
+  });
+
+  monitor.on('needs_review', (job) => {
+    void notify('needs_review', job).catch(() => {});
+  });
 }

@@ -2,6 +2,7 @@ import type { Plugin } from '@opencode-ai/plugin';
 import { JobMonitor } from './lib/monitor';
 import { getCompactionContext } from './hooks/compaction';
 import { shouldShowAutoStatus, getAutoStatusMessage } from './hooks/auto-status';
+import { setupNotifications } from './hooks/notifications';
 import { registerCommands, createCommandHandler } from './commands';
 import { mc_launch } from './tools/launch';
 import { mc_jobs } from './tools/jobs';
@@ -19,9 +20,102 @@ import { mc_plan_status } from './tools/plan-status';
 import { mc_plan_cancel } from './tools/plan-cancel';
 import { mc_plan_approve } from './tools/plan-approve';
 import { mc_report } from './tools/report';
+import { mc_overview } from './tools/overview';
+
+interface SessionWithID {
+  id?: string;
+}
+
+function extractSessionIDFromEvent(event: unknown): string | undefined {
+  if (!event || typeof event !== 'object') {
+    return undefined;
+  }
+
+  const candidate = event as {
+    sessionID?: string;
+    sessionId?: string;
+    session?: SessionWithID;
+  };
+
+  if (typeof candidate.sessionID === 'string' && candidate.sessionID.length > 0) {
+    return candidate.sessionID;
+  }
+
+  if (typeof candidate.sessionId === 'string' && candidate.sessionId.length > 0) {
+    return candidate.sessionId;
+  }
+
+  if (
+    candidate.session &&
+    typeof candidate.session.id === 'string' &&
+    candidate.session.id.length > 0
+  ) {
+    return candidate.session.id;
+  }
+
+  return undefined;
+}
+
+function extractSessionIDFromListResult(listResult: unknown): string | undefined {
+  const sources: unknown[] = [];
+
+  if (Array.isArray(listResult)) {
+    sources.push(...listResult);
+  } else if (listResult && typeof listResult === 'object') {
+    const container = listResult as {
+      sessions?: unknown;
+      items?: unknown;
+      data?: unknown;
+    };
+
+    if (Array.isArray(container.sessions)) {
+      sources.push(...container.sessions);
+    }
+    if (Array.isArray(container.items)) {
+      sources.push(...container.items);
+    }
+    if (Array.isArray(container.data)) {
+      sources.push(...container.data);
+    }
+  }
+
+  for (const source of sources) {
+    if (!source || typeof source !== 'object') {
+      continue;
+    }
+    const session = source as SessionWithID;
+    if (typeof session.id === 'string' && session.id.length > 0) {
+      return session.id;
+    }
+  }
+
+  return undefined;
+}
 
 export const MissionControl: Plugin = async ({ client }) => {
   const monitor = new JobMonitor();
+  let activeSessionID: string | undefined;
+
+  const getActiveSessionID = async (): Promise<string | undefined> => {
+    if (activeSessionID) {
+      return activeSessionID;
+    }
+
+    try {
+      const listResult = await client.session.list();
+      activeSessionID = extractSessionIDFromListResult(listResult);
+      return activeSessionID;
+    } catch {
+      return undefined;
+    }
+  };
+
+  setupNotifications({
+    client,
+    monitor,
+    getActiveSessionID,
+  });
+
   monitor.start();
 
   return {
@@ -46,8 +140,14 @@ export const MissionControl: Plugin = async ({ client }) => {
       mc_plan_cancel,
       mc_plan_approve,
       mc_report,
+      mc_overview,
     },
     event: async ({ event }) => {
+      const sessionID = extractSessionIDFromEvent(event);
+      if (sessionID) {
+        activeSessionID = sessionID;
+      }
+
       if (event.type === 'session.idle') {
         const shouldShow = await shouldShowAutoStatus();
         if (shouldShow) {

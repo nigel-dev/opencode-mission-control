@@ -27,15 +27,20 @@ const AUTO_COMMIT_SUFFIX = `
 
 IMPORTANT: When you have completed ALL of your work, you MUST commit your changes before finishing. Stage all modified and new files, then create a commit with a conventional commit message (e.g. "feat: ...", "fix: ...", "docs: ...", "refactor: ...", "chore: ..."). Do NOT skip this step.`;
 
+const MC_REPORT_SUFFIX = `
+
+STATUS REPORTING: Use the mc_report tool to keep Mission Control informed of your progress. Call mc_report with status "working" and a progress percentage (0-100) at key milestones, "blocked" if you encounter an issue you cannot resolve, "needs_review" when your work is complete and ready for human review. Report at least once when starting and once when finishing.`;
+
 function buildLaunchCommand(opts: {
   prompt: string;
   mode: string;
   planFile?: string;
   autoCommit?: boolean;
 }): string {
-  const prompt = opts.autoCommit !== false
-    ? opts.prompt + AUTO_COMMIT_SUFFIX
-    : opts.prompt;
+  let prompt = opts.prompt + MC_REPORT_SUFFIX;
+  if (opts.autoCommit !== false) {
+    prompt += AUTO_COMMIT_SUFFIX;
+  }
   const escapedPrompt = prompt.replace(/'/g, "'\\''");
 
   switch (opts.mode) {

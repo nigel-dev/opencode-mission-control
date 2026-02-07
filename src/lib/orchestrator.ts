@@ -531,10 +531,11 @@ export class Orchestrator {
         });
       }
 
+      const mcReportSuffix = `\n\nSTATUS REPORTING: Use the mc_report tool to keep Mission Control informed of your progress. Call mc_report with status "working" and a progress percentage (0-100) at key milestones, "blocked" if you encounter an issue you cannot resolve, "needs_review" when your work is complete and ready for human review. Report at least once when starting and once when finishing.`;
       const autoCommitSuffix = (this.config.autoCommit !== false)
         ? `\n\nIMPORTANT: When you have completed ALL of your work, you MUST commit your changes before finishing. Stage all modified and new files, then create a commit with a conventional commit message (e.g. "feat: ...", "fix: ...", "docs: ...", "refactor: ...", "chore: ..."). Do NOT skip this step.`
         : '';
-      const jobPrompt = job.prompt + autoCommitSuffix;
+      const jobPrompt = job.prompt + mcReportSuffix + autoCommitSuffix;
       const launchCommand = `opencode --prompt '${jobPrompt.replace(/'/g, "'\\''")}'`;
       await setPaneDiedHook(tmuxTarget, `run-shell "echo '${job.id}' >> .mission-control/completed-jobs.log"`);
       await sendKeys(tmuxTarget, launchCommand);

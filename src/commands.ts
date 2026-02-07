@@ -33,6 +33,10 @@ export function registerCommands(config: any) {
     template: '',
     description: 'List all Mission Control jobs and their status',
   };
+  config.command['mc'] = {
+    template: '',
+    description: 'Show Mission Control dashboard overview',
+  };
   config.command['mc-launch'] = {
     template:
       'Launch a new Mission Control parallel coding session with these instructions: $ARGUMENTS',
@@ -59,7 +63,7 @@ export function createCommandHandler(client: Client) {
     _output: { parts: any[] }
   ) => {
     // Only handle our direct commands (not mc-launch which is template-based)
-    const ourCommands = ['mc-jobs', 'mc-status', 'mc-attach', 'mc-cleanup'];
+    const ourCommands = ['mc', 'mc-jobs', 'mc-status', 'mc-attach', 'mc-cleanup'];
     if (!ourCommands.includes(input.command)) return;
 
     try {
@@ -67,6 +71,11 @@ export function createCommandHandler(client: Client) {
       const args = input.arguments.trim();
 
       switch (input.command) {
+        case 'mc': {
+          const { mc_overview } = await import('./tools/overview');
+          result = await mc_overview.execute({}, dummyContext);
+          break;
+        }
         case 'mc-jobs': {
           const { mc_jobs } = await import('./tools/jobs');
           result = await mc_jobs.execute({}, dummyContext);
