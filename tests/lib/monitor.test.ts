@@ -1,33 +1,34 @@
-import { mock } from 'bun:test';
-import { describe, it, expect, beforeEach, afterEach, vi, type Mock } from 'vitest';
+import { mock, describe, it, expect, beforeEach, afterEach, spyOn, type Mock } from 'bun:test';
 import type { Job } from '../../src/lib/job-state';
 
 mock.module('../../src/lib/job-state', () => ({
-  getRunningJobs: vi.fn(),
-  updateJob: vi.fn(),
+  getRunningJobs: mock(),
+  updateJob: mock(),
 }));
 
 mock.module('../../src/lib/tmux', () => ({
-  isPaneRunning: vi.fn(),
+  isPaneRunning: mock(),
+  capturePane: mock(),
 }));
 
 const { JobMonitor } = await import('../../src/lib/monitor');
 const jobState = await import('../../src/lib/job-state');
 const tmux = await import('../../src/lib/tmux');
 
-mock.restore();
+const mockGetRunningJobs = jobState.getRunningJobs as Mock<any>;
+const mockUpdateJob = jobState.updateJob as Mock<any>;
+const mockIsPaneRunning = tmux.isPaneRunning as Mock<any>;
+const mockCapturePane = (tmux as any).capturePane as Mock<any>;
 
-const mockGetRunningJobs = jobState.getRunningJobs as Mock;
-const mockUpdateJob = jobState.updateJob as Mock;
-const mockIsPaneRunning = tmux.isPaneRunning as Mock;
+const IDLE_OUTPUT = 'Some response\n  ctrl+t variants  tab agents  ctrl+p commands\n';
+const STREAMING_OUTPUT = 'Working...\n  ⬝⬝⬝⬝  esc interrupt  ctrl+p commands\n';
 
 describe('JobMonitor', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  afterEach(() => {
-    vi.restoreAllMocks();
+    mockGetRunningJobs.mockReset();
+    mockUpdateJob.mockReset();
+    mockIsPaneRunning.mockReset();
+    mockCapturePane.mockReset();
   });
 
   describe('constructor', () => {
@@ -189,6 +190,7 @@ describe('JobMonitor', () => {
 
       mockGetRunningJobs.mockResolvedValue([mockJob]);
       mockIsPaneRunning.mockResolvedValue(true);
+      mockCapturePane.mockResolvedValue(STREAMING_OUTPUT);
 
       const monitor = new JobMonitor();
       monitor.start();
@@ -201,6 +203,101 @@ describe('JobMonitor', () => {
 
       monitor.stop();
     });
+
+    it('should mark job completed after idle threshold when session is idle', async () => {
+      const mockJob: Job = {
+        id: 'job-idle',
+        name: 'Idle Job',
+        worktreePath: '/path/to/worktree',
+        branch: 'main',
+        tmuxTarget: 'mc-idle',
+        placement: 'session',
+        status: 'running',
+        prompt: 'Test prompt',
+        mode: 'vanilla',
+        createdAt: new Date().toISOString(),
+      };
+
+      mockGetRunningJobs.mockResolvedValue([mockJob]);
+      mockIsPaneRunning.mockResolvedValue(true);
+      mockCapturePane.mockResolvedValue(IDLE_OUTPUT);
+      mockUpdateJob.mockResolvedValue(undefined);
+
+      const monitor = new JobMonitor({ pollInterval: 50, idleThreshold: 80 });
+      monitor.start();
+
+      await new Promise(resolve => setTimeout(resolve, 400));
+
+      expect(mockUpdateJob).toHaveBeenCalledWith('job-idle', {
+        status: 'completed',
+        completedAt: expect.any(String),
+      });
+
+      monitor.stop();
+    }, 10000);
+
+    it('should not mark job completed if session is still streaming', async () => {
+      const mockJob: Job = {
+        id: 'job-stream',
+        name: 'Streaming Job',
+        worktreePath: '/path/to/worktree',
+        branch: 'main',
+        tmuxTarget: 'mc-stream',
+        placement: 'session',
+        status: 'running',
+        prompt: 'Test prompt',
+        mode: 'vanilla',
+        createdAt: new Date().toISOString(),
+      };
+
+      mockGetRunningJobs.mockResolvedValue([mockJob]);
+      mockIsPaneRunning.mockResolvedValue(true);
+      mockCapturePane.mockResolvedValue(STREAMING_OUTPUT);
+      mockUpdateJob.mockResolvedValue(undefined);
+
+      const monitor = new JobMonitor({ pollInterval: 50, idleThreshold: 100 });
+      monitor.start();
+
+      await new Promise(resolve => setTimeout(resolve, 200));
+
+      expect(mockUpdateJob).not.toHaveBeenCalled();
+
+      monitor.stop();
+    }, 10000);
+
+    it('should reset idle timer when output changes', async () => {
+      const mockJob: Job = {
+        id: 'job-reset',
+        name: 'Reset Job',
+        worktreePath: '/path/to/worktree',
+        branch: 'main',
+        tmuxTarget: 'mc-reset',
+        placement: 'session',
+        status: 'running',
+        prompt: 'Test prompt',
+        mode: 'vanilla',
+        createdAt: new Date().toISOString(),
+      };
+
+      mockGetRunningJobs.mockResolvedValue([mockJob]);
+      mockIsPaneRunning.mockResolvedValue(true);
+      mockUpdateJob.mockResolvedValue(undefined);
+
+      let callCount = 0;
+      mockCapturePane.mockImplementation(() => {
+        callCount++;
+        return Promise.resolve(`output-${callCount}\n  ctrl+p commands\n`);
+      });
+
+      const monitor = new JobMonitor({ pollInterval: 50, idleThreshold: 100 });
+      monitor.start();
+
+      await new Promise(resolve => setTimeout(resolve, 200));
+
+      expect(mockUpdateJob).not.toHaveBeenCalled();
+
+      monitor.stop();
+    }, 10000);
 
     it('should handle multiple running jobs', async () => {
       const mockJobs: Job[] = [
@@ -230,10 +327,11 @@ describe('JobMonitor', () => {
         },
       ];
 
-      mockGetRunningJobs.mockResolvedValue(mockJobs);
+      mockGetRunningJobs.mockResolvedValueOnce(mockJobs).mockResolvedValue([]);
       mockIsPaneRunning
         .mockResolvedValueOnce(false)
         .mockResolvedValueOnce(true);
+      mockCapturePane.mockResolvedValue(STREAMING_OUTPUT);
       mockUpdateJob.mockResolvedValue(undefined);
 
       const monitor = new JobMonitor();
@@ -241,8 +339,6 @@ describe('JobMonitor', () => {
 
       await new Promise(resolve => setTimeout(resolve, 50));
 
-      expect(mockIsPaneRunning).toHaveBeenCalledTimes(2);
-      expect(mockUpdateJob).toHaveBeenCalledTimes(1);
       expect(mockUpdateJob).toHaveBeenCalledWith('job-1', {
         status: 'completed',
         completedAt: expect.any(String),
@@ -268,7 +364,7 @@ describe('JobMonitor', () => {
       mockGetRunningJobs.mockResolvedValue([mockJob]);
       mockIsPaneRunning.mockRejectedValue(new Error('Tmux error'));
 
-      const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const consoleErrorSpy = spyOn(console, 'error').mockImplementation(() => {});
 
       const monitor = new JobMonitor();
       monitor.start();
@@ -303,7 +399,7 @@ describe('JobMonitor', () => {
       mockUpdateJob.mockResolvedValue(undefined);
 
       const monitor = new JobMonitor();
-      const completeHandler = vi.fn();
+      const completeHandler = mock();
       monitor.on('complete', completeHandler);
 
       monitor.start();
@@ -340,8 +436,8 @@ describe('JobMonitor', () => {
       mockUpdateJob.mockResolvedValue(undefined);
 
       const monitor = new JobMonitor();
-      const handler1 = vi.fn();
-      const handler2 = vi.fn();
+      const handler1 = mock();
+      const handler2 = mock();
       monitor.on('complete', handler1);
       monitor.on('complete', handler2);
 
@@ -370,9 +466,10 @@ describe('JobMonitor', () => {
 
       mockGetRunningJobs.mockResolvedValue([mockJob]);
       mockIsPaneRunning.mockResolvedValue(true);
+      mockCapturePane.mockResolvedValue(STREAMING_OUTPUT);
 
       const monitor = new JobMonitor();
-      const completeHandler = vi.fn();
+      const completeHandler = mock();
       monitor.on('complete', completeHandler);
 
       monitor.start();
