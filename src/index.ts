@@ -2,6 +2,7 @@ import type { Plugin } from '@opencode-ai/plugin';
 import { JobMonitor } from './lib/monitor';
 import { getCompactionContext } from './hooks/compaction';
 import { shouldShowAutoStatus, getAutoStatusMessage } from './hooks/auto-status';
+import { registerCommands, createCommandHandler } from './commands';
 import { mc_launch } from './tools/launch';
 import { mc_jobs } from './tools/jobs';
 import { mc_status } from './tools/status';
@@ -14,11 +15,15 @@ import { mc_kill } from './tools/kill';
 import { mc_attach } from './tools/attach';
 import { mc_capture } from './tools/capture';
 
-export const MissionControl: Plugin = async (_input) => {
+export const MissionControl: Plugin = async ({ client }) => {
   const monitor = new JobMonitor();
   monitor.start();
 
   return {
+    config: async (configInput: any) => {
+      registerCommands(configInput);
+    },
+    'command.execute.before': createCommandHandler(client),
     tool: {
       mc_launch,
       mc_jobs,

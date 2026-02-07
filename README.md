@@ -62,6 +62,18 @@ Add it to your `opencode.json`:
 **AI**: "It's still running. Here's the latest terminal output from that session."
 *AI calls `mc_capture` to show progress*
 
+### Slash Commands
+
+These commands work directly in the OpenCode chat — no AI roundtrip needed (except `/mc-launch`, which delegates to the AI).
+
+| Command | Description |
+|---------|-------------|
+| `/mc-jobs` | List all jobs and their current status |
+| `/mc-launch <prompt>` | Launch a new parallel AI agent session |
+| `/mc-status <name>` | Get detailed status of a specific job |
+| `/mc-attach <name>` | Get the tmux attach command for a job |
+| `/mc-cleanup [name]` | Clean up finished job worktrees (all if no name given) |
+
 ### Configuration
 Mission Control looks for `.mission-control/config.json` in your project root.
 
