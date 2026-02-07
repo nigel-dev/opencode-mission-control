@@ -4,6 +4,7 @@ import { getCompactionContext } from './hooks/compaction';
 import { shouldShowAutoStatus, getAutoStatusMessage } from './hooks/auto-status';
 import { setupNotifications } from './hooks/notifications';
 import { registerCommands, createCommandHandler } from './commands';
+import { isTmuxAvailable } from './lib/tmux';
 import { mc_launch } from './tools/launch';
 import { mc_jobs } from './tools/jobs';
 import { mc_status } from './tools/status';
@@ -92,7 +93,14 @@ function extractSessionIDFromListResult(listResult: unknown): string | undefined
   return undefined;
 }
 
+let tmuxAvailable = false;
+
 export const MissionControl: Plugin = async ({ client }) => {
+  tmuxAvailable = await isTmuxAvailable();
+  if (!tmuxAvailable) {
+    console.warn('[Mission Control] tmux is not installed or not in PATH. Job launching will be unavailable.');
+  }
+
   const monitor = new JobMonitor();
   let activeSessionID: string | undefined;
 

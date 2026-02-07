@@ -14,6 +14,22 @@ export async function isTmuxAvailable(): Promise<boolean> {
 }
 
 /**
+ * Validate tmux availability and return a descriptive error or null if available
+ */
+export async function validateTmux(): Promise<string | null> {
+  try {
+    const proc = spawn(["tmux", "-V"], { stderr: "pipe" });
+    const exitCode = await proc.exited;
+    if (exitCode !== 0) {
+      return "tmux is not installed or not in PATH";
+    }
+    return null;
+  } catch {
+    return "tmux is not installed or not in PATH";
+  }
+}
+
+/**
  * Check if we're currently inside a tmux session
  */
 export function isInsideTmux(): boolean {

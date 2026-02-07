@@ -10,6 +10,7 @@ import {
   killSession,
   getCurrentSession,
   isInsideTmux,
+  isTmuxAvailable,
 } from '../lib/tmux';
 import { loadConfig } from '../lib/config';
 import { detectOMO } from '../lib/omo';
@@ -97,6 +98,14 @@ export const mc_launch: ToolDefinition = tool({
       .describe('Shell commands to run in worktree after creation (e.g. ["bun install"])'),
   },
   async execute(args) {
+    // 0. Validate tmux is available
+    const tmuxFound = await isTmuxAvailable();
+    if (!tmuxFound) {
+      throw new Error(
+        'tmux is required but not found. Install tmux to use Mission Control: https://github.com/tmux/tmux',
+      );
+    }
+
     // 1. Validate name uniqueness
     const existing = await getJobByName(args.name);
     if (existing) {
