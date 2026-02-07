@@ -165,6 +165,9 @@ export const MissionControl: Plugin = async ({ client }) => {
         }
       }
     },
+    // SDK uses proxies on hook output objects — must use in-place mutation
+    // (push/splice). Direct reassignment (e.g. output.context = [...]) is
+    // silently ignored. See: opencode Plugin.trigger() proxy semantics.
     'experimental.session.compacting': async (_input, output) => {
       output.context.push(await getCompactionContext());
     },
