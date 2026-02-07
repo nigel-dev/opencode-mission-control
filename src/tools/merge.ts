@@ -2,6 +2,7 @@ import { tool, type ToolDefinition } from '@opencode-ai/plugin';
 import { getJobByName } from '../lib/job-state';
 import { gitCommand } from '../lib/git';
 import { loadPlan } from '../lib/plan-state';
+import { getMainWorktree } from '../lib/worktree';
 
 async function getBaseBranch(cwd: string): Promise<string> {
   const mainCheck = await gitCommand(['rev-parse', '--verify', 'main'], { cwd });
@@ -31,13 +32,16 @@ export const mc_merge: ToolDefinition = tool({
       throw new Error(`Job "${args.name}" not found`);
     }
 
-    // 2. Get the base branch (main or master)
-    const baseBranch = await getBaseBranch(job.worktreePath);
+    // 2. Get the main worktree path (where the base branch is checked out)
+    const mainWorktreePath = await getMainWorktree();
 
-    // 3. Determine merge message
+    // 3. Get the base branch
+    const baseBranch = await getBaseBranch(mainWorktreePath);
+
+    // 4. Determine merge message
     const mergeMessage = args.message || `Merge branch '${job.branch}' into ${baseBranch}`;
 
-    // 4. Build merge command
+    // 5. Build merge command — run from the main worktree where baseBranch is already checked out
     const mergeArgs: string[] = ['merge', job.branch];
 
     if (args.squash) {
@@ -46,23 +50,26 @@ export const mc_merge: ToolDefinition = tool({
 
     mergeArgs.push('-m', mergeMessage);
 
-    const checkoutResult = await gitCommand(['checkout', baseBranch], {
-      cwd: job.worktreePath,
+    // Verify main worktree is on the base branch
+    const currentBranch = await gitCommand(['rev-parse', '--abbrev-ref', 'HEAD'], {
+      cwd: mainWorktreePath,
     });
 
-    if (checkoutResult.exitCode !== 0) {
+    if (currentBranch.exitCode !== 0 || currentBranch.stdout !== baseBranch) {
       throw new Error(
-        `Failed to checkout ${baseBranch}: ${checkoutResult.stderr || checkoutResult.stdout}`,
+        `Main worktree is not on ${baseBranch} (currently on '${currentBranch.stdout}'). ` +
+        `Please ensure the main worktree is on ${baseBranch} before merging.`,
       );
     }
 
+    // 6. Run merge from the main worktree
     const mergeResult = await gitCommand(mergeArgs, {
-      cwd: job.worktreePath,
+      cwd: mainWorktreePath,
     });
 
     if (mergeResult.exitCode !== 0) {
       await gitCommand(['merge', '--abort'], {
-        cwd: job.worktreePath,
+        cwd: mainWorktreePath,
       }).catch(() => {});
       throw new Error(
         `Merge failed: ${mergeResult.stderr || mergeResult.stdout}`,

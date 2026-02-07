@@ -47,10 +47,13 @@ export const mc_plan_approve: ToolDefinition = tool({
       );
     }
 
+    plan.status = 'running';
+    await savePlan(plan);
+
     const config = await loadConfig();
     const monitor = new JobMonitor();
     const orchestrator = new Orchestrator(monitor, config);
-    await orchestrator.startPlan(plan);
+    await orchestrator.resumePlan();
 
     return [
       `Plan "${plan.name}" approved and started.`,

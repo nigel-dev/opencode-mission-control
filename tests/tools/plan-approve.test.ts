@@ -68,7 +68,7 @@ describe('mc_plan_approve', () => {
   });
 
   describe('approve pending plan', () => {
-    it('should start plan via orchestrator and return confirmation', async () => {
+    it('should transition plan to running and resume via orchestrator', async () => {
       vi.spyOn(planState, 'loadPlan').mockResolvedValue({
         id: 'plan-1',
         name: 'Feature Sprint',
@@ -83,11 +83,12 @@ describe('mc_plan_approve', () => {
         createdAt: new Date().toISOString(),
       });
 
-      const mockStartPlan = vi.fn().mockResolvedValue(undefined);
+      const mockSavePlan = vi.spyOn(planState, 'savePlan').mockResolvedValue(undefined);
+      const mockResumePlan = vi.fn().mockResolvedValue(undefined);
       vi.spyOn(orchestrator, 'Orchestrator').mockImplementation(
         () =>
           ({
-            startPlan: mockStartPlan,
+            resumePlan: mockResumePlan,
           }) as any,
       );
 
@@ -97,7 +98,8 @@ describe('mc_plan_approve', () => {
       expect(result).toContain('plan-1');
       expect(result).toContain('Jobs: 2');
       expect(result).toContain('mc_plan_status');
-      expect(mockStartPlan).toHaveBeenCalled();
+      expect(mockSavePlan).toHaveBeenCalled();
+      expect(mockResumePlan).toHaveBeenCalled();
     });
   });
 });

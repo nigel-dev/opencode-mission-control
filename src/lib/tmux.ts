@@ -1,11 +1,11 @@
-import { spawn } from "bun";
+import { spawn, spawnSync } from "bun";
 
 /**
  * Check if tmux is installed and available
  */
 export async function isTmuxAvailable(): Promise<boolean> {
   try {
-    const proc = spawn(["tmux", "-V"]);
+    const proc = spawn(["tmux", "-V"], { stderr: "pipe" });
     const exitCode = await proc.exited;
     return exitCode === 0;
   } catch {
@@ -24,18 +24,19 @@ export function isInsideTmux(): boolean {
  * Get the current tmux session name
  */
 export function getCurrentSession(): string | undefined {
-  const tmuxEnv = process.env.TMUX;
-  if (!tmuxEnv) return undefined;
+  if (!process.env.TMUX) return undefined;
 
-  // TMUX env var format: /path/to/socket,pid,index
-  const parts = tmuxEnv.split(",");
-  if (parts.length < 3) return undefined;
+  try {
+    const proc = spawnSync(["tmux", "display-message", "-p", "#{session_name}"], {
+      stderr: "pipe",
+    });
+    if (proc.exitCode === 0) {
+      const name = proc.stdout.toString().trim();
+      if (name) return name;
+    }
+  } catch {}
 
-  // Extract session name from socket path
-  // Format: /tmp/tmux-uid/socket-name
-  const socketPath = parts[0];
-  const sessionName = socketPath.split("/").pop();
-  return sessionName;
+  return undefined;
 }
 
 /**
@@ -52,7 +53,7 @@ export async function createSession(opts: {
   }
 
   try {
-    const proc = spawn(["tmux", ...args]);
+    const proc = spawn(["tmux", ...args], { stderr: "pipe" });
     const exitCode = await proc.exited;
     if (exitCode !== 0) {
       throw new Error(`tmux new-session failed with exit code ${exitCode}`);
@@ -87,7 +88,7 @@ export async function createWindow(opts: {
   }
 
   try {
-    const proc = spawn(["tmux", ...args]);
+    const proc = spawn(["tmux", ...args], { stderr: "pipe" });
     const exitCode = await proc.exited;
     if (exitCode !== 0) {
       throw new Error(`tmux new-window failed with exit code ${exitCode}`);
@@ -104,7 +105,7 @@ export async function createWindow(opts: {
  */
 export async function sessionExists(name: string): Promise<boolean> {
   try {
-    const proc = spawn(["tmux", "has-session", "-t", name]);
+    const proc = spawn(["tmux", "has-session", "-t", name], { stderr: "pipe" });
     const exitCode = await proc.exited;
     return exitCode === 0;
   } catch {
@@ -121,7 +122,7 @@ export async function windowExists(
 ): Promise<boolean> {
   try {
     const target = `${session}:${window}`;
-    const proc = spawn(["tmux", "has-session", "-t", target]);
+    const proc = spawn(["tmux", "has-session", "-t", target], { stderr: "pipe" });
     const exitCode = await proc.exited;
     return exitCode === 0;
   } catch {
@@ -134,7 +135,7 @@ export async function windowExists(
  */
 export async function killSession(name: string): Promise<void> {
   try {
-    const proc = spawn(["tmux", "kill-session", "-t", name]);
+    const proc = spawn(["tmux", "kill-session", "-t", name], { stderr: "pipe" });
     const exitCode = await proc.exited;
     if (exitCode !== 0) {
       throw new Error(`tmux kill-session failed with exit code ${exitCode}`);
@@ -155,7 +156,7 @@ export async function killWindow(
 ): Promise<void> {
   try {
     const target = `${session}:${window}`;
-    const proc = spawn(["tmux", "kill-window", "-t", target]);
+    const proc = spawn(["tmux", "kill-window", "-t", target], { stderr: "pipe" });
     const exitCode = await proc.exited;
     if (exitCode !== 0) {
       throw new Error(`tmux kill-window failed with exit code ${exitCode}`);
@@ -180,7 +181,7 @@ export async function capturePane(
       args.push(`-S-${lines}`);
     }
 
-    const proc = spawn(["tmux", ...args]);
+    const proc = spawn(["tmux", ...args], { stderr: "pipe" });
     const output = await new Response(proc.stdout).text();
     const exitCode = await proc.exited;
 
@@ -201,7 +202,7 @@ export async function capturePane(
  */
 export async function sendKeys(target: string, keys: string): Promise<void> {
   try {
-    const proc = spawn(["tmux", "send-keys", "-t", target, keys]);
+    const proc = spawn(["tmux", "send-keys", "-t", target, keys], { stderr: "pipe" });
     const exitCode = await proc.exited;
     if (exitCode !== 0) {
       throw new Error(`tmux send-keys failed with exit code ${exitCode}`);
@@ -228,7 +229,7 @@ export async function setPaneDiedHook(
       target,
       "pane-died",
       callback,
-    ]);
+    ], { stderr: "pipe" });
     const exitCode = await proc.exited;
     if (exitCode !== 0) {
       throw new Error(`tmux set-hook failed with exit code ${exitCode}`);
@@ -254,7 +255,7 @@ export async function getPanePid(
       target,
       "-p",
       "#{pane_pid}",
-    ]);
+    ], { stderr: "pipe" });
     const output = await new Response(proc.stdout).text();
     const exitCode = await proc.exited;
 
@@ -281,7 +282,7 @@ export async function isPaneRunning(target: string): Promise<boolean> {
       target,
       "-p",
       "#{pane_dead}",
-    ]);
+    ], { stderr: "pipe" });
     const output = await new Response(proc.stdout).text();
     const exitCode = await proc.exited;
 
@@ -316,7 +317,7 @@ export async function captureExitStatus(target: string): Promise<number | undefi
       target,
       "-p",
       "#{pane_dead_status}",
-    ]);
+    ], { stderr: "pipe" });
     const output = await new Response(proc.stdout).text();
     const exitCode = await proc.exited;
 
