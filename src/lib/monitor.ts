@@ -1,6 +1,6 @@
 import { EventEmitter } from 'events';
 import { getRunningJobs, updateJob, type Job } from './job-state.js';
-import { isPaneRunning, capturePane } from './tmux.js';
+import { isPaneRunning, capturePane, captureExitStatus } from './tmux.js';
 import { loadConfig } from './config.js';
 
 type JobEventType = 'complete' | 'failed';
@@ -112,17 +112,27 @@ export class JobMonitor extends EventEmitter {
       }
     }
 
-    for (const job of jobs) {
-      try {
-        const isRunning = await isPaneRunning(job.tmuxTarget);
+     for (const job of jobs) {
+       try {
+         const isRunning = await isPaneRunning(job.tmuxTarget);
 
-        if (!isRunning) {
-          this.idleTrackers.delete(job.id);
-          const now = new Date().toISOString();
-          await updateJob(job.id, { status: 'completed', completedAt: now });
-          this.emit('complete', { ...job, status: 'completed', completedAt: now });
-          continue;
-        }
+         if (!isRunning) {
+           this.idleTrackers.delete(job.id);
+           const now = new Date().toISOString();
+           
+           // Check exit status to determine success vs failure
+           const exitCode = await captureExitStatus(job.tmuxTarget);
+           const isFailed = exitCode !== undefined && exitCode !== 0;
+           
+           if (isFailed) {
+             await updateJob(job.id, { status: 'failed', completedAt: now });
+             this.emit('failed', { ...job, status: 'failed', completedAt: now });
+           } else {
+             await updateJob(job.id, { status: 'completed', completedAt: now });
+             this.emit('complete', { ...job, status: 'completed', completedAt: now });
+           }
+           continue;
+         }
 
         const output = await capturePane(job.tmuxTarget, 50);
         const currentHash = hashOutput(output);

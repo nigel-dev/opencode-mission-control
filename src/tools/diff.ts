@@ -1,46 +1,38 @@
 import { tool, type ToolDefinition } from '@opencode-ai/plugin';
 import { getJobByName } from '../lib/job-state';
+import { gitCommand } from '../lib/git';
 
 async function executeGitDiff(
   worktreePath: string,
   branch: string,
   stat: boolean = false,
 ): Promise<string> {
-  const baseProc = Bun.spawn(['git', '-C', worktreePath, 'rev-parse', '--abbrev-ref', 'origin/HEAD'], {
-    stdout: 'pipe',
-    stderr: 'pipe',
-  });
-  const baseOutput = await new Response(baseProc.stdout).text();
-  const baseExitCode = await baseProc.exited;
+  const baseResult = await gitCommand(
+    ['rev-parse', '--abbrev-ref', 'origin/HEAD'],
+    { cwd: worktreePath },
+  );
 
   let baseBranch = 'main';
-  if (baseExitCode === 0) {
-    const match = baseOutput.trim().match(/origin\/(.+)/);
+  if (baseResult.exitCode === 0) {
+    const match = baseResult.stdout.match(/origin\/(.+)/);
     if (match) {
       baseBranch = match[1];
     }
   }
 
-  const args = ['-C', worktreePath, 'diff'];
+  const args = ['diff'];
   if (stat) {
     args.push('--stat');
   }
   args.push(`origin/${baseBranch}..${branch}`);
 
-  const diffProc = Bun.spawn(['git', ...args], {
-    stdout: 'pipe',
-    stderr: 'pipe',
-  });
+  const diffResult = await gitCommand(args, { cwd: worktreePath });
 
-  const stdout = await new Response(diffProc.stdout).text();
-  const stderr = await new Response(diffProc.stderr).text();
-  const exitCode = await diffProc.exited;
-
-  if (exitCode !== 0) {
-    throw new Error(`git diff failed: ${stderr || stdout}`);
+  if (diffResult.exitCode !== 0) {
+    throw new Error(`git diff failed: ${diffResult.stderr || diffResult.stdout}`);
   }
 
-  return stdout;
+  return diffResult.stdout;
 }
 
 export const mc_diff: ToolDefinition = tool({

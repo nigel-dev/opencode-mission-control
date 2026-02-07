@@ -2,17 +2,12 @@ import { tool, type ToolDefinition } from '@opencode-ai/plugin';
 import { getJobByName, removeJob, getRunningJobs, loadJobState } from '../lib/job-state';
 import { removeWorktree } from '../lib/worktree';
 import { killSession, sessionExists } from '../lib/tmux';
-import { spawn } from 'bun';
+import { gitCommand } from '../lib/git';
 
 async function deleteBranch(branchName: string): Promise<void> {
-  const proc = spawn(['git', 'branch', '-D', branchName], {
-    stdout: 'pipe',
-    stderr: 'pipe',
-  });
-  const exitCode = await proc.exited;
-  if (exitCode !== 0) {
-    const stderr = await new Response(proc.stderr).text();
-    throw new Error(`Failed to delete branch "${branchName}": ${stderr}`);
+  const result = await gitCommand(['branch', '-D', branchName]);
+  if (result.exitCode !== 0) {
+    throw new Error(`Failed to delete branch "${branchName}": ${result.stderr}`);
   }
 }
 

@@ -1,6 +1,6 @@
-import { spawn } from 'bun';
 import { homedir } from 'os';
 import { basename, join } from 'path';
+import { gitCommand } from './git';
 
 const XDG_DATA_DIR = join(
   homedir(),
@@ -14,19 +14,13 @@ export function getXdgDataDir(): string {
 }
 
 export async function getProjectId(cwd?: string): Promise<string> {
-  const proc = spawn(['git', 'rev-parse', '--show-toplevel'], {
-    cwd,
-    stdout: 'pipe',
-    stderr: 'pipe',
-  });
-  const stdout = await new Response(proc.stdout).text();
-  const exitCode = await proc.exited;
+  const result = await gitCommand(['rev-parse', '--show-toplevel'], { cwd });
 
-  if (exitCode !== 0) {
+  if (result.exitCode !== 0) {
     return basename(cwd ?? process.cwd());
   }
 
-  return basename(stdout.trim());
+  return basename(result.stdout);
 }
 
 export async function getDataDir(cwd?: string): Promise<string> {

@@ -9,6 +9,7 @@ mock.module('../../src/lib/job-state', () => ({
 mock.module('../../src/lib/tmux', () => ({
   isPaneRunning: mock(),
   capturePane: mock(),
+  captureExitStatus: mock(),
 }));
 
 const { JobMonitor } = await import('../../src/lib/monitor');
@@ -19,6 +20,7 @@ const mockGetRunningJobs = jobState.getRunningJobs as Mock<any>;
 const mockUpdateJob = jobState.updateJob as Mock<any>;
 const mockIsPaneRunning = tmux.isPaneRunning as Mock<any>;
 const mockCapturePane = (tmux as any).capturePane as Mock<any>;
+const mockCaptureExitStatus = (tmux as any).captureExitStatus as Mock<any>;
 
 const IDLE_OUTPUT = 'Some response\n  ctrl+t variants  tab agents  ctrl+p commands\n';
 const STREAMING_OUTPUT = 'Working...\n  ⬝⬝⬝⬝  esc interrupt  ctrl+p commands\n';
@@ -29,6 +31,7 @@ describe('JobMonitor', () => {
     mockUpdateJob.mockReset();
     mockIsPaneRunning.mockReset();
     mockCapturePane.mockReset();
+    mockCaptureExitStatus.mockReset();
   });
 
   describe('constructor', () => {
@@ -141,38 +144,73 @@ describe('JobMonitor', () => {
   });
 
   describe('poll', () => {
-    it('should check running jobs and detect completed panes', async () => {
-      const mockJob: Job = {
-        id: 'job-1',
-        name: 'Test Job',
-        worktreePath: '/path/to/worktree',
-        branch: 'main',
-        tmuxTarget: 'mc-test',
-        placement: 'session',
-        status: 'running',
-        prompt: 'Test prompt',
-        mode: 'vanilla',
-        createdAt: new Date().toISOString(),
-      };
+     it('should check running jobs and detect completed panes', async () => {
+       const mockJob: Job = {
+         id: 'job-1',
+         name: 'Test Job',
+         worktreePath: '/path/to/worktree',
+         branch: 'main',
+         tmuxTarget: 'mc-test',
+         placement: 'session',
+         status: 'running',
+         prompt: 'Test prompt',
+         mode: 'vanilla',
+         createdAt: new Date().toISOString(),
+       };
 
-      mockGetRunningJobs.mockResolvedValue([mockJob]);
-      mockIsPaneRunning.mockResolvedValue(false);
-      mockUpdateJob.mockResolvedValue(undefined);
+       mockGetRunningJobs.mockResolvedValue([mockJob]);
+       mockIsPaneRunning.mockResolvedValue(false);
+       mockCaptureExitStatus.mockResolvedValue(0);
+       mockUpdateJob.mockResolvedValue(undefined);
 
-      const monitor = new JobMonitor();
-      monitor.start();
+       const monitor = new JobMonitor();
+       monitor.start();
 
-      await new Promise(resolve => setTimeout(resolve, 50));
+       await new Promise(resolve => setTimeout(resolve, 50));
 
-      expect(mockGetRunningJobs).toHaveBeenCalled();
-      expect(mockIsPaneRunning).toHaveBeenCalledWith('mc-test');
-      expect(mockUpdateJob).toHaveBeenCalledWith('job-1', {
-        status: 'completed',
-        completedAt: expect.any(String),
-      });
+       expect(mockGetRunningJobs).toHaveBeenCalled();
+       expect(mockIsPaneRunning).toHaveBeenCalledWith('mc-test');
+       expect(mockUpdateJob).toHaveBeenCalledWith('job-1', {
+         status: 'completed',
+         completedAt: expect.any(String),
+       });
 
-      monitor.stop();
-    });
+       monitor.stop();
+     });
+
+     it('should mark job as failed when pane exits with error', async () => {
+       const mockJob: Job = {
+         id: 'job-1',
+         name: 'Test Job',
+         worktreePath: '/path/to/worktree',
+         branch: 'main',
+         tmuxTarget: 'mc-test',
+         placement: 'session',
+         status: 'running',
+         prompt: 'Test prompt',
+         mode: 'vanilla',
+         createdAt: new Date().toISOString(),
+       };
+
+       mockGetRunningJobs.mockResolvedValue([mockJob]);
+       mockIsPaneRunning.mockResolvedValue(false);
+       mockCaptureExitStatus.mockResolvedValue(1);
+       mockUpdateJob.mockResolvedValue(undefined);
+
+       const monitor = new JobMonitor();
+       monitor.start();
+
+       await new Promise(resolve => setTimeout(resolve, 50));
+
+       expect(mockGetRunningJobs).toHaveBeenCalled();
+       expect(mockIsPaneRunning).toHaveBeenCalledWith('mc-test');
+       expect(mockUpdateJob).toHaveBeenCalledWith('job-1', {
+         status: 'failed',
+         completedAt: expect.any(String),
+       });
+
+       monitor.stop();
+     });
 
     it('should not update job if pane is still running', async () => {
       const mockJob: Job = {
@@ -299,53 +337,54 @@ describe('JobMonitor', () => {
       monitor.stop();
     }, 10000);
 
-    it('should handle multiple running jobs', async () => {
-      const mockJobs: Job[] = [
-        {
-          id: 'job-1',
-          name: 'Job 1',
-          worktreePath: '/path/1',
-          branch: 'main',
-          tmuxTarget: 'mc-job1',
-          placement: 'session',
-          status: 'running',
-          prompt: 'Prompt 1',
-          mode: 'vanilla',
-          createdAt: new Date().toISOString(),
-        },
-        {
-          id: 'job-2',
-          name: 'Job 2',
-          worktreePath: '/path/2',
-          branch: 'develop',
-          tmuxTarget: 'mc-job2',
-          placement: 'window',
-          status: 'running',
-          prompt: 'Prompt 2',
-          mode: 'plan',
-          createdAt: new Date().toISOString(),
-        },
-      ];
+     it('should handle multiple running jobs', async () => {
+       const mockJobs: Job[] = [
+         {
+           id: 'job-1',
+           name: 'Job 1',
+           worktreePath: '/path/1',
+           branch: 'main',
+           tmuxTarget: 'mc-job1',
+           placement: 'session',
+           status: 'running',
+           prompt: 'Prompt 1',
+           mode: 'vanilla',
+           createdAt: new Date().toISOString(),
+         },
+         {
+           id: 'job-2',
+           name: 'Job 2',
+           worktreePath: '/path/2',
+           branch: 'develop',
+           tmuxTarget: 'mc-job2',
+           placement: 'window',
+           status: 'running',
+           prompt: 'Prompt 2',
+           mode: 'plan',
+           createdAt: new Date().toISOString(),
+         },
+       ];
 
-      mockGetRunningJobs.mockResolvedValueOnce(mockJobs).mockResolvedValue([]);
-      mockIsPaneRunning
-        .mockResolvedValueOnce(false)
-        .mockResolvedValueOnce(true);
-      mockCapturePane.mockResolvedValue(STREAMING_OUTPUT);
-      mockUpdateJob.mockResolvedValue(undefined);
+       mockGetRunningJobs.mockResolvedValueOnce(mockJobs).mockResolvedValue([]);
+       mockIsPaneRunning
+         .mockResolvedValueOnce(false)
+         .mockResolvedValueOnce(true);
+       mockCapturePane.mockResolvedValue(STREAMING_OUTPUT);
+       mockCaptureExitStatus.mockResolvedValue(0);
+       mockUpdateJob.mockResolvedValue(undefined);
 
-      const monitor = new JobMonitor();
-      monitor.start();
+       const monitor = new JobMonitor();
+       monitor.start();
 
-      await new Promise(resolve => setTimeout(resolve, 50));
+       await new Promise(resolve => setTimeout(resolve, 50));
 
-      expect(mockUpdateJob).toHaveBeenCalledWith('job-1', {
-        status: 'completed',
-        completedAt: expect.any(String),
-      });
+       expect(mockUpdateJob).toHaveBeenCalledWith('job-1', {
+         status: 'completed',
+         completedAt: expect.any(String),
+       });
 
-      monitor.stop();
-    });
+       monitor.stop();
+     });
 
     it('should handle errors gracefully during poll', async () => {
       const mockJob: Job = {
@@ -380,104 +419,145 @@ describe('JobMonitor', () => {
   });
 
   describe('events', () => {
-    it('should emit complete event when job completes', async () => {
-      const mockJob: Job = {
-        id: 'job-1',
-        name: 'Test Job',
-        worktreePath: '/path/to/worktree',
-        branch: 'main',
-        tmuxTarget: 'mc-test',
-        placement: 'session',
-        status: 'running',
-        prompt: 'Test prompt',
-        mode: 'vanilla',
-        createdAt: new Date().toISOString(),
-      };
+     it('should emit complete event when job completes', async () => {
+       const mockJob: Job = {
+         id: 'job-1',
+         name: 'Test Job',
+         worktreePath: '/path/to/worktree',
+         branch: 'main',
+         tmuxTarget: 'mc-test',
+         placement: 'session',
+         status: 'running',
+         prompt: 'Test prompt',
+         mode: 'vanilla',
+         createdAt: new Date().toISOString(),
+       };
 
-      mockGetRunningJobs.mockResolvedValue([mockJob]);
-      mockIsPaneRunning.mockResolvedValue(false);
-      mockUpdateJob.mockResolvedValue(undefined);
+       mockGetRunningJobs.mockResolvedValue([mockJob]);
+       mockIsPaneRunning.mockResolvedValue(false);
+       mockCaptureExitStatus.mockResolvedValue(0);
+       mockUpdateJob.mockResolvedValue(undefined);
 
-      const monitor = new JobMonitor();
-      const completeHandler = mock();
-      monitor.on('complete', completeHandler);
+       const monitor = new JobMonitor();
+       const completeHandler = mock();
+       monitor.on('complete', completeHandler);
 
-      monitor.start();
-      await new Promise(resolve => setTimeout(resolve, 50));
+       monitor.start();
+       await new Promise(resolve => setTimeout(resolve, 50));
 
-      expect(completeHandler).toHaveBeenCalledTimes(1);
-      expect(completeHandler).toHaveBeenCalledWith(
-        expect.objectContaining({
-          id: 'job-1',
-          status: 'completed',
-          completedAt: expect.any(String),
-        })
-      );
+       expect(completeHandler).toHaveBeenCalledTimes(1);
+       expect(completeHandler).toHaveBeenCalledWith(
+         expect.objectContaining({
+           id: 'job-1',
+           status: 'completed',
+           completedAt: expect.any(String),
+         })
+       );
 
-      monitor.stop();
-    });
+       monitor.stop();
+     });
 
-    it('should support multiple event handlers', async () => {
-      const mockJob: Job = {
-        id: 'job-1',
-        name: 'Test Job',
-        worktreePath: '/path/to/worktree',
-        branch: 'main',
-        tmuxTarget: 'mc-test',
-        placement: 'session',
-        status: 'running',
-        prompt: 'Test prompt',
-        mode: 'vanilla',
-        createdAt: new Date().toISOString(),
-      };
+     it('should emit failed event when job exits with error', async () => {
+       const mockJob: Job = {
+         id: 'job-1',
+         name: 'Test Job',
+         worktreePath: '/path/to/worktree',
+         branch: 'main',
+         tmuxTarget: 'mc-test',
+         placement: 'session',
+         status: 'running',
+         prompt: 'Test prompt',
+         mode: 'vanilla',
+         createdAt: new Date().toISOString(),
+       };
 
-      mockGetRunningJobs.mockResolvedValue([mockJob]);
-      mockIsPaneRunning.mockResolvedValue(false);
-      mockUpdateJob.mockResolvedValue(undefined);
+       mockGetRunningJobs.mockResolvedValue([mockJob]);
+       mockIsPaneRunning.mockResolvedValue(false);
+       mockCaptureExitStatus.mockResolvedValue(127);
+       mockUpdateJob.mockResolvedValue(undefined);
 
-      const monitor = new JobMonitor();
-      const handler1 = mock();
-      const handler2 = mock();
-      monitor.on('complete', handler1);
-      monitor.on('complete', handler2);
+       const monitor = new JobMonitor();
+       const failedHandler = mock();
+       monitor.on('failed', failedHandler);
 
-      monitor.start();
-      await new Promise(resolve => setTimeout(resolve, 50));
+       monitor.start();
+       await new Promise(resolve => setTimeout(resolve, 50));
 
-      expect(handler1).toHaveBeenCalledTimes(1);
-      expect(handler2).toHaveBeenCalledTimes(1);
+       expect(failedHandler).toHaveBeenCalledTimes(1);
+       expect(failedHandler).toHaveBeenCalledWith(
+         expect.objectContaining({
+           id: 'job-1',
+           status: 'failed',
+           completedAt: expect.any(String),
+         })
+       );
 
-      monitor.stop();
-    });
+       monitor.stop();
+     });
 
-    it('should not emit events if pane is still running', async () => {
-      const mockJob: Job = {
-        id: 'job-1',
-        name: 'Test Job',
-        worktreePath: '/path/to/worktree',
-        branch: 'main',
-        tmuxTarget: 'mc-test',
-        placement: 'session',
-        status: 'running',
-        prompt: 'Test prompt',
-        mode: 'vanilla',
-        createdAt: new Date().toISOString(),
-      };
+     it('should support multiple event handlers', async () => {
+       const mockJob: Job = {
+         id: 'job-1',
+         name: 'Test Job',
+         worktreePath: '/path/to/worktree',
+         branch: 'main',
+         tmuxTarget: 'mc-test',
+         placement: 'session',
+         status: 'running',
+         prompt: 'Test prompt',
+         mode: 'vanilla',
+         createdAt: new Date().toISOString(),
+       };
 
-      mockGetRunningJobs.mockResolvedValue([mockJob]);
-      mockIsPaneRunning.mockResolvedValue(true);
-      mockCapturePane.mockResolvedValue(STREAMING_OUTPUT);
+       mockGetRunningJobs.mockResolvedValue([mockJob]);
+       mockIsPaneRunning.mockResolvedValue(false);
+       mockCaptureExitStatus.mockResolvedValue(0);
+       mockUpdateJob.mockResolvedValue(undefined);
 
-      const monitor = new JobMonitor();
-      const completeHandler = mock();
-      monitor.on('complete', completeHandler);
+       const monitor = new JobMonitor();
+       const handler1 = mock();
+       const handler2 = mock();
+       monitor.on('complete', handler1);
+       monitor.on('complete', handler2);
 
-      monitor.start();
-      await new Promise(resolve => setTimeout(resolve, 50));
+       monitor.start();
+       await new Promise(resolve => setTimeout(resolve, 50));
 
-      expect(completeHandler).not.toHaveBeenCalled();
+       expect(handler1).toHaveBeenCalledTimes(1);
+       expect(handler2).toHaveBeenCalledTimes(1);
 
-      monitor.stop();
-    });
+       monitor.stop();
+     });
+
+     it('should not emit events if pane is still running', async () => {
+       const mockJob: Job = {
+         id: 'job-1',
+         name: 'Test Job',
+         worktreePath: '/path/to/worktree',
+         branch: 'main',
+         tmuxTarget: 'mc-test',
+         placement: 'session',
+         status: 'running',
+         prompt: 'Test prompt',
+         mode: 'vanilla',
+         createdAt: new Date().toISOString(),
+       };
+
+       mockGetRunningJobs.mockResolvedValue([mockJob]);
+       mockIsPaneRunning.mockResolvedValue(true);
+       mockCapturePane.mockResolvedValue(STREAMING_OUTPUT);
+       mockCaptureExitStatus.mockResolvedValue(undefined);
+
+       const monitor = new JobMonitor();
+       const completeHandler = mock();
+       monitor.on('complete', completeHandler);
+
+       monitor.start();
+       await new Promise(resolve => setTimeout(resolve, 50));
+
+       expect(completeHandler).not.toHaveBeenCalled();
+
+       monitor.stop();
+     });
   });
 });

@@ -1,39 +1,14 @@
 import { tool, type ToolDefinition } from '@opencode-ai/plugin';
-import { spawn } from 'bun';
 import { getJobByName } from '../lib/job-state';
+import { gitCommand } from '../lib/git';
 
-/**
- * Execute a git command in a specific directory
- */
-async function executeGitCommand(
-  cwd: string,
-  args: string[],
-): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-  const proc = spawn(['git', ...args], {
-    cwd,
-    stdout: 'pipe',
-    stderr: 'pipe',
-  });
-
-  const stdout = await new Response(proc.stdout).text();
-  const stderr = await new Response(proc.stderr).text();
-  const exitCode = await proc.exited;
-
-  return { stdout, stderr, exitCode };
-}
-
-/**
- * Get the base branch (main or master)
- */
 async function getBaseBranch(cwd: string): Promise<string> {
-  // Try main first
-  const mainCheck = await executeGitCommand(cwd, ['rev-parse', '--verify', 'main']);
+  const mainCheck = await gitCommand(['rev-parse', '--verify', 'main'], { cwd });
   if (mainCheck.exitCode === 0) {
     return 'main';
   }
 
-  // Fall back to master
-  const masterCheck = await executeGitCommand(cwd, ['rev-parse', '--verify', 'master']);
+  const masterCheck = await gitCommand(['rev-parse', '--verify', 'master'], { cwd });
   if (masterCheck.exitCode === 0) {
     return 'master';
   }
@@ -70,11 +45,9 @@ export const mc_merge: ToolDefinition = tool({
 
     mergeArgs.push('-m', mergeMessage);
 
-    // 5. Checkout base branch
-    const checkoutResult = await executeGitCommand(job.worktreePath, [
-      'checkout',
-      baseBranch,
-    ]);
+    const checkoutResult = await gitCommand(['checkout', baseBranch], {
+      cwd: job.worktreePath,
+    });
 
     if (checkoutResult.exitCode !== 0) {
       throw new Error(
@@ -82,10 +55,14 @@ export const mc_merge: ToolDefinition = tool({
       );
     }
 
-    // 6. Execute merge
-    const mergeResult = await executeGitCommand(job.worktreePath, mergeArgs);
+    const mergeResult = await gitCommand(mergeArgs, {
+      cwd: job.worktreePath,
+    });
 
     if (mergeResult.exitCode !== 0) {
+      await gitCommand(['merge', '--abort'], {
+        cwd: job.worktreePath,
+      }).catch(() => {});
       throw new Error(
         `Merge failed: ${mergeResult.stderr || mergeResult.stdout}`,
       );

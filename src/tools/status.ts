@@ -1,12 +1,9 @@
 import { tool, type ToolDefinition } from '@opencode-ai/plugin';
-import { spawn } from 'bun';
 import { getJobByName, type Job } from '../lib/job-state';
 import { capturePane } from '../lib/tmux';
 import { isInManagedWorktree } from '../lib/worktree';
+import { gitCommand } from '../lib/git';
 
-/**
- * Get git status for a worktree
- */
 async function getGitStatus(
   worktreePath: string,
 ): Promise<{
@@ -16,39 +13,28 @@ async function getGitStatus(
   branch: string;
 }> {
   try {
-    // Get current branch
-    const branchProc = spawn(['git', '-C', worktreePath, 'rev-parse', '--abbrev-ref', 'HEAD'], {
-      stdout: 'pipe',
-      stderr: 'pipe',
+    const branchResult = await gitCommand(['rev-parse', '--abbrev-ref', 'HEAD'], {
+      cwd: worktreePath,
     });
-    const branchOutput = await new Response(branchProc.stdout).text();
-    const branchExitCode = await branchProc.exited;
-    const branch = branchExitCode === 0 ? branchOutput.trim() : 'unknown';
+    const branch = branchResult.exitCode === 0 ? branchResult.stdout : 'unknown';
 
-    // Get files changed
-    const statusProc = spawn(['git', '-C', worktreePath, 'status', '--porcelain'], {
-      stdout: 'pipe',
-      stderr: 'pipe',
+    const statusResult = await gitCommand(['status', '--porcelain'], {
+      cwd: worktreePath,
     });
-    const statusOutput = await new Response(statusProc.stdout).text();
-    const statusExitCode = await statusProc.exited;
-    const filesChanged = statusExitCode === 0 ? statusOutput.split('\n').filter(Boolean).length : 0;
+    const filesChanged =
+      statusResult.exitCode === 0
+        ? statusResult.stdout.split('\n').filter(Boolean).length
+        : 0;
 
-    // Get ahead/behind
-    const aheadBehindProc = spawn(
-      ['git', '-C', worktreePath, 'rev-list', '--left-right', '--count', '@{upstream}...HEAD'],
-      {
-        stdout: 'pipe',
-        stderr: 'pipe',
-      },
+    const aheadBehindResult = await gitCommand(
+      ['rev-list', '--left-right', '--count', '@{upstream}...HEAD'],
+      { cwd: worktreePath },
     );
-    const aheadBehindOutput = await new Response(aheadBehindProc.stdout).text();
-    const aheadBehindExitCode = await aheadBehindProc.exited;
 
     let ahead = 0;
     let behind = 0;
-    if (aheadBehindExitCode === 0) {
-      const [behindStr, aheadStr] = aheadBehindOutput.trim().split('\t');
+    if (aheadBehindResult.exitCode === 0) {
+      const [behindStr, aheadStr] = aheadBehindResult.stdout.split('\t');
       behind = parseInt(behindStr, 10) || 0;
       ahead = parseInt(aheadStr, 10) || 0;
     }

@@ -301,3 +301,38 @@ export async function isPaneRunning(target: string): Promise<boolean> {
     return false;
   }
 }
+
+/**
+ * Capture the exit status of a dead tmux pane
+ * Returns the exit code if available, or undefined if pane is still running or status unavailable
+ */
+export async function captureExitStatus(target: string): Promise<number | undefined> {
+  try {
+    // Try to get pane_dead_status (exit code of dead pane)
+    const proc = spawn([
+      "tmux",
+      "display-message",
+      "-t",
+      target,
+      "-p",
+      "#{pane_dead_status}",
+    ]);
+    const output = await new Response(proc.stdout).text();
+    const exitCode = await proc.exited;
+
+    if (exitCode !== 0) {
+      return undefined;
+    }
+
+    const outputStr = output.trim();
+    if (!outputStr || outputStr === "") {
+      return undefined;
+    }
+
+    // pane_dead_status returns the exit code as a string, or empty if pane is running
+    const status = parseInt(outputStr, 10);
+    return isNaN(status) ? undefined : status;
+  } catch {
+    return undefined;
+  }
+}

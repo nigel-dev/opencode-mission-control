@@ -1,7 +1,7 @@
 import { spawn } from 'bun';
 import { join, resolve } from 'path';
-import { GitMutex } from './git-mutex';
 import { getProjectId, getXdgDataDir } from './paths';
+import { gitCommand } from './git';
 import type {
   WorktreeInfo,
   SyncResult,
@@ -12,41 +12,6 @@ import type {
 export type { WorktreeInfo, SyncResult, PostCreateHook };
 
 const XDG_DATA_DIR = getXdgDataDir();
-
-const mutex = new GitMutex();
-
-async function git(
-  args: string[],
-  opts?: { cwd?: string },
-): Promise<{ stdout: string; exitCode: number }> {
-  return mutex.withLock(async () => {
-    const proc = spawn(['git', ...args], {
-      cwd: opts?.cwd,
-      stdout: 'pipe',
-      stderr: 'pipe',
-    });
-    const stdout = await new Response(proc.stdout).text();
-    const exitCode = await proc.exited;
-    return { stdout: stdout.trim(), exitCode };
-  });
-}
-
-async function gitUnsafe(
-  args: string[],
-  opts?: { cwd?: string },
-): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-  const proc = spawn(['git', ...args], {
-    cwd: opts?.cwd,
-    stdout: 'pipe',
-    stderr: 'pipe',
-  });
-  const [stdout, stderr] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-  ]);
-  const exitCode = await proc.exited;
-  return { stdout: stdout.trim(), stderr: stderr.trim(), exitCode };
-}
 
 function parseWorktreeListPorcelain(output: string): WorktreeInfo[] {
   const worktrees: WorktreeInfo[] = [];
@@ -93,11 +58,11 @@ export async function getMainWorktree(): Promise<string> {
 }
 
 export async function listWorktrees(): Promise<WorktreeInfo[]> {
-  const { stdout, exitCode } = await git(['worktree', 'list', '--porcelain']);
-  if (exitCode !== 0) {
+  const result = await gitCommand(['worktree', 'list', '--porcelain']);
+  if (result.exitCode !== 0) {
     throw new Error('Failed to list worktrees');
   }
-  return parseWorktreeListPorcelain(stdout);
+  return parseWorktreeListPorcelain(result.stdout);
 }
 
 export async function createWorktree(opts: {
@@ -113,14 +78,14 @@ export async function createWorktree(opts: {
   const fs = await import('fs');
   fs.mkdirSync(join(worktreePath, '..'), { recursive: true });
 
-  const { stdout: existingBranches } = await git(['branch', '--list', opts.branch]);
-  const branchExists = existingBranches.includes(opts.branch);
+  const branchCheckResult = await gitCommand(['branch', '--list', opts.branch]);
+  const branchExists = branchCheckResult.stdout.includes(opts.branch);
 
-  let result;
+  let createResult;
   if (branchExists) {
-    result = await git(['worktree', 'add', worktreePath, opts.branch]);
+    createResult = await gitCommand(['worktree', 'add', worktreePath, opts.branch]);
   } else {
-    result = await git([
+    createResult = await gitCommand([
       'worktree',
       'add',
       '-b',
@@ -129,8 +94,8 @@ export async function createWorktree(opts: {
     ]);
   }
 
-  if (result.exitCode !== 0) {
-    throw new Error(`Failed to create worktree: ${result.stdout}`);
+  if (createResult.exitCode !== 0) {
+    throw new Error(`Failed to create worktree: ${createResult.stdout}`);
   }
 
   if (opts.postCreate) {
@@ -192,13 +157,11 @@ export async function removeWorktree(
   force = false,
 ): Promise<void> {
   if (!force) {
-    const { stdout, exitCode } = await gitUnsafe(
-      ['-C', path, 'status', '--porcelain'],
-    );
-    if (exitCode !== 0) {
+    const statusResult = await gitCommand(['-C', path, 'status', '--porcelain']);
+    if (statusResult.exitCode !== 0) {
       throw new Error(`Cannot check worktree status at ${path}`);
     }
-    if (stdout.length > 0) {
+    if (statusResult.stdout.length > 0) {
       throw new Error(
         `Worktree at ${path} has uncommitted changes. Use force=true to remove anyway.`,
       );
@@ -206,8 +169,8 @@ export async function removeWorktree(
   }
 
   const args = ['worktree', 'remove', ...(force ? ['--force'] : []), path];
-  const { exitCode } = await git(args);
-  if (exitCode !== 0) {
+  const removeResult = await gitCommand(args);
+  if (removeResult.exitCode !== 0) {
     throw new Error(`Failed to remove worktree at ${path}`);
   }
 }
@@ -246,38 +209,36 @@ export async function syncWorktree(
   path: string,
   strategy: 'rebase' | 'merge',
 ): Promise<SyncResult> {
-  const { stdout: baseBranch, exitCode: baseExit } = await git(
+  const upstreamResult = await gitCommand(
     ['-C', path, 'rev-parse', '--abbrev-ref', 'HEAD@{upstream}'],
   );
 
   let targetBranch: string;
-  if (baseExit !== 0) {
-    const { stdout: defaultBranch } = await git([
+  if (upstreamResult.exitCode !== 0) {
+    const defaultBranchResult = await gitCommand([
       'symbolic-ref',
       '--short',
       'refs/remotes/origin/HEAD',
     ]);
-    targetBranch = defaultBranch || 'main';
+    targetBranch = defaultBranchResult.stdout || 'main';
   } else {
-    targetBranch = baseBranch;
+    targetBranch = upstreamResult.stdout;
   }
 
-  const fetchResult = await git(['-C', path, 'fetch', 'origin']);
+  const fetchResult = await gitCommand(['-C', path, 'fetch', 'origin']);
   if (fetchResult.exitCode !== 0) {
     return { success: false, conflicts: ['Failed to fetch from origin'] };
   }
 
-  const syncResult = await gitUnsafe(
-    ['-C', path, strategy, targetBranch],
-  );
+  const syncResult = await gitCommand(['-C', path, strategy, targetBranch]);
 
   if (syncResult.exitCode !== 0) {
     const conflicts = extractConflicts(syncResult.stderr);
 
     if (strategy === 'rebase') {
-      await gitUnsafe(['-C', path, 'rebase', '--abort']);
+      await gitCommand(['-C', path, 'rebase', '--abort']).catch(() => {});
     } else {
-      await gitUnsafe(['-C', path, 'merge', '--abort']);
+      await gitCommand(['-C', path, 'merge', '--abort']).catch(() => {});
     }
 
     return { success: false, conflicts };
