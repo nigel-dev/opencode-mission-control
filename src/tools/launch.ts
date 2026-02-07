@@ -30,7 +30,17 @@ IMPORTANT: When you have completed ALL of your work, you MUST commit your change
 
 const MC_REPORT_SUFFIX = `
 
-STATUS REPORTING: Use the mc_report tool to keep Mission Control informed of your progress. Call mc_report with status "working" and a progress percentage (0-100) at key milestones, "blocked" if you encounter an issue you cannot resolve, "needs_review" when your work is complete and ready for human review. Report at least once when starting and once when finishing.`;
+CRITICAL — STATUS REPORTING REQUIRED:
+You MUST call the mc_report tool at these points — this is NOT optional:
+
+1. IMMEDIATELY when you start: mc_report(status: "working", message: "Starting: <brief description>")
+2. At each major milestone: mc_report(status: "progress", message: "<what you accomplished>", progress: <0-100>)
+3. If you get stuck or need input: mc_report(status: "blocked", message: "<what's blocking you>")
+4. WHEN YOU ARE COMPLETELY DONE: mc_report(status: "completed", message: "<summary of what was done>")
+
+The "completed" call is MANDATORY — it signals Mission Control that your job is finished. Without it, your job will appear stuck as "running" and block the pipeline. Always call mc_report(status: "completed", ...) as your FINAL action.
+
+If your work needs human review before it can proceed: mc_report(status: "needs_review", message: "<what needs review>")`;
 
 function buildLaunchCommand(opts: {
   prompt: string;
