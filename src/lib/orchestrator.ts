@@ -7,6 +7,7 @@ import { MergeTrain } from './merge-train';
 import { addJob, getRunningJobs, updateJob, type Job } from './job-state';
 import { JobMonitor } from './monitor';
 import { createWorktree, removeWorktree } from './worktree';
+import { resolvePostCreateHook } from './worktree-setup';
 import {
   createSession,
   createWindow,
@@ -505,7 +506,15 @@ export class Orchestrator {
 
     let worktreePath = '';
     try {
-      worktreePath = await createWorktree({ branch });
+      const postCreate = resolvePostCreateHook(
+        this.config.worktreeSetup,
+        {
+          copyFiles: job.copyFiles,
+          symlinkDirs: job.symlinkDirs,
+          commands: job.commands,
+        },
+      );
+      worktreePath = await createWorktree({ branch, postCreate });
 
       if (placement === 'session') {
         await createSession({

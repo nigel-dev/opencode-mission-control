@@ -43,16 +43,19 @@ export interface JobSpec {
   id: string;
   name: string;
   prompt: string;
-  touchSet?: string[]; // file globs this job expects to modify
-  dependsOn?: string[]; // job names this depends on
+  touchSet?: string[];
+  dependsOn?: string[];
   priority?: number;
   status: JobStatus;
   branch?: string;
   worktreePath?: string;
   tmuxTarget?: string;
-  mergeOrder?: number; // assigned by merge train
+  mergeOrder?: number;
   mergedAt?: string;
   error?: string;
+  copyFiles?: string[];
+  symlinkDirs?: string[];
+  commands?: string[];
 }
 
 export const VALID_PLAN_TRANSITIONS: Record<PlanStatus, PlanStatus[]> = {

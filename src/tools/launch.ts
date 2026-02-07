@@ -14,6 +14,7 @@ import {
 import { loadConfig } from '../lib/config';
 import { detectOMO } from '../lib/omo';
 import { copyPlansToWorktree } from '../lib/plan-copier';
+import { resolvePostCreateHook } from '../lib/worktree-setup';
 
 /**
  * Sleep for a given number of milliseconds
@@ -69,6 +70,18 @@ export const mc_launch: ToolDefinition = tool({
       .string()
       .optional()
       .describe('Plan file to use (for plan mode)'),
+    copyFiles: tool.schema
+      .array(tool.schema.string())
+      .optional()
+      .describe('Files to copy from main worktree (e.g. [".env", ".env.local"])'),
+    symlinkDirs: tool.schema
+      .array(tool.schema.string())
+      .optional()
+      .describe('Directories to symlink from main worktree (e.g. ["node_modules"]). .opencode is always included.'),
+    commands: tool.schema
+      .array(tool.schema.string())
+      .optional()
+      .describe('Shell commands to run in worktree after creation (e.g. ["bun install"])'),
   },
   async execute(args) {
     // 1. Validate name uniqueness
@@ -104,10 +117,19 @@ export const mc_launch: ToolDefinition = tool({
             return `${currentSession}:${sanitizedName}`;
           })();
 
-    // 4. Create worktree
+    // 4. Create worktree with setup hooks
+    const postCreate = resolvePostCreateHook(
+      config.worktreeSetup,
+      {
+        copyFiles: args.copyFiles,
+        symlinkDirs: args.symlinkDirs,
+        commands: args.commands,
+      },
+    );
+
     let worktreePath: string;
     try {
-      worktreePath = await createWorktree({ branch });
+      worktreePath = await createWorktree({ branch, postCreate });
     } catch (error) {
       throw new Error(
         `Failed to create worktree for branch "${branch}": ${error instanceof Error ? error.message : String(error)}`,

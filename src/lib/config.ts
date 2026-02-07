@@ -2,6 +2,12 @@ import { join } from 'path';
 import { homedir } from 'os';
 import { getDataDir } from './paths';
 
+export interface WorktreeSetup {
+  copyFiles?: string[];
+  symlinkDirs?: string[];
+  commands?: string[];
+}
+
 export interface MCConfig {
   defaultPlacement: 'session' | 'window';
   pollInterval: number;
@@ -10,6 +16,7 @@ export interface MCConfig {
   maxParallel?: number;
   testCommand?: string;
   testTimeout?: number;
+  worktreeSetup?: WorktreeSetup;
   omo: {
     enabled: boolean;
     defaultMode: 'vanilla' | 'plan' | 'ralph' | 'ulw';

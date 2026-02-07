@@ -135,6 +135,9 @@ describe('mc_launch', () => {
 
       expect(mockCreateWorktree).toHaveBeenCalledWith({
         branch: 'mc/feature-auth',
+        postCreate: expect.objectContaining({
+          symlinkDirs: expect.arrayContaining(['.opencode']),
+        }),
       });
     });
 
@@ -150,6 +153,9 @@ describe('mc_launch', () => {
 
       expect(mockCreateWorktree).toHaveBeenCalledWith({
         branch: 'custom/branch',
+        postCreate: expect.objectContaining({
+          symlinkDirs: expect.arrayContaining(['.opencode']),
+        }),
       });
     });
 

@@ -233,7 +233,12 @@ describe('Workflow 1: Basic lifecycle (Launch -> Status -> Capture -> Kill -> Cl
     );
 
     expect(launchResult).toContain('Job "auth-job" launched successfully');
-    expect(mockCreateWorktree).toHaveBeenCalledWith({ branch: 'mc/auth-job' });
+    expect(mockCreateWorktree).toHaveBeenCalledWith({
+      branch: 'mc/auth-job',
+      postCreate: expect.objectContaining({
+        symlinkDirs: expect.arrayContaining(['.opencode']),
+      }),
+    });
     expect(mockCreateSession).toHaveBeenCalledWith({
       name: 'mc-auth-job',
       workdir: '/tmp/mc-worktrees/mc-auth-job',

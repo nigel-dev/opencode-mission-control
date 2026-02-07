@@ -25,6 +25,18 @@ export const mc_plan: ToolDefinition = tool({
             .array(tool.schema.string())
             .optional()
             .describe('File globs this job expects to modify'),
+          copyFiles: tool.schema
+            .array(tool.schema.string())
+            .optional()
+            .describe('Files to copy from main worktree (e.g. [".env"])'),
+          symlinkDirs: tool.schema
+            .array(tool.schema.string())
+            .optional()
+            .describe('Directories to symlink from main worktree (e.g. ["node_modules"])'),
+          commands: tool.schema
+            .array(tool.schema.string())
+            .optional()
+            .describe('Shell commands to run in worktree after creation'),
         }),
       )
       .describe('Array of jobs to execute'),
@@ -61,6 +73,9 @@ export const mc_plan: ToolDefinition = tool({
       prompt: j.prompt,
       dependsOn: j.dependsOn,
       touchSet: j.touchSet,
+      copyFiles: j.copyFiles,
+      symlinkDirs: j.symlinkDirs,
+      commands: j.commands,
       status: 'queued' as const,
     }));
 
