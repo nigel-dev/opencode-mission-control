@@ -620,14 +620,103 @@ the agent ignored the prompt suffix or hasn't reached a reporting milestone yet.
 | 8.7 | Verify ReportStatus enum | Check `status` field value | One of: `working`, `blocked`, `needs_review`, `completed`, `progress` |
 | 8.8 | Verify jobName matches | Check `jobName` field | Should be `tmc-reporter` |
 
-### 8C: Cleanup
+### 8C: Cleanup Reporter
 
 | # | Action | Verify |
 |---|--------|--------|
 | 8.9 | `mc_kill` name=tmc-reporter | Stopped |
 | 8.10 | `mc_cleanup` name=tmc-reporter, deleteBranch=true | Cleaned |
 | 8.11 | Clean report files | `rm -f ~/.local/share/opencode-mission-control/$(basename $(git rev-parse --show-toplevel))/reports/*.json` | Reports cleaned |
-| 8.12 | `mc_jobs` | Empty |
+
+### 8D: Real Agent Blocked & Needs Review (Non-Deterministic)
+
+These tests verify that agents **actually call `mc_report`** with the correct status when prompted.
+The `MC_REPORT_SUFFIX` injected into every agent prompt instructs them to call `mc_report(status: "blocked")`
+when stuck and `mc_report(status: "needs_review")` when work needs human approval. These tests are
+non-deterministic — agent behavior varies. If the agent doesn't call `mc_report`, that's a signal
+the prompt suffix isn't effective enough, not a plugin bug.
+
+**Blocked test**: We ask the agent to read a file that doesn't exist. The agent should recognize it
+cannot proceed and call `mc_report(status: "blocked")`.
+
+| # | Test | Action | Expected |
+|---|------|--------|----------|
+| 8.12 | Launch blocked-trigger job | `mc_launch` name=tmc-block-real, prompt="Read the file /etc/mc-test-secret-key.txt and use its contents to create auth-key.txt. If you cannot access the file, you are blocked — report it." | Job launched |
+| 8.13 | **Wait 3-5 seconds** | — | — |
+| 8.14 | Verify job running | `mc_status` name=tmc-block-real | Status: `running` |
+| 8.15 | **Wait 30 seconds** | — | Agent needs time to attempt the file read, fail, and report |
+| 8.16 | Check for blocked report | `ls ~/.local/share/opencode-mission-control/$(basename $(git rev-parse --show-toplevel))/reports/` | Look for a report JSON file |
+| 8.17 | If report exists, verify status | Read the report JSON | `status` should be `blocked`, `message` should reference the inaccessible file |
+| 8.18 | Verify overview shows alert | `mc_overview` | If report was written: Alerts shows `tmc-block-real [blocked]`, Suggested Actions mentions "blocked - run mc_attach" |
+| 8.19 | **Manual Check** | Check your session for notification | If report was written: should see `⚠️ Job 'tmc-block-real' is blocked...` |
+| 8.20 | Cleanup blocked job | `mc_kill` name=tmc-block-real; `mc_cleanup` name=tmc-block-real, deleteBranch=true | Cleaned |
+| 8.21 | Clean report files | `rm -f ~/.local/share/opencode-mission-control/$(basename $(git rev-parse --show-toplevel))/reports/*.json` | Reports cleaned |
+
+**Needs review test**: We ask the agent to produce work that explicitly requires human approval.
+
+| # | Test | Action | Expected |
+|---|------|--------|----------|
+| 8.22 | Launch review-trigger job | `mc_launch` name=tmc-review-real, prompt="Create a file called review-candidate.txt containing three proposed project names (one per line). This work needs human review — do NOT proceed further until a human approves your choices." | Job launched |
+| 8.23 | **Wait 3-5 seconds** | — | — |
+| 8.24 | Verify job running | `mc_status` name=tmc-review-real | Status: `running` |
+| 8.25 | **Wait 30 seconds** | — | Agent needs time to create the file and report |
+| 8.26 | Check for review report | `ls ~/.local/share/opencode-mission-control/$(basename $(git rev-parse --show-toplevel))/reports/` | Look for a report JSON file |
+| 8.27 | If report exists, verify status | Read the report JSON | `status` should be `needs_review` |
+| 8.28 | Verify job completed | `mc_status` name=tmc-review-real | If `needs_review` report was written: status should be `completed` (monitor auto-completes on needs_review) |
+| 8.29 | Verify overview shows alert | `mc_overview` | If report was written: Alerts shows `tmc-review-real [needs_review]` |
+| 8.30 | **Manual Check** | Check your session for notification | If report was written: should see `👀 Job 'tmc-review-real' needs review...` |
+| 8.31 | Cleanup review job | `mc_kill` name=tmc-review-real; `mc_cleanup` name=tmc-review-real, deleteBranch=true | Cleaned |
+| 8.32 | Clean report files | `rm -f ~/.local/share/opencode-mission-control/$(basename $(git rev-parse --show-toplevel))/reports/*.json` | Reports cleaned |
+
+**Interpreting results**: If the agent does NOT call `mc_report` with the expected status:
+- Capture the agent's output with `mc_capture` before cleanup to understand what it did instead
+- This is a prompt effectiveness issue — the `MC_REPORT_SUFFIX` may need stronger wording
+- The plugin pipeline itself still works (verified by the synthetic tests in 8E/8F below)
+
+### 8E: Synthetic Blocked Pipeline Test
+
+These tests use **synthetic report injection** to deterministically verify the monitor → notification → overview pipeline. We launch a real job to get a valid Job ID, then manually write a report JSON file.
+
+| # | Test | Action | Expected |
+|---|------|--------|----------|
+| 8.33 | Launch job for synthetic blocked test | `mc_launch` name=tmc-blocked, prompt="echo 'blocked test'" | Job launched |
+| 8.34 | **Wait 3-5 seconds** | — | — |
+| 8.35 | Get Job ID | `mc_status` name=tmc-blocked | Extract the UUID from the output |
+| 8.36 | Set STATE_DIR | `STATE_DIR=~/.local/share/opencode-mission-control/$(basename $(git rev-parse --show-toplevel))` | — |
+| 8.37 | Inject blocked report | Write JSON to `$STATE_DIR/reports/<UUID>.json`: `{"jobId": "<UUID>", "jobName": "tmc-blocked", "status": "blocked", "message": "Synthetic blocked test", "timestamp": "<now ISO>"}` | Report file created |
+| 8.38 | **Wait 15 seconds** | — | Monitor polls every 10s |
+| 8.39 | Verify Overview Alert | `mc_overview` | Alerts section shows: `- tmc-blocked [blocked]: Synthetic blocked test` |
+| 8.40 | Verify Suggested Action | `mc_overview` | Suggested Actions shows: `1 job(s) blocked - run mc_attach for tmc-blocked` |
+| 8.41 | Verify mc_attach | `mc_attach` name=tmc-blocked | Returns tmux attach command |
+| 8.42 | **Manual Check** | Check your active session for a notification | Should see: `⚠️ Job 'tmc-blocked' is blocked...` |
+
+### 8F: Synthetic Needs Review Pipeline Test
+
+Similar to 8E, but with `needs_review`. This status triggers the monitor to mark the job as `completed` while also surfacing an alert.
+
+| # | Test | Action | Expected |
+|---|------|--------|----------|
+| 8.43 | Cleanup blocked job | `mc_kill` name=tmc-blocked; `mc_cleanup` name=tmc-blocked, deleteBranch=true | Cleaned |
+| 8.44 | Clean report files | `rm -f $STATE_DIR/reports/*.json` | Reports cleaned |
+| 8.45 | Launch job for synthetic review test | `mc_launch` name=tmc-review, prompt="echo 'review test'" | Job launched |
+| 8.46 | **Wait 3-5 seconds** | — | — |
+| 8.47 | Get Job ID | `mc_status` name=tmc-review | Extract the UUID |
+| 8.48 | Inject review report | Write JSON to `$STATE_DIR/reports/<UUID>.json`: `{"jobId": "<UUID>", "jobName": "tmc-review", "status": "needs_review", "message": "Synthetic review test", "timestamp": "<now ISO>"}` | Report file created |
+| 8.49 | **Wait 15 seconds** | — | Monitor polls |
+| 8.50 | Verify Job Completed | `mc_status` name=tmc-review | Status should be `completed` (needs_review triggers completion) |
+| 8.51 | Verify Overview Alert | `mc_overview` | Alerts section shows: `- tmc-review [needs_review]: Synthetic review test` |
+| 8.52 | Verify Suggested Action | `mc_overview` | Suggested Actions shows: `1 job(s) need review - run mc_diff on completed work` |
+| 8.53 | Verify mc_diff | `mc_diff` name=tmc-review | Shows diff (even if empty) |
+| 8.54 | **Manual Check** | Check your active session for a notification | Should see: `👀 Job 'tmc-review' needs review...` |
+
+### 8G: Cleanup
+
+| # | Action | Verify |
+|---|--------|--------|
+| 8.55 | `mc_kill` name=tmc-reporter | Stopped (if still running) |
+| 8.56 | `mc_cleanup` all=true, deleteBranch=true | All test jobs cleaned |
+| 8.57 | Clean report files | `rm -f ~/.local/share/opencode-mission-control/$(basename $(git rev-parse --show-toplevel))/reports/*.json` | Reports cleaned |
+| 8.58 | `mc_jobs` | Empty |
 
 ---
 
