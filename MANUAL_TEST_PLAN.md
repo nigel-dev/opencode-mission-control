@@ -429,23 +429,25 @@ We manually simulate the agents' commits to control timing and test merge orderi
 
 ### Background: What Do Spawned Agents Know?
 
-**CRITICAL FINDING**: Spawned agents have **NO Mission Control awareness whatsoever**.
-
-The `.opencode/` directory is in `.gitignore`, so when `git worktree add` creates a new
-worktree, the plugin configuration is not copied. The spawned agent runs vanilla OpenCode
-with zero `mc_*` tools, no slash commands, no awareness hooks, and no compaction context.
+The `.opencode/` directory is **automatically symlinked** into every worktree via
+`BUILTIN_SYMLINKS` in `worktree-setup.ts`. Both `mc_launch` and the orchestrator's
+`launchJob` call `resolvePostCreateHook()`, which always includes `.opencode` in the
+symlink list. This means spawned agents **DO** have access to Mission Control tools.
 
 **What each agent CAN see:**
 - Its own prompt (passed via `opencode --prompt '...'`)
 - The full repo codebase (checked out at the worktree's branch)
-- Standard OpenCode tools (read, write, bash, grep, etc.) — but NOT Mission Control tools
+- Standard OpenCode tools (read, write, bash, grep, etc.)
+- ALL `mc_*` tools (plugin loaded via `.opencode` symlink)
+- `/mc-*` slash commands
+- Other jobs via `mc_jobs` (they can see sibling jobs)
+- `mc_report` tool for reporting status back to the orchestrator
 
 **What each agent CANNOT see:**
-- ANY `mc_*` tools (plugin not loaded in worktree)
-- Whether it's part of an orchestrated plan
-- Other agents' existence, progress, or terminal output
-- The merge train or integration branch
-- Its own job name or worktree context (awareness hook not loaded)
+- Whether it's part of an orchestrated plan (plan context not exposed to agents)
+- Other agents' terminal output (no cross-session capture)
+- The merge train or integration branch internals
+- The dependency graph (agents don't know what depends on them)
 
 ### 6A: Setup — Create Overlapping File Structure
 
@@ -590,8 +592,10 @@ You must read it IMMEDIATELY after launch.
 ## Phase 8 — mc_report Flow
 
 `mc_report` is called by spawned agents to report their status back to Mission Control.
-Since we can't call `mc_report` from the main worktree (it auto-detects the calling job),
-we verify it via **filesystem inspection** of report JSON files.
+Agents have access to `mc_report` because `.opencode` is automatically symlinked into
+every worktree. The `MC_REPORT_SUFFIX` appended to every agent prompt instructs agents
+to call `mc_report` at key milestones. We verify reports via **filesystem inspection**
+of report JSON files, and also check that `mc_status` and `mc_overview` surface report data.
 
 ### 8A: Launch a Reporting Job
 
@@ -603,8 +607,10 @@ we verify it via **filesystem inspection** of report JSON files.
 
 ### 8B: Verify Report Files (Non-Deterministic)
 
-**Note**: Whether an agent calls `mc_report` depends on the agent's behavior and whether
-the MC_REPORT_SUFFIX prompt injection is active. This check is observational.
+**Note**: Agents have `mc_report` available and are instructed to use it via `MC_REPORT_SUFFIX`.
+Reports should appear reliably, but agent behavior is non-deterministic. If no report appears
+after 15 seconds, investigate — the plugin is wired correctly, so absence likely indicates
+the agent ignored the prompt suffix or hasn't reached a reporting milestone yet.
 
 | # | Test | Action | Expected |
 |---|------|--------|----------|
@@ -823,9 +829,9 @@ rm -f "$STATE_DIR/state/plan.json" 2>/dev/null || true
 3. **State file corruption**: If we crash mid-test, `jobs.json` and `plan.json` may have orphaned entries. The Nuclear Cleanup script (top of document) handles this.
 4. **tmux session leak**: If `mc_kill` fails, tmux sessions persist. Phase 12 force-kills all `mc-tmc-*` sessions.
 5. **Integration branch leak**: Plan tests create `mc/integration-*` AND `mc/integration/*` branches and worktrees. Both patterns are cleaned in the Nuclear Cleanup script and Phase 12.
-6. **Agent unawareness of plan**: Spawned agents don't know they're part of an orchestrated plan. They can see sibling jobs via `mc_jobs` only if the plugin is loaded in their worktree — which it typically is NOT. This is a product gap, not a test risk.
+6. **Agent unawareness of plan**: Spawned agents have full MC tools (`.opencode` is symlinked) and can see sibling jobs via `mc_jobs`, but they don't know they're part of an orchestrated plan — plan context is not exposed to agents. They also have access to dangerous tools (`mc_kill`, `mc_plan_cancel`, `mc_merge`) with no guardrails.
 7. **Plan auto-push**: If all jobs in a plan reach `merged` state, the plan automatically pushes the integration branch to remote and enters `creating_pr` state. **ALWAYS cancel plans before all jobs complete** to prevent unwanted pushes.
-8. **Report non-determinism**: Whether an agent calls `mc_report` depends on prompt injection and agent behavior. Phase 8 tests are observational — a missing report is not a test failure.
+8. **Report reliability**: Agents have `mc_report` available (plugin loaded via `.opencode` symlink) and are instructed to call it via `MC_REPORT_SUFFIX` prompt injection. Report files should appear reliably, but agent behavior is ultimately non-deterministic — a missing report after 15 seconds warrants investigation but is not necessarily a plugin failure.
 9. **Launcher script timing**: `.mc-launch.sh` is deleted after 5 seconds. Phase 7 must read it immediately after launch. If you miss the window, the test is inconclusive, not failed.
 10. **Worktree initialization race**: Some operations may fail if attempted before the worktree is fully initialized. The 3-5 second wait after every `mc_launch` mitigates this.
 
@@ -833,41 +839,38 @@ rm -f "$STATE_DIR/state/plan.json" 2>/dev/null || true
 
 ## Agent Capabilities Reference
 
-### Current State: Spawned Agents Are Blind
+### Current State: Spawned Agents Have MC Tools
 
-Because `.opencode/` is gitignored and not copied to worktrees:
+The `.opencode/` directory is **automatically symlinked** into every worktree. This is
+implemented via `BUILTIN_SYMLINKS = ['.opencode']` in `src/lib/worktree-setup.ts`, which
+is included in every `resolvePostCreateHook()` call from both `mc_launch` and the
+orchestrator's `launchJob`. Plugin updates propagate automatically since it's a symlink.
 
 | Capability | Available? | Why |
 |------------|------------|-----|
-| `mc_*` tools | **NO** | Plugin not loaded (no `.opencode/plugins/`) |
-| `/mc-*` slash commands | **NO** | Plugin not loaded |
-| Worktree awareness | **NO** | `getWorktreeContext()` not running |
-| Compaction context | **NO** | Plugin hooks not registered |
-| Auto-status toasts | **NO** | Plugin not loaded |
-| Plan awareness | **NO** | Not implemented even if plugin were loaded |
+| `mc_*` tools | **YES** | Plugin loaded via `.opencode` symlink |
+| `/mc-*` slash commands | **YES** | Plugin loaded via `.opencode` symlink |
+| `mc_report` | **YES** | Agents can report status back to orchestrator |
+| `mc_jobs` | **YES** | Agents can see sibling jobs |
+| Worktree awareness | **YES** | `getWorktreeContext()` runs in agent session |
 | Standard OpenCode tools | **YES** | Read, write, bash, grep, etc. all work |
 | Git operations | **YES** | Full git access within the worktree |
-| `mc_report` | **MAYBE** | Only if `.opencode/` is symlinked via `symlinkDirs` |
+| Plan awareness | **NO** | Plan context not exposed to agent prompts |
+| Cross-agent visibility | **PARTIAL** | Can list jobs via `mc_jobs` but cannot capture other agents' output |
+| Orchestrator control | **UNSAFE** | Agents COULD call `mc_kill`, `mc_plan_cancel`, `mc_merge` — no guardrails prevent this |
 
-### Potential Fix: Copy `.opencode/` to Worktrees
+### Safety Consideration: Dangerous Tools in Agent Hands
 
-The `createWorktree()` function already supports a `postCreate` hook with `copyFiles` and
-`symlinkDirs` options, but `mc_launch` and the orchestrator's `launchJob` don't use them
-for `.opencode/` by default (though `.opencode` is always included in `symlinkDirs` per README).
+Since agents have full access to ALL `mc_*` tools, they could theoretically:
+- Kill other jobs (`mc_kill`)
+- Cancel the orchestrating plan (`mc_plan_cancel`)
+- Merge branches prematurely (`mc_merge`)
+- Launch new jobs (`mc_launch`)
 
-A symlink would be ideal (plugin updates propagate automatically):
-```typescript
-await createWorktree({
-  branch,
-  postCreate: {
-    symlinkDirs: ['.opencode'],
-  },
-});
-```
-
-This would give agents access to the plugin and all its tools. However, it raises the
-question of which tools should be *safe* for agents to use vs. which could disrupt
-the orchestrator (e.g., `mc_kill`, `mc_plan_cancel`, `mc_merge`).
+This is mitigated by:
+1. Simple test prompts that don't trigger complex tool use
+2. Quick kills — agents are stopped before they can cause harm
+3. The MC_REPORT_SUFFIX prompt only instructs agents to call `mc_report`, not other tools
 
 ### Monitor Mechanisms
 
