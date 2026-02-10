@@ -68,7 +68,10 @@ export const mc_merge: ToolDefinition = tool({
       });
 
       if (squashResult.exitCode !== 0) {
-        await gitCommand(['merge', '--abort'], {
+        await gitCommand(['reset', '--hard', 'HEAD'], {
+          cwd: mainWorktreePath,
+        }).catch(() => {});
+        await gitCommand(['clean', '-fd'], {
           cwd: mainWorktreePath,
         }).catch(() => {});
         throw new Error(
@@ -82,7 +85,10 @@ export const mc_merge: ToolDefinition = tool({
       });
 
       if (commitResult.exitCode !== 0) {
-        await gitCommand(['merge', '--abort'], {
+        await gitCommand(['reset', '--hard', 'HEAD'], {
+          cwd: mainWorktreePath,
+        }).catch(() => {});
+        await gitCommand(['clean', '-fd'], {
           cwd: mainWorktreePath,
         }).catch(() => {});
         throw new Error(

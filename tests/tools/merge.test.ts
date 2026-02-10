@@ -1,6 +1,12 @@
-import { describe, it, expect, beforeEach, vi, type Mock } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi, type Mock } from 'vitest';
+import { join } from 'path';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
 import type { Job } from '../../src/lib/job-state';
 import * as jobState from '../../src/lib/job-state';
+import * as worktree from '../../src/lib/worktree';
+import * as config from '../../src/lib/config';
+import * as planState from '../../src/lib/plan-state';
 
 const { mc_merge } = await import('../../src/tools/merge');
 
@@ -208,5 +214,204 @@ describe('mc_merge', () => {
       } catch {
       }
     });
+  });
+});
+
+describe('squash merge integration', () => {
+  async function exec(
+    args: string[],
+    cwd: string,
+  ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+    const proc = Bun.spawn(args, {
+      cwd,
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+
+    const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
+
+    return {
+      stdout: stdout.trim(),
+      stderr: stderr.trim(),
+      exitCode,
+    };
+  }
+
+  async function mustExec(args: string[], cwd: string): Promise<string> {
+    const result = await exec(args, cwd);
+    if (result.exitCode !== 0) {
+      throw new Error(`Command failed: ${args.join(' ')}\n${result.stderr}`);
+    }
+    return result.stdout;
+  }
+
+  async function setupRepo(): Promise<{ repoDir: string; rootDir: string }> {
+    const rootDir = mkdtempSync(join(tmpdir(), 'mc-merge-test-'));
+    const repoDir = join(rootDir, 'repo');
+    mkdirSync(repoDir, { recursive: true });
+
+    await mustExec(['git', 'init'], repoDir);
+    await mustExec(['git', 'config', 'user.email', 'test@test.com'], repoDir);
+    await mustExec(['git', 'config', 'user.name', 'Test'], repoDir);
+
+    writeFileSync(join(repoDir, 'base.txt'), 'base\n');
+    await mustExec(['git', 'add', '.'], repoDir);
+    await mustExec(['git', 'commit', '-m', 'initial'], repoDir);
+    await mustExec(['git', 'branch', '-M', 'main'], repoDir);
+
+    return { repoDir, rootDir };
+  }
+
+  async function createBranchCommit(
+    repoDir: string,
+    branch: string,
+    file: string,
+    content: string,
+  ): Promise<void> {
+    await mustExec(['git', 'checkout', '-b', branch, 'main'], repoDir);
+    writeFileSync(join(repoDir, file), content);
+    await mustExec(['git', 'add', file], repoDir);
+    await mustExec(['git', 'commit', '-m', `add ${branch}`], repoDir);
+    await mustExec(['git', 'checkout', 'main'], repoDir);
+  }
+
+  function mockDependencies(repoDir: string, branchName: string) {
+    vi.spyOn(jobState, 'getJobByName').mockResolvedValue({
+      id: 'test-job',
+      name: 'test-job',
+      worktreePath: '/unused',
+      branch: branchName,
+      tmuxTarget: 'mc-test',
+      placement: 'session',
+      status: 'completed',
+      prompt: 'test',
+      mode: 'vanilla',
+      createdAt: new Date().toISOString(),
+    } as Job);
+
+    vi.spyOn(worktree, 'getMainWorktree').mockResolvedValue(repoDir);
+    vi.spyOn(config, 'loadConfig').mockResolvedValue({ mergeStrategy: 'squash' } as any);
+    vi.spyOn(planState, 'loadPlan').mockResolvedValue(null);
+  }
+
+  let rootDir: string;
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    if (rootDir) {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it('squash merge conflict leaves clean working tree after abort', async () => {
+    const repo = await setupRepo();
+    rootDir = repo.rootDir;
+    const { repoDir } = repo;
+
+    writeFileSync(join(repoDir, 'shared.txt'), 'base\n');
+    await mustExec(['git', 'add', 'shared.txt'], repoDir);
+    await mustExec(['git', 'commit', '-m', 'add shared.txt'], repoDir);
+
+    await createBranchCommit(repoDir, 'branch-a', 'shared.txt', 'left\n');
+    await createBranchCommit(repoDir, 'branch-b', 'shared.txt', 'right\n');
+
+    mockDependencies(repoDir, 'branch-a');
+    await mc_merge.execute({ name: 'test-job' }, mockContext);
+
+    mockDependencies(repoDir, 'branch-b');
+    await expect(
+      mc_merge.execute({ name: 'test-job' }, mockContext),
+    ).rejects.toThrow('Squash merge failed');
+
+    const status = await exec(['git', 'status', '--porcelain'], repoDir);
+    expect(status.stdout).toBe('');
+  });
+
+  it('squash merge adding new files + conflict cleans up untracked files', async () => {
+    const repo = await setupRepo();
+    rootDir = repo.rootDir;
+    const { repoDir } = repo;
+
+    writeFileSync(join(repoDir, 'shared.txt'), 'base\n');
+    await mustExec(['git', 'add', 'shared.txt'], repoDir);
+    await mustExec(['git', 'commit', '-m', 'add shared.txt'], repoDir);
+
+    await mustExec(['git', 'checkout', '-b', 'branch-a', 'main'], repoDir);
+    writeFileSync(join(repoDir, 'shared.txt'), 'left\n');
+    writeFileSync(join(repoDir, 'new-file.txt'), 'new content\n');
+    await mustExec(['git', 'add', 'shared.txt', 'new-file.txt'], repoDir);
+    await mustExec(['git', 'commit', '-m', 'branch-a changes'], repoDir);
+    await mustExec(['git', 'checkout', 'main'], repoDir);
+
+    await createBranchCommit(repoDir, 'branch-b', 'shared.txt', 'right\n');
+
+    mockDependencies(repoDir, 'branch-a');
+    await mc_merge.execute({ name: 'test-job' }, mockContext);
+
+    mockDependencies(repoDir, 'branch-b');
+    await expect(
+      mc_merge.execute({ name: 'test-job' }, mockContext),
+    ).rejects.toThrow('Squash merge failed');
+
+    const status = await exec(['git', 'status', '--porcelain'], repoDir);
+    expect(status.stdout).toBe('');
+  });
+
+  it('--no-ff merge conflict aborts cleanly with merge --abort', async () => {
+    const repo = await setupRepo();
+    rootDir = repo.rootDir;
+    const { repoDir } = repo;
+
+    writeFileSync(join(repoDir, 'shared.txt'), 'base\n');
+    await mustExec(['git', 'add', 'shared.txt'], repoDir);
+    await mustExec(['git', 'commit', '-m', 'add shared.txt'], repoDir);
+
+    await createBranchCommit(repoDir, 'branch-a', 'shared.txt', 'left\n');
+    await createBranchCommit(repoDir, 'branch-b', 'shared.txt', 'right\n');
+
+    vi.spyOn(jobState, 'getJobByName').mockResolvedValue({
+      id: 'test-job',
+      name: 'test-job',
+      worktreePath: '/unused',
+      branch: 'branch-a',
+      tmuxTarget: 'mc-test',
+      placement: 'session',
+      status: 'completed',
+      prompt: 'test',
+      mode: 'vanilla',
+      createdAt: new Date().toISOString(),
+    } as Job);
+    vi.spyOn(worktree, 'getMainWorktree').mockResolvedValue(repoDir);
+    vi.spyOn(config, 'loadConfig').mockResolvedValue({ mergeStrategy: 'merge' } as any);
+    vi.spyOn(planState, 'loadPlan').mockResolvedValue(null);
+
+    await mc_merge.execute({ name: 'test-job', strategy: 'merge' }, mockContext);
+
+    vi.spyOn(jobState, 'getJobByName').mockResolvedValue({
+      id: 'test-job',
+      name: 'test-job',
+      worktreePath: '/unused',
+      branch: 'branch-b',
+      tmuxTarget: 'mc-test',
+      placement: 'session',
+      status: 'completed',
+      prompt: 'test',
+      mode: 'vanilla',
+      createdAt: new Date().toISOString(),
+    } as Job);
+    vi.spyOn(worktree, 'getMainWorktree').mockResolvedValue(repoDir);
+    vi.spyOn(config, 'loadConfig').mockResolvedValue({ mergeStrategy: 'merge' } as any);
+    vi.spyOn(planState, 'loadPlan').mockResolvedValue(null);
+
+    await expect(
+      mc_merge.execute({ name: 'test-job', strategy: 'merge' }, mockContext),
+    ).rejects.toThrow('Merge failed');
+
+    const status = await exec(['git', 'status', '--porcelain'], repoDir);
+    expect(status.stdout).toBe('');
   });
 });
