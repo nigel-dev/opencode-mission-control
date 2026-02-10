@@ -213,9 +213,6 @@ export async function capturePane(
   }
 }
 
-/**
- * Send keys to a tmux pane
- */
 export async function sendKeys(target: string, keys: string): Promise<void> {
   try {
     const proc = spawn(["tmux", "send-keys", "-t", target, keys], { stderr: "pipe" });

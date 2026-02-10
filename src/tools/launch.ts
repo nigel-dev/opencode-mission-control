@@ -16,7 +16,8 @@ import { loadConfig } from '../lib/config';
 import { detectOMO } from '../lib/omo';
 import { copyPlansToWorktree } from '../lib/plan-copier';
 import { resolvePostCreateHook } from '../lib/worktree-setup';
-import { writePromptFile, cleanupPromptFile, buildPromptFileCommand } from '../lib/prompt-file';
+import { writePromptFile, cleanupPromptFile, writeLauncherScript, cleanupLauncherScript } from '../lib/prompt-file';
+import { getCurrentModel } from '../lib/model-tracker';
 
 /**
  * Sleep for a given number of milliseconds
@@ -168,53 +169,10 @@ export const mc_launch: ToolDefinition = tool({
       );
     }
 
-    // 5. Create tmux session or window
-    try {
-      if (placement === 'session') {
-        await createSession({
-          name: tmuxSessionName,
-          workdir: worktreePath,
-        });
-      } else {
-        const currentSession = getCurrentSession()!;
-        await createWindow({
-          session: currentSession,
-          name: sanitizedName,
-          workdir: worktreePath,
-        });
-      }
-    } catch (error) {
-      // Cleanup worktree on tmux failure
-      try {
-        await removeWorktree(worktreePath, true);
-      } catch {
-        // Best-effort cleanup
-      }
-      throw new Error(
-        `Failed to create tmux ${placement}: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
-
-    // 6. Set up pane-died hook for completion detection
-    try {
-      const hookCommand = `run-shell "echo '${jobId}' >> .mission-control/completed-jobs.log"`;
-      await setPaneDiedHook(tmuxTarget, hookCommand);
-    } catch {
-      // Non-fatal: pane-died hook is supplementary; polling is primary
-    }
-
-    // 7. Handle OMO modes (copy plans if needed)
+    // 5. Handle OMO modes (copy plans if needed)
     if (mode !== 'vanilla') {
       const omoStatus = await detectOMO();
       if (!omoStatus.detected) {
-        // Cleanup on failure
-        try {
-          if (placement === 'session') {
-            await killSession(tmuxSessionName);
-          }
-        } catch {
-          // Best-effort cleanup
-        }
         try {
           await removeWorktree(worktreePath, true);
         } catch {
@@ -225,20 +183,20 @@ export const mc_launch: ToolDefinition = tool({
         );
       }
 
-      // Copy plans for OMO modes
       if (mode === 'plan' || mode === 'ralph' || mode === 'ulw') {
         try {
           const sourcePlansPath = './.sisyphus/plans';
           const targetPlansPath = `${worktreePath}/.sisyphus/plans`;
           await copyPlansToWorktree(sourcePlansPath, targetPlansPath);
-        } catch (error) {
+        } catch {
           // Non-fatal: plans might not exist
         }
       }
     }
 
-    // 8. Send launch command to tmux pane via temp file (avoids shell injection)
+    // 6. Write launcher script before creating tmux session
     let promptFilePath: string | undefined;
+    let launcherPath: string | undefined;
     try {
       const fullPrompt = buildFullPrompt({
         prompt: args.prompt,
@@ -247,12 +205,67 @@ export const mc_launch: ToolDefinition = tool({
         autoCommit: config.autoCommit,
       });
       promptFilePath = await writePromptFile(worktreePath, fullPrompt);
-      const launchCmd = buildPromptFileCommand(promptFilePath);
-      await sendKeys(tmuxTarget, launchCmd);
-      await sendKeys(tmuxTarget, 'Enter');
-      cleanupPromptFile(promptFilePath);
+      const model = getCurrentModel();
+      launcherPath = await writeLauncherScript(worktreePath, promptFilePath, model);
+    } catch (error) {
+      if (promptFilePath) {
+        cleanupPromptFile(promptFilePath, 0);
+      }
+      try {
+        await removeWorktree(worktreePath, true);
+      } catch {
+        // Best-effort cleanup
+      }
+      throw new Error(
+        `Failed to write launch files: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
 
-      if (mode !== 'vanilla') {
+    // 7. Create tmux session/window with launcher as initial command
+    const initialCommand = `bash '${launcherPath}'`;
+    try {
+      if (placement === 'session') {
+        await createSession({
+          name: tmuxSessionName,
+          workdir: worktreePath,
+          command: initialCommand,
+        });
+      } else {
+        const currentSession = getCurrentSession()!;
+        await createWindow({
+          session: currentSession,
+          name: sanitizedName,
+          workdir: worktreePath,
+          command: initialCommand,
+        });
+      }
+    } catch (error) {
+      cleanupPromptFile(promptFilePath!, 0);
+      cleanupLauncherScript(worktreePath, 0);
+      try {
+        await removeWorktree(worktreePath, true);
+      } catch {
+        // Best-effort cleanup
+      }
+      throw new Error(
+        `Failed to create tmux ${placement}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+
+    // 8. Set up pane-died hook for completion detection
+    try {
+      const hookCommand = `run-shell "echo '${jobId}' >> .mission-control/completed-jobs.log"`;
+      await setPaneDiedHook(tmuxTarget, hookCommand);
+    } catch {
+      // Non-fatal: pane-died hook is supplementary; polling is primary
+    }
+
+    cleanupPromptFile(promptFilePath!);
+    cleanupLauncherScript(worktreePath);
+
+    // 9. For OMO modes, send follow-up commands after opencode starts
+    if (mode !== 'vanilla') {
+      try {
         await sleep(2000);
         switch (mode) {
           case 'plan':
@@ -268,26 +281,9 @@ export const mc_launch: ToolDefinition = tool({
             await sendKeys(tmuxTarget, 'Enter');
             break;
         }
-      }
-    } catch (error) {
-      if (promptFilePath) {
-        cleanupPromptFile(promptFilePath, 0);
-      }
-      try {
-        if (placement === 'session') {
-          await killSession(tmuxSessionName);
-        }
       } catch {
-        // Best-effort cleanup
+        // Non-fatal: OMO command delivery is best-effort
       }
-      try {
-        await removeWorktree(worktreePath, true);
-      } catch {
-        // Best-effort cleanup
-      }
-      throw new Error(
-        `Failed to send launch command: ${error instanceof Error ? error.message : String(error)}`,
-      );
     }
 
     // 9. Create and persist job

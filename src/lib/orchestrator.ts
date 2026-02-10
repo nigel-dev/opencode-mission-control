@@ -4,11 +4,13 @@ import type { PlanSpec, JobSpec, PlanStatus, CheckpointType } from './plan-types
 import { loadPlan, savePlan, updatePlanJob, clearPlan, validateGhAuth } from './plan-state';
 import { createIntegrationBranch, deleteIntegrationBranch } from './integration';
 import { MergeTrain } from './merge-train';
-import { addJob, getRunningJobs, updateJob, type Job } from './job-state';
+import { addJob, getRunningJobs, updateJob, loadJobState, removeJob, type Job } from './job-state';
 import { JobMonitor } from './monitor';
+import { removeReport } from './reports';
 import { createWorktree, removeWorktree } from './worktree';
 import { resolvePostCreateHook } from './worktree-setup';
-import { writePromptFile, cleanupPromptFile, buildPromptFileCommand } from './prompt-file';
+import { writePromptFile, cleanupPromptFile, writeLauncherScript, cleanupLauncherScript } from './prompt-file';
+import { getCurrentModel } from './model-tracker';
 import {
   createSession,
   createWindow,
@@ -30,6 +32,7 @@ export type ToastCallback = (
   variant: ToastVariant,
   duration: number,
 ) => void;
+export type NotifyCallback = (message: string) => void;
 
 const TERMINAL_PLAN_STATUSES: PlanStatus[] = ['completed', 'failed', 'canceled'];
 
@@ -143,6 +146,7 @@ export class Orchestrator {
   private subscriptionsActive = false;
   private checkpoint: CheckpointType | null = null;
   private toastCallback: ToastCallback | null = null;
+  private notifyCallback: NotifyCallback | null = null;
   private jobsLaunchedCount = 0;
   private firstJobCompleted = false;
 
@@ -159,12 +163,16 @@ export class Orchestrator {
     };
   }
 
-  constructor(monitor: JobMonitor, config: MCConfig, toastCallback?: ToastCallback) {
+  constructor(monitor: JobMonitor, config: MCConfig, callbacks?: ToastCallback | { toast?: ToastCallback; notify?: NotifyCallback }) {
     this.monitor = monitor;
     this.config = config;
-    this.toastCallback = toastCallback ?? null;
-    this.handleJobComplete = this.handleJobComplete.bind(this);
-    this.handleJobFailed = this.handleJobFailed.bind(this);
+    if (typeof callbacks === 'function') {
+      this.toastCallback = callbacks;
+      this.notifyCallback = null;
+    } else {
+      this.toastCallback = callbacks?.toast ?? null;
+      this.notifyCallback = callbacks?.notify ?? null;
+    }
   }
 
   private showToast(title: string, message: string, variant: ToastVariant): void {
@@ -176,6 +184,11 @@ export class Orchestrator {
       error: 8000,
     };
     this.toastCallback(title, message, variant, durations[variant]);
+  }
+
+  private notify(message: string): void {
+    if (!this.notifyCallback) return;
+    this.notifyCallback(message);
   }
 
   getCheckpoint(): CheckpointType | null {
@@ -223,7 +236,8 @@ export class Orchestrator {
       })),
     };
 
-    const integration = await createIntegrationBranch(spec.id);
+    const integrationPostCreate = resolvePostCreateHook(this.config.worktreeSetup);
+    const integration = await createIntegrationBranch(spec.id, integrationPostCreate);
     plan.integrationBranch = integration.branch;
     plan.integrationWorktree = integration.worktreePath;
 
@@ -248,6 +262,7 @@ export class Orchestrator {
     this.subscribeToMonitorEvents();
     this.startReconciler();
     this.showToast('Mission Control', `Plan "${plan.name}" started.`, 'info');
+    this.notify(`📋 Plan "${plan.name}" started in autopilot mode. ${plan.jobs.length} jobs queued.`);
     return { pending: false };
   }
 
@@ -357,11 +372,13 @@ export class Orchestrator {
 
       if (launchedThisCycle > 0) {
         this.jobsLaunchedCount += launchedThisCycle;
+        const launched = mergeOrder.filter(j => j.status === 'running').map(j => j.name);
         this.showToast(
           'Mission Control',
           `Launched ${launchedThisCycle} job(s) (${this.jobsLaunchedCount} total).`,
           'info',
         );
+        this.notify(`🚀 Launched ${launchedThisCycle} job(s): ${launched.join(', ')}. (${this.jobsLaunchedCount}/${mergeOrder.length} total launched)`);
       }
 
       for (const job of mergeOrder) {
@@ -401,7 +418,10 @@ export class Orchestrator {
       if (this.mergeTrain && this.mergeTrain.getQueue().length > 0) {
         const nextJob = this.mergeTrain.getQueue()[0];
         this.showToast('Mission Control', `Merging job "${nextJob.name}"...`, 'info');
+        this.notify(`⇄ Merging job "${nextJob.name}" into integration branch...`);
         const mergeResult = await this.mergeTrain.processNext();
+
+        const mergedCount = mergeOrder.filter(j => j.status === 'merged').length;
 
         if (mergeResult.success) {
           await updatePlanJob(plan.id, nextJob.name, {
@@ -414,6 +434,7 @@ export class Orchestrator {
             current.mergedAt = mergeResult.mergedAt;
           }
           this.showToast('Mission Control', `Job "${nextJob.name}" merged successfully.`, 'success');
+          this.notify(`✅ Job "${nextJob.name}" merged successfully. (${mergedCount + 1}/${mergeOrder.length} merged)`);
         } else if (mergeResult.type === 'conflict') {
           await updatePlanJob(plan.id, nextJob.name, {
             status: 'conflict',
@@ -427,6 +448,7 @@ export class Orchestrator {
 
           plan.status = 'failed';
           this.showToast('Mission Control', `Merge conflict in job "${nextJob.name}".`, 'error');
+          this.notify(`❌ Merge conflict in job "${nextJob.name}". Files: ${mergeResult.files?.join(', ') ?? 'unknown'}. Plan failed.`);
         } else {
           await updatePlanJob(plan.id, nextJob.name, {
             status: 'failed',
@@ -440,6 +462,7 @@ export class Orchestrator {
 
           plan.status = 'failed';
           this.showToast('Mission Control', `Job "${nextJob.name}" failed during merge.`, 'error');
+          this.notify(`❌ Job "${nextJob.name}" failed merge tests. Plan failed.`);
         }
       }
 
@@ -449,8 +472,10 @@ export class Orchestrator {
       }
 
       const allMerged = latestPlan.jobs.length > 0 && latestPlan.jobs.every((job) => job.status === 'merged');
-      if (allMerged) {
+      // Guard: don't re-enter PR creation if already in progress or terminal
+      if (allMerged && latestPlan.status !== 'creating_pr' && latestPlan.status !== 'completed' && latestPlan.status !== 'failed') {
         this.showToast('Mission Control', 'All jobs merged. Creating PR...', 'info');
+        this.notify(`🎯 All ${latestPlan.jobs.length} jobs merged. Creating PR...`);
 
         if (this.isSupervisor(latestPlan)) {
           await this.setCheckpoint('pre_pr', latestPlan);
@@ -460,14 +485,26 @@ export class Orchestrator {
         latestPlan.status = 'creating_pr';
         await savePlan(latestPlan);
 
-        const prUrl = await this.createPR();
-        latestPlan.prUrl = prUrl;
-        latestPlan.status = 'completed';
-        latestPlan.completedAt = new Date().toISOString();
-        await savePlan(latestPlan);
-        this.stopReconciler();
-        this.unsubscribeFromMonitorEvents();
-        this.showToast('Mission Control', `Plan completed! PR: ${prUrl}`, 'success');
+        try {
+          const prUrl = await this.createPR();
+          latestPlan.prUrl = prUrl;
+          latestPlan.status = 'completed';
+          latestPlan.completedAt = new Date().toISOString();
+          await savePlan(latestPlan);
+          this.stopReconciler();
+          this.unsubscribeFromMonitorEvents();
+          this.showToast('Mission Control', `Plan completed! PR: ${prUrl}`, 'success');
+          this.notify(`🎉 Plan "${latestPlan.name}" completed! PR created: ${prUrl}`);
+        } catch (prError) {
+          latestPlan.status = 'failed';
+          latestPlan.completedAt = new Date().toISOString();
+          await savePlan(latestPlan);
+          this.stopReconciler();
+          this.unsubscribeFromMonitorEvents();
+          const errMsg = prError instanceof Error ? prError.message : String(prError);
+          this.showToast('Mission Control', `PR creation failed: ${errMsg}`, 'error');
+          this.notify(`❌ Plan "${latestPlan.name}" failed: ${errMsg}`);
+        }
         return;
       }
 
@@ -478,6 +515,7 @@ export class Orchestrator {
           this.stopReconciler();
           this.unsubscribeFromMonitorEvents();
           this.showToast('Mission Control', `Plan "${latestPlan.name}" failed.`, 'error');
+          this.notify(`❌ Plan "${latestPlan.name}" failed.`);
         }
         await savePlan(latestPlan);
       }
@@ -522,19 +560,6 @@ export class Orchestrator {
       );
       worktreePath = await createWorktree({ branch, postCreate });
 
-      if (placement === 'session') {
-        await createSession({
-          name: tmuxSessionName,
-          workdir: worktreePath,
-        });
-      } else {
-        await createWindow({
-          session: getCurrentSession()!,
-          name: sanitizedName,
-          workdir: worktreePath,
-        });
-      }
-
       const mcReportSuffix = `\n\nCRITICAL — STATUS REPORTING REQUIRED:
 You MUST call the mc_report tool at these points — this is NOT optional:
 
@@ -551,14 +576,41 @@ If your work needs human review before it can proceed: mc_report(status: "needs_
         : '';
       const jobPrompt = job.prompt + mcReportSuffix + autoCommitSuffix;
       promptFilePath = await writePromptFile(worktreePath, jobPrompt);
-      const launchCommand = buildPromptFileCommand(promptFilePath);
-      await setPaneDiedHook(tmuxTarget, `run-shell "echo '${job.id}' >> .mission-control/completed-jobs.log"`);
-      await sendKeys(tmuxTarget, launchCommand);
-      await sendKeys(tmuxTarget, 'Enter');
-      cleanupPromptFile(promptFilePath);
+      const model = getCurrentModel();
+      const launcherPath = await writeLauncherScript(worktreePath, promptFilePath, model);
 
+      const initialCommand = `bash '${launcherPath}'`;
+      if (placement === 'session') {
+        await createSession({
+          name: tmuxSessionName,
+          workdir: worktreePath,
+          command: initialCommand,
+        });
+      } else {
+        await createWindow({
+          session: getCurrentSession()!,
+          name: sanitizedName,
+          workdir: worktreePath,
+          command: initialCommand,
+        });
+      }
+
+      await setPaneDiedHook(tmuxTarget, `run-shell "echo '${job.id}' >> .mission-control/completed-jobs.log"`);
+      cleanupPromptFile(promptFilePath);
+      cleanupLauncherScript(worktreePath);
+
+      const existingState = await loadJobState();
+      const staleJobs = existingState.jobs.filter(
+        (j) => j.name === job.name && j.status !== 'running',
+      );
+      for (const stale of staleJobs) {
+        await removeReport(stale.id).catch(() => {});
+        await removeJob(stale.id).catch(() => {});
+      }
+
+      const jobId = randomUUID();
       await addJob({
-        id: randomUUID(),
+        id: jobId,
         name: job.name,
         worktreePath,
         branch,
@@ -604,7 +656,7 @@ If your work needs human review before it can proceed: mc_report(status: "needs_
     }
   }
 
-  private handleJobComplete(job: Job): void {
+  private handleJobComplete = (job: Job): void => {
     if (job.planId && this.activePlanId && job.planId === this.activePlanId) {
       if (!this.firstJobCompleted) {
         this.firstJobCompleted = true;
@@ -623,7 +675,7 @@ If your work needs human review before it can proceed: mc_report(status: "needs_
     }
   }
 
-  private handleJobFailed(job: Job): void {
+  private handleJobFailed = (job: Job): void => {
     if (job.planId && this.activePlanId && job.planId === this.activePlanId) {
       updatePlanJob(job.planId, job.name, {
         status: 'failed',
@@ -645,6 +697,7 @@ If your work needs human review before it can proceed: mc_report(status: "needs_
           plan.completedAt = new Date().toISOString();
           await savePlan(plan);
           this.showToast('Mission Control', `Plan failed: job "${job.name}" failed.`, 'error');
+          this.notify(`❌ Plan failed: job "${job.name}" failed.`);
         })
         .catch(() => {})
         .finally(() => {
@@ -748,6 +801,7 @@ If your work needs human review before it can proceed: mc_report(status: "needs_
     }
 
     const title = plan.name.replace(/"/g, '\\"');
+    const body = `Automated PR from Mission Control plan: ${plan.name}\n\nJobs:\n${plan.jobs.map((j) => `- ${j.name}`).join('\n')}`;
     const prResult = await this.runCommand([
       'gh',
       'pr',
@@ -758,6 +812,8 @@ If your work needs human review before it can proceed: mc_report(status: "needs_
       'main',
       '--title',
       title,
+      '--body',
+      body,
     ]);
 
     if (prResult.exitCode !== 0) {

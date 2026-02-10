@@ -8,6 +8,7 @@ import { join } from 'path';
 import { gitCommand } from './git';
 import { getProjectId, getXdgDataDir } from './paths';
 import { createWorktree, removeWorktree } from './worktree';
+import type { PostCreateHook } from './providers/worktree-provider';
 
 const XDG_DATA_DIR = getXdgDataDir();
 
@@ -21,6 +22,7 @@ const XDG_DATA_DIR = getXdgDataDir();
  */
 export async function createIntegrationBranch(
   planId: string,
+  postCreate?: PostCreateHook,
 ): Promise<{ branch: string; worktreePath: string }> {
   const projectId = await getProjectId();
   const branchName = `mc/integration-${planId}`;
@@ -55,10 +57,10 @@ export async function createIntegrationBranch(
     throw new Error(`Failed to create integration branch: ${createBranchResult.stderr}`);
   }
 
-  // Create the worktree for the integration branch
   const worktreePathResult = await createWorktree({
     branch: branchName,
     basePath: worktreePath,
+    postCreate,
   });
 
   return {

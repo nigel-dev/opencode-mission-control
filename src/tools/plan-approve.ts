@@ -1,7 +1,7 @@
 import { tool, type ToolDefinition } from '@opencode-ai/plugin';
 import { loadPlan, savePlan } from '../lib/plan-state';
 import { Orchestrator } from '../lib/orchestrator';
-import { getSharedMonitor } from '../lib/orchestrator-singleton';
+import { getSharedMonitor, getSharedNotifyCallback, setSharedOrchestrator } from '../lib/orchestrator-singleton';
 import type { CheckpointType } from '../lib/plan-types';
 import { loadConfig } from '../lib/config';
 
@@ -27,7 +27,8 @@ export const mc_plan_approve: ToolDefinition = tool({
       await savePlan(plan);
 
       const config = await loadConfig();
-      const orchestrator = new Orchestrator(getSharedMonitor(), config);
+      const orchestrator = new Orchestrator(getSharedMonitor(), config, { notify: getSharedNotifyCallback() ?? undefined });
+      setSharedOrchestrator(orchestrator);
       await orchestrator.resumePlan();
 
       return [
@@ -50,7 +51,8 @@ export const mc_plan_approve: ToolDefinition = tool({
     await savePlan(plan);
 
     const config = await loadConfig();
-    const orchestrator = new Orchestrator(getSharedMonitor(), config);
+    const orchestrator = new Orchestrator(getSharedMonitor(), config, { notify: getSharedNotifyCallback() ?? undefined });
+    setSharedOrchestrator(orchestrator);
     await orchestrator.resumePlan();
 
     return [

@@ -33,7 +33,14 @@ export const mc_report: ToolDefinition = tool({
     }
 
     const state = await loadJobState();
+    // Match only running jobs to avoid picking up stale entries from previous runs
+    // that share the same name/worktree path
     const job = state.jobs.find(
+      (j) =>
+        j.status === 'running' &&
+        (j.worktreePath === managed.worktreePath ||
+         j.name === managed.jobName),
+    ) ?? state.jobs.find(
       (j) =>
         j.worktreePath === managed.worktreePath ||
         j.name === managed.jobName,

@@ -55,6 +55,7 @@ function getDedupKey(event: NotificationEvent, job: Job, reportTimestamp?: strin
 export function setupNotifications(options: SetupNotificationsOptions): void {
   const { client, monitor, getActiveSessionID } = options;
   const sent = new Set<string>();
+  let pending: Promise<void> = Promise.resolve();
 
   const notify = async (event: NotificationEvent, job: Job): Promise<void> => {
     const report = event === 'blocked' || event === 'needs_review' ? await readReport(job.id) : null;
@@ -64,7 +65,7 @@ export function setupNotifications(options: SetupNotificationsOptions): void {
     }
 
     const sessionID = await getActiveSessionID();
-    if (!sessionID) {
+    if (!sessionID || !sessionID.startsWith('ses')) {
       return;
     }
 
@@ -87,19 +88,12 @@ export function setupNotifications(options: SetupNotificationsOptions): void {
     sent.add(dedupKey);
   };
 
-  monitor.on('complete', (job) => {
-    void notify('complete', job).catch(() => {});
-  });
+  const enqueue = (event: NotificationEvent, job: Job): void => {
+    pending = pending.then(() => notify(event, job)).catch(() => {});
+  };
 
-  monitor.on('failed', (job) => {
-    void notify('failed', job).catch(() => {});
-  });
-
-  monitor.on('blocked', (job) => {
-    void notify('blocked', job).catch(() => {});
-  });
-
-  monitor.on('needs_review', (job) => {
-    void notify('needs_review', job).catch(() => {});
-  });
+  monitor.on('complete', (job) => enqueue('complete', job));
+  monitor.on('failed', (job) => enqueue('failed', job));
+  monitor.on('blocked', (job) => enqueue('blocked', job));
+  monitor.on('needs_review', (job) => enqueue('needs_review', job));
 }

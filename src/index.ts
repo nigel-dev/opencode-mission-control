@@ -1,10 +1,14 @@
 import type { Plugin } from '@opencode-ai/plugin';
-import { getSharedMonitor } from './lib/orchestrator-singleton';
+import { getSharedMonitor, setSharedNotifyCallback, getSharedNotifyCallback, setSharedOrchestrator } from './lib/orchestrator-singleton';
 import { getCompactionContext } from './hooks/compaction';
 import { shouldShowAutoStatus, getAutoStatusMessage } from './hooks/auto-status';
 import { setupNotifications } from './hooks/notifications';
 import { registerCommands, createCommandHandler } from './commands';
 import { isTmuxAvailable } from './lib/tmux';
+import { loadPlan } from './lib/plan-state';
+import { Orchestrator } from './lib/orchestrator';
+import { loadConfig } from './lib/config';
+import { setCurrentModel } from './lib/model-tracker';
 import { mc_launch } from './tools/launch';
 import { mc_jobs } from './tools/jobs';
 import { mc_status } from './tools/status';
@@ -27,6 +31,10 @@ interface SessionWithID {
   id?: string;
 }
 
+function isValidSessionID(id: string): boolean {
+  return id.startsWith('ses');
+}
+
 function extractSessionIDFromEvent(event: unknown): string | undefined {
   if (!event || typeof event !== 'object') {
     return undefined;
@@ -36,20 +44,33 @@ function extractSessionIDFromEvent(event: unknown): string | undefined {
     sessionID?: string;
     sessionId?: string;
     session?: SessionWithID;
+    properties?: {
+      sessionID?: string;
+      info?: SessionWithID;
+    };
   };
 
-  if (typeof candidate.sessionID === 'string' && candidate.sessionID.length > 0) {
+  if (typeof candidate.sessionID === 'string' && isValidSessionID(candidate.sessionID)) {
     return candidate.sessionID;
   }
 
-  if (typeof candidate.sessionId === 'string' && candidate.sessionId.length > 0) {
+  if (typeof candidate.sessionId === 'string' && isValidSessionID(candidate.sessionId)) {
     return candidate.sessionId;
+  }
+
+  if (candidate.properties) {
+    if (typeof candidate.properties.sessionID === 'string' && isValidSessionID(candidate.properties.sessionID)) {
+      return candidate.properties.sessionID;
+    }
+    if (candidate.properties.info?.id && typeof candidate.properties.info.id === 'string' && isValidSessionID(candidate.properties.info.id)) {
+      return candidate.properties.info.id;
+    }
   }
 
   if (
     candidate.session &&
     typeof candidate.session.id === 'string' &&
-    candidate.session.id.length > 0
+    isValidSessionID(candidate.session.id)
   ) {
     return candidate.session.id;
   }
@@ -85,7 +106,7 @@ function extractSessionIDFromListResult(listResult: unknown): string | undefined
       continue;
     }
     const session = source as SessionWithID;
-    if (typeof session.id === 'string' && session.id.length > 0) {
+    if (typeof session.id === 'string' && isValidSessionID(session.id)) {
       return session.id;
     }
   }
@@ -124,13 +145,47 @@ export const MissionControl: Plugin = async ({ client }) => {
     getActiveSessionID,
   });
 
+  let notifyPending: Promise<void> = Promise.resolve();
+  setSharedNotifyCallback((message: string) => {
+    notifyPending = notifyPending.then(async () => {
+      const sessionID = await getActiveSessionID();
+      if (!sessionID || !sessionID.startsWith('ses')) return;
+      await client.session.prompt({
+        path: { id: sessionID },
+        body: {
+          noReply: true,
+          parts: [{ type: 'text' as const, text: message }],
+        },
+      }).catch(() => {});
+    }).catch(() => {});
+  });
+
   monitor.start();
+
+  loadPlan().then(async (plan) => {
+    if (plan && (plan.status === 'running' || plan.status === 'paused')) {
+      const config = await loadConfig();
+      const orchestrator = new Orchestrator(monitor, config, { notify: getSharedNotifyCallback() ?? undefined });
+      setSharedOrchestrator(orchestrator);
+      await orchestrator.resumePlan();
+    }
+  }).catch(() => {});
 
   return {
     config: async (configInput: any) => {
       registerCommands(configInput);
     },
-    'command.execute.before': createCommandHandler(client),
+    'command.execute.before': (input: { command: string; sessionID: string; arguments: string }, output: { parts: unknown[] }) => {
+      if (isValidSessionID(input.sessionID)) {
+        activeSessionID = input.sessionID;
+      }
+      return createCommandHandler(client)(input, output);
+    },
+    'tool.execute.before': async (input: { sessionID?: string; [key: string]: unknown }) => {
+      if (input.sessionID && isValidSessionID(input.sessionID)) {
+        activeSessionID = input.sessionID;
+      }
+    },
     tool: {
       mc_launch,
       mc_jobs,
@@ -154,6 +209,21 @@ export const MissionControl: Plugin = async ({ client }) => {
       const sessionID = extractSessionIDFromEvent(event);
       if (sessionID) {
         activeSessionID = sessionID;
+      }
+
+      if (event.type === 'message.updated') {
+        const messageEvent = event as {
+          properties?: {
+            info?: {
+              role?: string;
+              model?: { providerID: string; modelID: string };
+            };
+          };
+        };
+        const info = messageEvent.properties?.info;
+        if (info?.model) {
+          setCurrentModel(info.model);
+        }
       }
 
       if (event.type === 'session.idle') {

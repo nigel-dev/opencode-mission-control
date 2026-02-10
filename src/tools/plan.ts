@@ -3,7 +3,7 @@ import { randomUUID } from 'crypto';
 import type { PlanSpec, JobSpec } from '../lib/plan-types';
 import { loadPlan, savePlan, validateGhAuth } from '../lib/plan-state';
 import { Orchestrator, hasCircularDependency } from '../lib/orchestrator';
-import { getSharedMonitor } from '../lib/orchestrator-singleton';
+import { getSharedMonitor, getSharedNotifyCallback, setSharedOrchestrator } from '../lib/orchestrator-singleton';
 import { loadConfig } from '../lib/config';
 import { gitCommand } from '../lib/git';
 
@@ -145,7 +145,8 @@ export const mc_plan: ToolDefinition = tool({
 
     // autopilot or supervisor: start immediately
     const config = await loadConfig();
-    const orchestrator = new Orchestrator(getSharedMonitor(), config);
+    const orchestrator = new Orchestrator(getSharedMonitor(), config, { notify: getSharedNotifyCallback() ?? undefined });
+    setSharedOrchestrator(orchestrator);
     await orchestrator.startPlan(spec);
 
     const jobSummary = spec.jobs
