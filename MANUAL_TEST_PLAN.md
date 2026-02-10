@@ -73,6 +73,10 @@ rm -f "$STATE_DIR/state/plan.json" 2>/dev/null || true
 # 10. Final prune
 git worktree prune 2>/dev/null || true
 
+# 11. Clean jobs state
+echo "Cleaning jobs state..."
+rm -f "$STATE_DIR/state/jobs.json" 2>/dev/null || true
+
 echo "=== Nuclear Cleanup Complete ==="
 ```
 
@@ -110,6 +114,28 @@ ls -la dist/index.js
 8. **Always `deleteBranch=true` on cleanup**: Every `mc_cleanup` call must include `deleteBranch=true` to prevent branch leaks.
 9. **Cancel before completion**: Plans must be cancelled before all jobs reach `merged` state. If all jobs merge, the plan auto-pushes to remote and enters `creating_pr` state.
 10. **Dynamic paths only**: Never hardcode project names in paths. Always use `$(basename $(git rev-parse --show-toplevel))` or the `$PROJECT_NAME` variable.
+11. **Agent timing**: Simple prompts (echo, file creation) complete in 10-25 seconds. If you need the agent to be in `running` state when you check, either check within 5-10 seconds of launch, use a longer-running prompt like "Read every file in src/ and summarize each one", or kill the agent immediately after launch.
+
+---
+
+## Quick Smoke Test (5 minutes)
+
+Run these tests for basic validation after a code change. References use test IDs from the full phases.
+
+| Step | Source | Test | Purpose |
+|------|--------|------|---------|
+| 1 | Phase 0 | Nuclear Cleanup | Clean environment |
+| 2 | Phase 1 | 1.1-1.6 (launch → status → capture → kill → cleanup) | Core lifecycle |
+| 3 | Phase 1 | 1.7 (duplicate name rejected) | Input validation |
+| 4 | Phase 2 | 2.1 (error on nonexistent job) | Error handling |
+| 5 | Phase 2 | 2.7 (cleanup running job rejected) | Safety check |
+| 6 | Phase 5 | 5.7-5.10 (plan with deps → verify waiting_deps → cancel) | Plan basics |
+| 7 | Phase 9 | 9.1 (overview empty) | Dashboard baseline |
+| 8 | Phase 9 | 9.4 (overview with jobs) | Dashboard with data |
+| 9 | Phase 9 | 9.14 (overview after cleanup) | Dashboard cleanup |
+| 10 | Phase 12 | Nuclear Cleanup | Clean exit |
+
+**Pass criteria**: All 10 steps succeed. If any fail, run the full test plan for that phase.
 
 ---
 
@@ -204,6 +230,8 @@ Record these before any testing begins:
 
 ## Phase 1 — Single Job Lifecycle
 
+> **Timing Note**: Simple prompts complete in 10-25 seconds. Check `running` state within 5-10 seconds of launch, or use a longer prompt.
+
 ### 1A: Launch
 
 | # | Test | Action | Expected |
@@ -278,9 +306,36 @@ Record these before any testing begins:
 | 2.12 | `mc_cleanup` name=tmc-beta, deleteBranch=true | Fully cleaned |
 | 2.13 | `mc_jobs` | "No jobs found." |
 
+### 2D: Window Placement (Improvement #7)
+
+| # | Test | Action | Expected |
+|---|------|--------|----------|
+| 2.14 | Launch with window placement | `mc_launch` name=tmc-window, prompt="echo hi", placement=window | Job launched |
+| 2.15 | Verify window (not session) | `tmux list-sessions` — should NOT show `mc-tmc-window` as a session | Window attached to current session instead |
+| 2.16 | Verify status shows placement | `mc_status` name=tmc-window | Shows `placement: window` |
+| 2.17 | Kill and cleanup | `mc_kill` name=tmc-window; `mc_cleanup` name=tmc-window, deleteBranch=true | Clean |
+
+### 2E: Post-Create Hook Parameters (Improvements #8, #9)
+
+| # | Test | Action | Expected |
+|---|------|--------|----------|
+| 2.18 | Launch with commands | `mc_launch` name=tmc-cmds, prompt="echo test", commands=["echo setup-ran > .mc-setup-marker"] | Job launches |
+| 2.19 | Verify command ran | Check worktree for `.mc-setup-marker` file | File exists with content "setup-ran" |
+| 2.20 | Cleanup cmds job | `mc_kill` name=tmc-cmds; `mc_cleanup` name=tmc-cmds, deleteBranch=true | Clean |
+| 2.21 | Launch with symlinkDirs | `mc_launch` name=tmc-symlink, prompt="echo test", symlinkDirs=["node_modules"] | Job launches |
+| 2.22 | Verify symlink | `ls -la <worktree>/node_modules` | Shows symlink arrow (→) |
+| 2.23 | Cleanup symlink job | `mc_kill` name=tmc-symlink; `mc_cleanup` name=tmc-symlink, deleteBranch=true | Clean |
+| 2.24 | Create temp file for copy test | Create `.env.example` in main worktree with content `TEST_VAR=hello` | File exists |
+| 2.25 | Launch with copyFiles | `mc_launch` name=tmc-copy, prompt="echo test", copyFiles=[".env.example"] | Job launches |
+| 2.26 | Verify file copied | Check worktree for `.env.example` — should be a regular file (not symlink) | File exists, content matches, `ls -la` shows no symlink |
+| 2.27 | Cleanup copy job | `mc_kill` name=tmc-copy; `mc_cleanup` name=tmc-copy, deleteBranch=true | Clean |
+| 2.28 | Remove temp file | `rm .env.example` | Cleaned |
+
 ---
 
 ## Phase 3 — Multiple Jobs
+
+> **Timing Note**: Simple prompts complete in 10-25 seconds. Check `running` state within 5-10 seconds of launch, or use a longer prompt.
 
 | # | Test | Action | Expected |
 |---|------|--------|----------|
@@ -295,6 +350,18 @@ Record these before any testing begins:
 | 3.9 | Kill remaining | `mc_kill` name=tmc-multi-2 | Stopped |
 | 3.10 | Cleanup all | `mc_cleanup` all=true, deleteBranch=true | All cleaned |
 | 3.11 | Verify clean state | `mc_jobs` + `git worktree list` + `tmux list-sessions` | No test artifacts remain |
+
+### 3C: Status Filter Tests (Improvement #6)
+
+**Prerequisite**: Run these AFTER tests 3.1-3.5 when multiple jobs exist in various states.
+
+| # | Test | Action | Expected |
+|---|------|--------|----------|
+| 3.12 | Status filter: completed | `mc_jobs` status=completed | Only completed jobs shown |
+| 3.13 | Status filter: failed | `mc_jobs` status=failed | Only failed jobs shown (may be empty) |
+| 3.14 | Status filter: all | `mc_jobs` status=all | All jobs shown regardless of state |
+
+**Note**: `status=stopped` is NOT a valid API filter value. Stopped jobs appear when using `status=all`.
 
 ---
 
@@ -402,6 +469,8 @@ This phase tests the git integration tools on a job with real commits.
 
 ### 5F: Supervisor Mode (Checkpoint)
 
+> **Timing Caveat**: The supervisor `pre_merge` checkpoint only triggers when all jobs complete and the merge train starts. With simple prompts, jobs complete in 10-20 seconds — the plan may auto-advance before you observe the `paused` state. Use a 3-job plan with a long-running first job, or verify synthetically by checking `plan.json` for `status: "paused"`.
+
 | # | Test | Action | Expected |
 |---|------|--------|----------|
 | 5.25 | Cancel copilot plan | `mc_plan_cancel` | Cancelled |
@@ -423,6 +492,8 @@ This phase tests the git integration tools on a job with real commits.
 ---
 
 ## Phase 6 — Realistic Multi-Job Scenario (Overlap & Conflicts)
+
+> **Timing Note**: Simple prompts complete in 10-25 seconds. Check `running` state within 5-10 seconds of launch, or use a longer prompt.
 
 This phase tests a realistic workflow where 3 agents work on related tasks simultaneously.
 We manually simulate the agents' commits to control timing and test merge ordering.
@@ -522,6 +593,8 @@ Now we test what happens when two jobs modify the **same line** of the same file
 | 6.33 | Verify main is not corrupted: `git status` | Clean (merge was aborted by the tool) |
 | 6.34 | Verify shared-config.txt: `cat shared-config.txt` | line2="version-A" (first merge won, second was rejected) |
 
+> **Fixed**: The merge conflict cleanup issue was fixed in commit 9fe2fa4. `mc_merge` now properly aborts on conflict and leaves the working tree clean.
+
 ### 6G: Cleanup Conflict Test
 
 | # | Action | Expected |
@@ -558,34 +631,41 @@ Test the full orchestrator with a plan that has dependency ordering.
 
 ## Phase 7 — Model Verification
 
-This phase verifies that the launcher script correctly passes model configuration.
+This phase verifies that the launcher script correctly passes model configuration to spawned agents.
 
-### 7A: Verify Launcher Script (`.mc-launch.sh`)
+> **Timing Caveat**: `.mc-launch.sh` is auto-deleted after 5 seconds. You must read it IMMEDIATELY after launch. If you miss the window, re-launch and try again — it's not a test failure, just a timing issue.
 
-**CRITICAL TIMING**: The `.mc-launch.sh` file is automatically cleaned up after 5 seconds.
-You must read it IMMEDIATELY after launch.
-
-| # | Test | Action | Expected |
-|---|------|--------|----------|
-| 7.1 | Launch job | `mc_launch` name=tmc-model, prompt="echo hello" | Success |
-| 7.2 | **IMMEDIATELY** read launcher script | Read `.mc-launch.sh` from the worktree path (get path from launch response) — must read within 5 seconds | File exists |
-| 7.3 | Verify model flag | Check file contents for `-m "provider/model"` flag | `exec opencode -m "..." --prompt "$(cat '.mc-prompt.txt')"` pattern present |
-| 7.4 | Verify script is executable | `ls -la <worktree>/.mc-launch.sh` | `-rwxr-xr-x` permissions |
-
-### 7B: Verify Terminal Output
+### 7A: Identify Current Model
 
 | # | Test | Action | Expected |
 |---|------|--------|----------|
-| 7.5 | Wait for agent startup | Wait 5-10 seconds after launch | Agent should be running |
-| 7.6 | Check terminal for model | `mc_capture` name=tmc-model, lines=20 | Terminal output may show model identifier in startup banner |
+| 7.1 | Identify session model | Note the model you're currently using (check startup banner or ask "what model are you?") | Record as `$CURRENT_MODEL` (e.g., `anthropic/claude-sonnet-4-20250514`) |
 
-### 7C: Cleanup
+### 7B: Verify Launcher Script (`.mc-launch.sh`)
+
+| # | Test | Action | Expected |
+|---|------|--------|----------|
+| 7.2 | Launch job | `mc_launch` name=tmc-model, prompt="echo hello" | Success — note the worktree path from the response |
+| 7.3 | **IMMEDIATELY** read launcher script | Read `<worktree>/.mc-launch.sh` — must read within 5 seconds | File exists |
+| 7.4 | Verify model flag | Check file contents for `-m` flag | Contains `-m "$CURRENT_MODEL"` or the model string from your session |
+| 7.5 | Verify prompt file reference | Check file contents for `.mc-prompt.txt` | Contains `--prompt "$(cat '.mc-prompt.txt')"` or similar |
+| 7.6 | Verify script is executable | `ls -la <worktree>/.mc-launch.sh` | `-rwxr-xr-x` permissions |
+
+### 7C: Verify Terminal Output
+
+| # | Test | Action | Expected |
+|---|------|--------|----------|
+| 7.7 | Wait for agent startup | Wait 5-10 seconds after launch | Agent should be running |
+| 7.8 | Check terminal for model | `mc_capture` name=tmc-model, lines=30 | Terminal output shows model identifier (e.g., in opencode startup banner or model selection line) |
+| 7.9 | Verify model matches | Compare captured model to `$CURRENT_MODEL` | Model in tmux matches the model from step 7.1 |
+
+### 7D: Cleanup
 
 | # | Action | Verify |
 |---|--------|--------|
-| 7.7 | `mc_kill` name=tmc-model | Stopped |
-| 7.8 | `mc_cleanup` name=tmc-model, deleteBranch=true | Cleaned |
-| 7.9 | `mc_jobs` | Empty |
+| 7.10 | `mc_kill` name=tmc-model | Stopped |
+| 7.11 | `mc_cleanup` name=tmc-model, deleteBranch=true | Cleaned |
+| 7.12 | `mc_jobs` | Empty |
 
 ---
 
@@ -628,50 +708,31 @@ the agent ignored the prompt suffix or hasn't reached a reporting milestone yet.
 | 8.10 | `mc_cleanup` name=tmc-reporter, deleteBranch=true | Cleaned |
 | 8.11 | Clean report files | `rm -f ~/.local/share/opencode-mission-control/$(basename $(git rev-parse --show-toplevel))/reports/*.json` | Reports cleaned |
 
-### 8D: Real Agent Blocked & Needs Review (Non-Deterministic)
+### 8D: Deterministic Report Injection Tests (Improvement #1)
 
-These tests verify that agents **actually call `mc_report`** with the correct status when prompted.
-The `MC_REPORT_SUFFIX` injected into every agent prompt instructs them to call `mc_report(status: "blocked")`
-when stuck and `mc_report(status: "needs_review")` when work needs human approval. These tests are
-non-deterministic — agent behavior varies. If the agent doesn't call `mc_report`, that's a signal
-the prompt suffix isn't effective enough, not a plugin bug.
-
-**Blocked test**: We ask the agent to read a file that doesn't exist. The agent should recognize it
-cannot proceed and call `mc_report(status: "blocked")`.
+These tests use **synthetic report injection** to deterministically verify the full report pipeline.
 
 | # | Test | Action | Expected |
 |---|------|--------|----------|
-| 8.12 | Launch blocked-trigger job | `mc_launch` name=tmc-block-real, prompt="Read the file /etc/mc-test-secret-key.txt and use its contents to create auth-key.txt. If you cannot access the file, you are blocked — report it." | Job launched |
+| 8.12 | Launch job for injection tests | `mc_launch` name=tmc-inject, prompt="echo 'injection test'" | Job launched |
 | 8.13 | **Wait 3-5 seconds** | — | — |
-| 8.14 | Verify job running | `mc_status` name=tmc-block-real | Status: `running` |
-| 8.15 | **Wait 30 seconds** | — | Agent needs time to attempt the file read, fail, and report |
-| 8.16 | Check for blocked report | `ls ~/.local/share/opencode-mission-control/$(basename $(git rev-parse --show-toplevel))/reports/` | Look for a report JSON file |
-| 8.17 | If report exists, verify status | Read the report JSON | `status` should be `blocked`, `message` should reference the inaccessible file |
-| 8.18 | Verify overview shows alert | `mc_overview` | If report was written: Alerts shows `tmc-block-real [blocked]`, Suggested Actions mentions "blocked - run mc_attach" |
-| 8.19 | **Manual Check** | Check your session for notification | If report was written: should see `⚠️ Job 'tmc-block-real' is blocked...` |
-| 8.20 | Cleanup blocked job | `mc_kill` name=tmc-block-real; `mc_cleanup` name=tmc-block-real, deleteBranch=true | Cleaned |
-| 8.21 | Clean report files | `rm -f ~/.local/share/opencode-mission-control/$(basename $(git rev-parse --show-toplevel))/reports/*.json` | Reports cleaned |
+| 8.14 | Get Job ID | `mc_status` name=tmc-inject | Extract the UUID from the output |
+| 8.15 | Set STATE_DIR | `STATE_DIR=~/.local/share/opencode-mission-control/$(basename $(git rev-parse --show-toplevel))` | — |
+| 8.16 | Inject `working` report | Write JSON to `$STATE_DIR/reports/<UUID>.json` | Report file created |
+| 8.17 | **Wait 15 seconds** | — | Monitor polls every 10s |
+| 8.18 | Verify status shows progress | `mc_status` name=tmc-inject | Shows progress info from report |
+| 8.19 | Inject `blocked` report | Overwrite `$STATE_DIR/reports/<UUID>.json` | Report file updated |
+| 8.20 | **Wait 15 seconds** | — | Monitor polls |
+| 8.21 | Verify overview shows blocked alert | `mc_overview` | Alerts shows: `tmc-inject [blocked]: ...` |
+| 8.22 | Verify suggested action | `mc_overview` | Suggested Actions includes: `blocked - run mc_attach` |
+| 8.23 | Inject `needs_review` report | Overwrite `$STATE_DIR/reports/<UUID>.json` | Report file updated |
+| 8.24 | **Wait 15 seconds** | — | Monitor polls |
+| 8.25 | Verify job completed | `mc_status` name=tmc-inject | Status should be `completed` |
+| 8.26 | Verify overview shows review alert | `mc_overview` | Alerts shows: `tmc-inject [needs_review]: ...` |
+| 8.27 | Cleanup injection job | `mc_kill` name=tmc-inject; `mc_cleanup` name=tmc-inject, deleteBranch=true | Cleaned |
+| 8.28 | Clean report files | `rm -f $STATE_DIR/reports/*.json` | Reports cleaned |
 
-**Needs review test**: We ask the agent to produce work that explicitly requires human approval.
-
-| # | Test | Action | Expected |
-|---|------|--------|----------|
-| 8.22 | Launch review-trigger job | `mc_launch` name=tmc-review-real, prompt="Create a file called review-candidate.txt containing three proposed project names (one per line). This work needs human review — do NOT proceed further until a human approves your choices." | Job launched |
-| 8.23 | **Wait 3-5 seconds** | — | — |
-| 8.24 | Verify job running | `mc_status` name=tmc-review-real | Status: `running` |
-| 8.25 | **Wait 30 seconds** | — | Agent needs time to create the file and report |
-| 8.26 | Check for review report | `ls ~/.local/share/opencode-mission-control/$(basename $(git rev-parse --show-toplevel))/reports/` | Look for a report JSON file |
-| 8.27 | If report exists, verify status | Read the report JSON | `status` should be `needs_review` |
-| 8.28 | Verify job completed | `mc_status` name=tmc-review-real | If `needs_review` report was written: status should be `completed` (monitor auto-completes on needs_review) |
-| 8.29 | Verify overview shows alert | `mc_overview` | If report was written: Alerts shows `tmc-review-real [needs_review]` |
-| 8.30 | **Manual Check** | Check your session for notification | If report was written: should see `👀 Job 'tmc-review-real' needs review...` |
-| 8.31 | Cleanup review job | `mc_kill` name=tmc-review-real; `mc_cleanup` name=tmc-review-real, deleteBranch=true | Cleaned |
-| 8.32 | Clean report files | `rm -f ~/.local/share/opencode-mission-control/$(basename $(git rev-parse --show-toplevel))/reports/*.json` | Reports cleaned |
-
-**Interpreting results**: If the agent does NOT call `mc_report` with the expected status:
-- Capture the agent's output with `mc_capture` before cleanup to understand what it did instead
-- This is a prompt effectiveness issue — the `MC_REPORT_SUFFIX` may need stronger wording
-- The plugin pipeline itself still works (verified by the synthetic tests in 8E/8F below)
+**Why synthetic**: Agents complete simple prompts in 10-20 seconds and rarely hit `blocked` state naturally. Synthetic injection tests the exact same code paths deterministically.
 
 ### 8E: Synthetic Blocked Pipeline Test
 
@@ -869,6 +930,9 @@ rm -f "$STATE_DIR/reports/"*.json.tmp 2>/dev/null || true
 
 # Clean plan state
 rm -f "$STATE_DIR/state/plan.json" 2>/dev/null || true
+
+# Clean jobs state
+rm -f "$STATE_DIR/state/jobs.json" 2>/dev/null || true
 ```
 
 ### 12.7 — Verify against pre-test snapshot
@@ -896,18 +960,18 @@ rm -f "$STATE_DIR/state/plan.json" 2>/dev/null || true
 |-------|-------------|-------------|------|------|---------|-------|
 | 0 | Pre-test state snapshot & cleanup | 6 | | | | |
 | 1 | Single job lifecycle | 22 | | | | |
-| 2 | Error handling & edge cases | 13 | | | | |
-| 3 | Multiple jobs | 11 | | | | |
+| 2 | Error handling & edge cases | 28 | | | | +4 window placement, +11 post-create hooks |
+| 3 | Multiple jobs | 14 | | | | +3 status filter tests |
 | 4 | Git workflow (sync & merge) | 18 | | | | |
 | 5 | Plan orchestration | 34 | | | | |
 | 6 | Realistic multi-job (overlap/conflict) | 49 | | | | |
-| 7 | Model verification | 9 | | | | |
-| 8 | mc_report flow | 12 | | | | |
+| 7 | Model verification | 12 | | | | +3 model ID, prompt file, model match |
+| 8 | mc_report flow | 54 | | | | +17 deterministic injection (replaced 21 non-deterministic) |
 | 9 | mc_overview dashboard | 16 | | | | |
 | 10 | OMO plan mode | 10 | | | | |
 | 11 | Hooks (observational) | 5 | | | | |
 | 12 | Final verification & nuclear cleanup | 8 | | | | |
-| **Total** | | **213** | | | | |
+| **Total** | | **276** | | | | |
 
 ---
 
