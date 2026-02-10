@@ -202,6 +202,31 @@ Remove finished job worktrees and metadata.
 
 ---
 
+### Monitoring & Reporting
+
+#### `mc_overview`
+
+Get a complete dashboard overview of all Mission Control activity — running jobs, recent completions, failures, active plans, alerts, and suggested next actions. This is the best starting point when checking in on your jobs.
+
+*No parameters.*
+
+#### `mc_report`
+
+Report agent status back to Mission Control. Auto-detects which job is calling based on the current worktree. This tool is designed to be called by spawned agents from within their managed worktrees — it cannot be used from the main session.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `status` | `"working"` \| `"blocked"` \| `"needs_review"` \| `"completed"` \| `"progress"` | Yes | — | Current agent status |
+| `message` | `string` | Yes | — | Human-readable status message |
+| `progress` | `number` | No | — | Completion percentage (0–100) |
+
+Reports are used by the monitoring system to:
+- Trigger notifications (e.g., when an agent reports `blocked` or `needs_review`)
+- Signal explicit completion (a `completed` report immediately marks the job as done)
+- Provide progress visibility via `mc_status` and `mc_overview`
+
+---
+
 ### Git Workflow
 
 #### `mc_diff`
@@ -240,7 +265,8 @@ Merge a job's branch back into the main worktree.
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `name` | `string` | Yes | — | Job name |
-| `squash` | `boolean` | No | `false` | Squash commits |
+| `strategy` | `"squash"` \| `"ff-only"` \| `"merge"` | No | Config `mergeStrategy` (default `"squash"`) | Merge strategy. `squash` squashes all commits; `ff-only` rebases then fast-forwards; `merge` creates a merge commit (`--no-ff`). |
+| `squash` | `boolean` | No | `false` | **Deprecated** — use `strategy` instead. If set and no `strategy` is provided, `squash: true` maps to `strategy: "squash"`. |
 | `message` | `string` | No | Auto-generated | Merge commit message |
 
 ---
@@ -258,6 +284,7 @@ Create and start a multi-job orchestrated plan.
 | `name` | `string` | Yes | — | Plan name |
 | `jobs` | `JobSpec[]` | Yes | — | Array of job definitions (see below) |
 | `mode` | `"autopilot"` \| `"copilot"` \| `"supervisor"` | No | `"autopilot"` | Execution mode |
+| `placement` | `"session"` \| `"window"` | No | Config default | tmux placement for all jobs in this plan |
 
 **JobSpec fields:**
 
@@ -390,6 +417,7 @@ These commands run directly in the OpenCode chat — instant execution without a
 
 | Command | Description |
 |---------|-------------|
+| `/mc` | Show Mission Control dashboard overview (runs `mc_overview`) |
 | `/mc-jobs` | List all jobs and their status |
 | `/mc-launch <prompt>` | Launch a new parallel agent (delegates to AI) |
 | `/mc-status <name>` | Detailed status of a specific job |
@@ -433,6 +461,8 @@ Configuration is stored at `~/.local/share/opencode-mission-control/{project}/co
   "idleThreshold": 300000,
   "worktreeBasePath": "~/.local/share/opencode-mission-control",
   "maxParallel": 3,
+  "autoCommit": true,
+  "mergeStrategy": "squash",
   "testCommand": "bun test",
   "testTimeout": 600000,
   "worktreeSetup": {
@@ -456,6 +486,8 @@ Configuration is stored at `~/.local/share/opencode-mission-control/{project}/co
 | `idleThreshold` | `number` | `300000` | Time in ms before an idle session is marked completed (default 5min) |
 | `worktreeBasePath` | `string` | `~/.local/share/opencode-mission-control` | Root directory for worktrees |
 | `maxParallel` | `number` | `3` | Maximum concurrent jobs in an orchestrated plan |
+| `autoCommit` | `boolean` | `true` | Whether to auto-commit changes in job worktrees before merging |
+| `mergeStrategy` | `"squash"` \| `"ff-only"` \| `"merge"` | `"squash"` | Default merge strategy for `mc_merge` (can be overridden per-merge via the `strategy` param) |
 | `testCommand` | `string` | — | Command to run after each merge in the merge train (e.g. `"bun test"`) |
 | `testTimeout` | `number` | `600000` | Timeout for test command in ms (default 10min) |
 | `worktreeSetup.copyFiles` | `string[]` | — | Files to copy into every new worktree (e.g. `.env`) |
