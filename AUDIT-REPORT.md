@@ -1,9 +1,9 @@
 # OpenCode Mission Control: Master Technical Audit & Ecosystem Strategy Report
 
-**Date:** February 7, 2026  
-**Version:** 0.1.0 Audit + Ecosystem Analysis (Updated: Phase 0 Complete)  
+**Date:** February 7, 2026 (Cross-referenced: February 10, 2026)  
+**Version:** 0.1.0 Audit + Ecosystem Analysis (Updated: Phase 0 Complete, Phase 1 Cross-Referenced)  
 **Method:** 3 codebase analysis agents + 21 ecosystem research agents (24 parallel jobs total)  
-**Scope:** All 41 source files, 39 test files, and 21 OpenCode plugins from the ecosystem  
+**Scope:** All 45 source files, 40 test files, and 21 OpenCode plugins from the ecosystem  
 
 ---
 
@@ -15,12 +15,14 @@ Yet MC suffered from **"Disconnected Brain Syndrome"**: powerful infrastructure,
 
 **Update (Feb 7):** Phase 0 is complete. All critical bugs fixed, all tests passing (470/470), build green.
 
+**Update (Feb 10):** Full codebase cross-reference of all 45 source files against this audit. Phase 0 items re-verified ✅. Phase 1 items status-checked — 3 done, 2 partially done, 6 still pending. Phase 2 and technical debt sections updated with current line numbers and accurate status. Auto-resume on startup was found to be already implemented.
+
 **Phase 0 fixes delivered:**
 - ✅ **C1: Shell injection patched** — prompts now pass through temp files (`prompt-file.ts`), never shell-interpolated
 - ✅ **C2: PR push fixed** — `mc_pr` now pushes before `gh pr create`
 - ✅ **C3: Singleton orchestrator** — `orchestrator-singleton.ts` eliminates orphaned instances
 - ✅ **C4: tmux validation** — `isTmuxAvailable()` called at plugin init and before launch
-- ✅ **C5: State validators wired** — `isValidPlanTransition()`/`isValidJobTransition()` now enforced
+- ✅ **C5: State validators wired** — `isValidPlanTransition()`/`isValidJobTransition()` now enforced *(Note: validators log `console.warn` on invalid transitions rather than throwing errors)*
 - ✅ **C6: Mutation audit** — confirmed `output.messages` uses in-place mutation (correct)
 - ✅ **C7: Report completion pipeline** — `mc_report` now accepts `completed` status; monitor marks jobs done on `completed`/`needs_review`
 - ✅ **C8: Agent prompt emphasis** — `MC_REPORT_SUFFIX` rewritten with CRITICAL/MANDATORY emphasis
@@ -78,10 +80,10 @@ The research-plugin-api job (reading OpenCode source) revealed capabilities MC i
 ### The Notification Golden Path
 
 ```ts
-// WRONG (what MC does now — invisible in TUI)
+// WRONG (what MC used to do — invisible in TUI)
 console.log("Job completed: fix-auth");
 
-// RIGHT (what the ecosystem uses — appears in chat transcript)
+// RIGHT (what MC now uses — appears in chat transcript)
 client.session.prompt({
   message: "🟢 Job 'fix-auth' completed (3m 22s). Files changed: 4. Run mc_diff to review.",
   noReply: true  // Don't trigger LLM response
@@ -193,7 +195,7 @@ These must be fixed before any feature work.
 **Files changed:** `src/lib/plan-state.ts`, `src/lib/job-state.ts`
 
 **Was:** `isValidPlanTransition()` and `isValidJobTransition()` were dead code.  
-**Fix:** Validators now called before every state transition. Invalid transitions throw errors with descriptive messages.
+**Fix:** Validators now called before every state transition. Invalid transitions are logged via `console.warn` (soft enforcement — does not throw).
 
 ---
 
@@ -234,37 +236,42 @@ MC's notification hooks (`notifications.ts`, `awareness.ts`) were dead code. The
 
 ### Remaining Gaps
 
-- **Subagent detection** — still needed: `session.get().data.parentID` check to skip notifications in spawned sessions
-- **Compaction context enrichment** — still thin one-liner; needs rich job cards + staleness tracking
+- **Subagent detection** — still needed: `session.get().data.parentID` check to skip notifications in spawned sessions *(verified Feb 10: zero references to `parentID`/`parentId` in any source file)*
+- **Compaction context enrichment** — still thin one-liner; needs rich job cards + staleness tracking *(verified Feb 10: `compaction.ts` is only 19 lines)*
 
 ---
 
 ## 7. Technical Debt (Condensed)
 
+> *Cross-referenced Feb 10, 2026 against all 45 source files.*
+
 ### Dead Code & Duplication
-- 3x duplicated: `extractConflicts`, `atomicWrite`, `formatDuration`
-- Dead: `test-runner.ts` (103 lines, re-implemented in `merge-train.ts`), `awareness.ts`
-- Unused dependency: Zod declared but never imported
+- 3x duplicated: `atomicWrite` (`config.ts:50`, `plan-state.ts:16`, `job-state.ts:71` — identical implementations)
+- 3x duplicated: `extractConflicts` (`integration.ts:167`, `worktree.ts:250`, `merge-train.ts:23` — identical implementations)
+- 4x duplicated: `formatDuration` (`notifications.ts:18`, `overview.ts:6`, `jobs.ts:4`, `status.ts:52` — 4 different signatures/implementations)
+- Dead: `test-runner.ts` (103 lines, not imported by any src/ file; `merge-train.ts` has its own `detectTestCommand()`/`runTestCommand()`)
+- Dead: `awareness.ts` (30 lines, not imported in `index.ts` or anywhere else in src/)
+- Unused dependency: Zod declared in `package.json` (`"zod": "^3.22.0"`) but zero imports in any source file
 
 ### Type Safety
-- `configInput: any` in `index.ts:28`, `commands.ts:29`
-- `determineJobsToClean` returns `any[]`
-- JSON state files parsed with `as Type` — no runtime validation
+- `configInput: any` in `index.ts:182`, `commands.ts:29`
+- `determineJobsToClean` returns `any[]` at `cleanup.ts:28`
+- JSON state files parsed with `as Type` — no runtime validation (Zod available but unused)
 
 ### Architecture
-- `Orchestrator.ts` is 829 lines — god object handling scheduling, merging, PR creation, notifications, checkpoints
+- `orchestrator.ts` is 891 lines (was 829 at original audit) — god object handling scheduling, merging, PR creation, notifications, checkpoints. Has grown, not shrunk.
 - No dependency injection for `gitCommand`, `tmux`, `Bun.spawn`
-- ~~Plan tools create orphaned instances (C3)~~ ✅ Fixed — singleton pattern
+- ~~Plan tools create orphaned instances (C3)~~ ✅ Fixed — singleton pattern via `orchestrator-singleton.ts`
 - No plugin API abstraction layer
 
 ### Robustness
-- Hardcoded `main` branch (breaks `master` repos) — `integration.ts:43`, `orchestrator.ts:735`
-- Fixed `sleep(2000)` for OMO mode detection — `launch.ts:228-229`
-- `isPaneRunning` returns `false` for ALL errors (could mark all jobs dead) — `tmux.ts:276-303`
-- Reconciler race: concurrent triggers silently dropped — `orchestrator.ts:258-264`
-- Plan jobs ignore `omo.defaultMode` (hardcoded vanilla) — `orchestrator.ts:552`
+- Hardcoded `main` branch: **partially fixed** — `merge.ts:9-11` and `diff.ts:15` detect main/master. Still hardcoded in `integration.ts:45` (`gitCommand(['rev-parse', 'main'])`), `orchestrator.ts:816` (`'--base', 'main'`), `pr.ts:66` (`'--base', 'main'`)
+- Fixed `sleep(2000)` for OMO mode detection — still present at `launch.ts:268`
+- `isPaneRunning` returns `false` for ALL errors (could mark all jobs dead) — still present at `tmux.ts:315` (catch block returns false)
+- Reconciler race: concurrent triggers silently dropped — still present at `orchestrator.ts:316-318` (`isReconciling` boolean flag)
+- Plan jobs ignore `omo.defaultMode` (hardcoded `vanilla`) — still present at `orchestrator.ts:626`
 - Integration branch format mismatch — `plan.ts:113` vs `integration.ts:26`
-- Window-placement jobs not cleaned from tmux — `cleanup.ts:56-59`
+- Window-placement jobs: `cleanup.ts:57-58` checks `job.placement === 'session'` before calling `killSession`, but window-placement jobs may not be fully cleaned from tmux
 
 ### Test Coverage Gaps
 - **Untested:** `commands.ts`, `index.ts`, `paths.ts`
@@ -340,28 +347,28 @@ MC's notification hooks (`notifications.ts`, `awareness.ts`) were dead code. The
 
 - [x] Create `mc_overview` tool + `/mc` slash command *(Done Feb 7)*
 - [x] Scaffold `mc_report` in spawned agent prompts *(Done Feb 7)*
-- [ ] Enrich compaction context with rich job cards + staleness tracking
-- [ ] Add subagent detection (`parentID` check) to notification logic
-- [ ] Add missing slash commands: `/mc-capture`, `/mc-diff`, `/mc-approve`, `/mc-plan`
-- [ ] Extract shared utilities: `atomicWrite`, `extractConflicts`, `formatDuration`
-- [ ] Apply Zod validation to state file parsing (already a dependency)
-- [ ] Fix hardcoded `main` branch — detect default branch (partially done: `mc_merge` detects main/master)
-- [ ] Remove dead code: `test-runner.ts`, `awareness.ts`
-- [ ] Adopt git root commit SHA as stable project identifier (from opencode-worktree)
-- [ ] Auto-resume plan on plugin startup (reconciler dies when process exits)
+- [ ] Enrich compaction context with rich job cards + staleness tracking *(Still pending — `compaction.ts` is only 19 lines, returns a thin one-liner: "Mission Control: N job(s) running - name (status)")*
+- [ ] Add subagent detection (`parentID` check) to notification logic *(Still pending — zero references to `parentID`/`parentId` in any source file)*
+- [ ] Add missing slash commands: `/mc-capture`, `/mc-diff`, `/mc-approve`, `/mc-plan` *(Partially done — `commands.ts` registers `/mc`, `/mc-jobs`, `/mc-launch`, `/mc-status`, `/mc-attach`, `/mc-cleanup`. Still missing: `/mc-capture`, `/mc-diff`, `/mc-approve`, `/mc-plan`)*
+- [ ] Extract shared utilities: `atomicWrite`, `extractConflicts`, `formatDuration` *(Still pending — `atomicWrite` duplicated 3x in `config.ts:50`, `plan-state.ts:16`, `job-state.ts:71`; `extractConflicts` duplicated 3x in `integration.ts:167`, `worktree.ts:250`, `merge-train.ts:23`; `formatDuration` duplicated 4x with different signatures in `notifications.ts:18`, `overview.ts:6`, `jobs.ts:4`, `status.ts:52`)*
+- [ ] Apply Zod validation to state file parsing (already a dependency) *(Still pending — Zod declared in `package.json` (`"zod": "^3.22.0"`) but zero imports in any source file. State files use `JSON.parse(content) as Type` with no runtime validation)*
+- [ ] Fix hardcoded `main` branch — detect default branch *(Partially done — `diff.ts:15` and `merge.ts:9-11` detect main/master. Still hardcoded in: `integration.ts:45`, `orchestrator.ts:816`, `pr.ts:66`)*
+- [ ] Remove dead code: `test-runner.ts`, `awareness.ts` *(Still pending — `test-runner.ts` (103 lines) is not imported by any src/ file; `awareness.ts` (30 lines) is not imported in `index.ts` or anywhere else)*
+- [ ] Adopt git root commit SHA as stable project identifier (from opencode-worktree) *(Still pending — `paths.ts` uses `basename(dirname(gitDir))` for project ID)*
+- [x] Auto-resume plan on plugin startup (reconciler dies when process exits) *(Done — `index.ts:172-179` calls `loadPlan()` on startup; if plan is running/paused, creates Orchestrator and calls `orchestrator.resumePlan()`)*
 
 ### Phase 2: Intelligence (1-2 weeks)
 > Activate latent capabilities + reliability.
 
-- [ ] Implement `touchSet` conflict prediction + blast radius scoring
-- [ ] Auto-infer `touchSet` from `git diff --name-only`
-- [ ] PR narrative synthesis (from job prompts, diffs, reports, timing)
-- [ ] Failure artifact capture (terminal output, diff, commits, env metadata)
-- [ ] Persistent run ledger (`.mc/history/*.jsonl`)
-- [ ] Job completed → guided next action flow
-- [ ] Fix reconciler race condition
-- [ ] Fix plan jobs ignoring `omo.defaultMode`
-- [ ] Decompose Orchestrator into focused modules
+- [ ] Implement `touchSet` conflict prediction + blast radius scoring *(No implementation found)*
+- [ ] Auto-infer `touchSet` from `git diff --name-only` *(No implementation found)*
+- [ ] PR narrative synthesis (from job prompts, diffs, reports, timing) *(No implementation found)*
+- [ ] Failure artifact capture (terminal output, diff, commits, env metadata) *(No implementation found)*
+- [ ] Persistent run ledger (`.mc/history/*.jsonl`) *(No implementation found)*
+- [ ] Job completed → guided next action flow *(overview.ts has suggested actions, but no guided flow beyond that)*
+- [ ] Fix reconciler race condition *(Still present — `orchestrator.ts:316-318` uses `isReconciling` boolean flag; concurrent triggers silently return)*
+- [ ] Fix plan jobs ignoring `omo.defaultMode` *(Still present — `orchestrator.ts:626` hardcodes `mode: 'vanilla'`)*
+- [ ] Decompose Orchestrator into focused modules *(Still a god object — `orchestrator.ts` has grown from 829 to 891 lines)*
 
 ### Phase 3: Ecosystem Features (ongoing)
 > Multiplexer abstraction, lightweight tiers, team features.
@@ -421,11 +428,14 @@ MC's notification hooks (`notifications.ts`, `awareness.ts`) were dead code. The
 
 ## Appendix B: README vs. Implementation Discrepancies
 
+> *Cross-referenced Feb 10, 2026 against all 45 source files.*
+
 | README Claim | Reality |
 |---|---|
-| `mc_pr` "Push the job's branch and create a PR" | ✅ **Fixed.** Now pushes before `gh pr create`. |
+| `mc_pr` "Push the job's branch and create a PR" | ✅ **Fixed.** Now pushes before `gh pr create` (`pr.ts:48-57`). |
 | "pane-died hook fires, capturing exit status" | Hook writes to log file but nothing reads it. Detection relies on polling + `mc_report`. |
-| OMO plan mode "runs `/start-work`" | Implemented but relies on `sleep(2000)` — may fail on slow systems. |
+| OMO plan mode "runs `/start-work`" | Implemented but relies on `sleep(2000)` at `launch.ts:268` — may fail on slow systems. |
 | "Session state detection: idle, streaming, unknown" | Implemented in monitor but never exposed to users. |
-| `mc_report` "Auto-detects which job is calling" | Only works for worktrees in the default `basePath`. Custom paths break detection. *(Note: spawned agents now receive `mc_report` instructions via prompt injection. `completed` status now wired to mark jobs done.)* |
+| `mc_report` "Auto-detects which job is calling" | Only works for worktrees in the default `basePath`. Custom paths break detection. *(Note: spawned agents now receive `mc_report` instructions via prompt injection. `completed` status now wired to mark jobs done via `monitor.ts:115-124`.)* |
 | `worktreeSetup.commands` | Commands are NOT sanitized — arbitrary shell execution via config. |
+| Slash commands listed in README | README lists `/mc-jobs`, `/mc-launch`, `/mc-status`, `/mc-attach`, `/mc-cleanup`. These all exist in `commands.ts`. However, tools like `mc_capture`, `mc_diff`, `mc_plan`, `mc_plan_approve` have no corresponding slash commands. |
