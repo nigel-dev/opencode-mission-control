@@ -8,6 +8,7 @@ import * as promptFile from '../../src/lib/prompt-file';
 import * as worktreeSetup from '../../src/lib/worktree-setup';
 import * as omo from '../../src/lib/omo';
 import * as planCopier from '../../src/lib/plan-copier';
+import * as modelTracker from '../../src/lib/model-tracker';
 
 vi.mock('crypto', () => ({
   randomUUID: vi.fn(() => 'test-uuid-1234'),
@@ -31,6 +32,7 @@ let mockWritePromptFile: any;
 let mockWriteLauncherScript: any;
 let mockDetectOMO: any;
 let mockCopyPlansToWorktree: any;
+let mockResolvePostCreateHook: any;
 
 const mockContext = {
   sessionID: 'test-session',
@@ -90,7 +92,8 @@ describe('mc_launch', () => {
     vi.spyOn(promptFile, 'cleanupLauncherScript').mockImplementation(() => undefined as any);
     mockDetectOMO = vi.spyOn(omo, 'detectOMO').mockImplementation(() => Promise.resolve({ detected: true, configSource: 'local', sisyphusPath: './.sisyphus' }) as any);
     mockCopyPlansToWorktree = vi.spyOn(planCopier, 'copyPlansToWorktree').mockImplementation(() => Promise.resolve(undefined) as any);
-    vi.spyOn(worktreeSetup, 'resolvePostCreateHook').mockImplementation(() => ({ symlinkDirs: ['.opencode'] } as any));
+    mockResolvePostCreateHook = vi.spyOn(worktreeSetup, 'resolvePostCreateHook').mockImplementation(() => ({ symlinkDirs: ['.opencode'] } as any));
+    vi.spyOn(modelTracker, 'getCurrentModel').mockReturnValue(undefined);
     setupDefaultMocks();
   });
 
@@ -290,6 +293,77 @@ describe('mc_launch', () => {
       );
 
       expect(result).toContain('tmux select-window');
+    });
+
+    it('should pass copyFiles through to resolvePostCreateHook', async () => {
+      await mc_launch.execute(
+        {
+          name: 'feature-auth',
+          prompt: 'Add auth',
+          copyFiles: ['.env', '.env.local'],
+        },
+        mockContext,
+      );
+
+      const calls = mockResolvePostCreateHook.mock.calls;
+      expect(calls.length).toBeGreaterThan(0);
+      const secondArg = calls[calls.length - 1][1];
+      expect(secondArg).toMatchObject({
+        copyFiles: ['.env', '.env.local'],
+      });
+    });
+
+    it('should pass symlinkDirs through to resolvePostCreateHook including builtin .opencode', async () => {
+      mockResolvePostCreateHook.mockImplementation((_config: any, overrides: any) => ({
+        symlinkDirs: ['.opencode', ...(overrides?.symlinkDirs ?? [])],
+      }));
+
+      await mc_launch.execute(
+        {
+          name: 'feature-auth',
+          prompt: 'Add auth',
+          symlinkDirs: ['node_modules', '.cache'],
+        },
+        mockContext,
+      );
+
+      const calls = mockResolvePostCreateHook.mock.calls;
+      expect(calls.length).toBeGreaterThan(0);
+      const secondArg = calls[calls.length - 1][1];
+      expect(secondArg.symlinkDirs).toEqual(expect.arrayContaining(['node_modules', '.cache']));
+    });
+
+    it('should pass commands through to resolvePostCreateHook', async () => {
+      await mc_launch.execute(
+        {
+          name: 'feature-auth',
+          prompt: 'Add auth',
+          commands: ['bun install', 'echo done'],
+        },
+        mockContext,
+      );
+
+      const calls = mockResolvePostCreateHook.mock.calls;
+      expect(calls.length).toBeGreaterThan(0);
+      const secondArg = calls[calls.length - 1][1];
+      expect(secondArg).toMatchObject({
+        commands: ['bun install', 'echo done'],
+      });
+    });
+
+    it('should pass model from getCurrentModel to writeLauncherScript', async () => {
+      vi.spyOn(modelTracker, 'getCurrentModel').mockReturnValue('anthropic/claude-sonnet-4-20250514');
+
+      await mc_launch.execute(
+        { name: 'feature-auth', prompt: 'Add auth' },
+        mockContext,
+      );
+
+      expect(mockWriteLauncherScript).toHaveBeenCalledWith(
+        '/tmp/mc-worktrees/test-job',
+        '/tmp/mc-worktrees/test-job/.mc-prompt.txt',
+        'anthropic/claude-sonnet-4-20250514',
+      );
     });
   });
 
