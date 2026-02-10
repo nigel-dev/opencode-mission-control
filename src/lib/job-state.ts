@@ -46,7 +46,20 @@ const STATE_FILE = 'jobs.json';
 
 /**
  * In-process mutex for serializing job state operations.
- * Prevents concurrent read-modify-write cycles from losing updates.
+ * Prevents concurrent read-modify-write cycles from losing updates
+ * within the same process.
+ *
+ * LIMITATION: This mutex only protects within a single process.
+ * If multiple processes (e.g., mc_plan_cancel and mc_cleanup from
+ * different sessions) access jobs.json concurrently, they each have
+ * their own mutex instance and can race. The atomicWrite with
+ * renameSync makes individual writes atomic, but the full
+ * read-modify-write cycle is unprotected across processes.
+ *
+ * In practice, this manifests as a brief window where mc_jobs may
+ * show a stale entry immediately after mc_cleanup completes.
+ * A subsequent mc_jobs call will show the correct state.
+ * See: E2E_TEST_FINDINGS.md, FINDING 1.
  */
 const stateMutex = new GitMutex();
 
