@@ -129,7 +129,12 @@ describe('orchestrator', () => {
       }),
     );
 
-    expect(integrationMod.createIntegrationBranch).toHaveBeenCalledWith('plan-1');
+    expect(integrationMod.createIntegrationBranch).toHaveBeenCalledWith(
+      'plan-1',
+      expect.objectContaining({
+        symlinkDirs: expect.arrayContaining(['.opencode']),
+      }),
+    );
     expect(planState?.status).toBe('pending');
     expect(planState?.jobs[1].status).toBe('waiting_deps');
   });

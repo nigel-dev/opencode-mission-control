@@ -6,6 +6,7 @@ import { Orchestrator, hasCircularDependency } from '../lib/orchestrator';
 import { getSharedMonitor, getSharedNotifyCallback, setSharedOrchestrator } from '../lib/orchestrator-singleton';
 import { loadConfig } from '../lib/config';
 import { gitCommand } from '../lib/git';
+import { getCurrentModel } from '../lib/model-tracker';
 
 export const mc_plan: ToolDefinition = tool({
   description:
@@ -49,7 +50,7 @@ export const mc_plan: ToolDefinition = tool({
       .optional()
       .describe('tmux placement for jobs: session (default) or window in current session'),
   },
-  async execute(args) {
+  async execute(args, context) {
     const mode = args.mode ?? 'autopilot';
 
     // 1. Validate jobs: unique names
@@ -147,6 +148,8 @@ export const mc_plan: ToolDefinition = tool({
     const config = await loadConfig();
     const orchestrator = new Orchestrator(getSharedMonitor(), config, { notify: getSharedNotifyCallback() ?? undefined });
     setSharedOrchestrator(orchestrator);
+    const modelSnapshot = getCurrentModel(context?.sessionID);
+    orchestrator.setPlanModelSnapshot(modelSnapshot);
     await orchestrator.startPlan(spec);
 
     const jobSummary = spec.jobs

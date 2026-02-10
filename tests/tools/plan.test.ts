@@ -167,6 +167,7 @@ describe('mc_plan', () => {
         () =>
           ({
             startPlan: mockStartPlan,
+            setPlanModelSnapshot: vi.fn(),
           }) as any,
       );
 
@@ -189,6 +190,7 @@ describe('mc_plan', () => {
         () =>
           ({
             startPlan: mockStartPlan,
+            setPlanModelSnapshot: vi.fn(),
           }) as any,
       );
 
@@ -211,6 +213,7 @@ describe('mc_plan', () => {
         () =>
           ({
             startPlan: mockStartPlan,
+            setPlanModelSnapshot: vi.fn(),
           }) as any,
       );
 

@@ -89,6 +89,7 @@ describe('mc_plan_approve', () => {
         () =>
           ({
             resumePlan: mockResumePlan,
+            setPlanModelSnapshot: vi.fn(),
           }) as any,
       );
 

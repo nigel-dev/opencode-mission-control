@@ -7,7 +7,6 @@ import {
   createWindow,
   setPaneDiedHook,
   sendKeys,
-  killSession,
   getCurrentSession,
   isInsideTmux,
   isTmuxAvailable,
@@ -108,7 +107,7 @@ export const mc_launch: ToolDefinition = tool({
       .optional()
       .describe('Shell commands to run in worktree after creation (e.g. ["bun install"])'),
   },
-  async execute(args) {
+  async execute(args, context) {
     // 0. Validate tmux is available
     const tmuxFound = await isTmuxAvailable();
     if (!tmuxFound) {
@@ -205,7 +204,7 @@ export const mc_launch: ToolDefinition = tool({
         autoCommit: config.autoCommit,
       });
       promptFilePath = await writePromptFile(worktreePath, fullPrompt);
-      const model = getCurrentModel();
+      const model = getCurrentModel(context?.sessionID);
       launcherPath = await writeLauncherScript(worktreePath, promptFilePath, model);
     } catch (error) {
       if (promptFilePath) {

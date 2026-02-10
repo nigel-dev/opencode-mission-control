@@ -135,7 +135,8 @@ mock.module('../../src/lib/plan-copier', () => ({
 mock.module('../../src/lib/prompt-file', () => ({
   writePromptFile: vi.fn(async (worktreePath: string, _prompt: string) => `${worktreePath}/.mc-prompt.txt`),
   cleanupPromptFile: vi.fn(() => {}),
-  buildPromptFileCommand: vi.fn((filePath: string) => `opencode --prompt "$(cat '${filePath}')"`),
+  writeLauncherScript: vi.fn(async (worktreePath: string) => `${worktreePath}/.mc-launch.sh`),
+  cleanupLauncherScript: vi.fn(() => {}),
 }));
 
 mock.module('../../src/lib/worktree-setup', () => ({
@@ -161,8 +162,6 @@ const jobState = await import('../../src/lib/job-state');
 const tmux = await import('../../src/lib/tmux');
 const worktree = await import('../../src/lib/worktree');
 const planCopier = await import('../../src/lib/plan-copier');
-const promptFile = await import('../../src/lib/prompt-file');
-const worktreeSetup = await import('../../src/lib/worktree-setup');
 const omoMod = await import('../../src/lib/omo');
 const configMod = await import('../../src/lib/config');
 
@@ -258,8 +257,9 @@ describe('Workflow 1: Basic lifecycle (Launch -> Status -> Capture -> Kill -> Cl
     expect(mockCreateSession).toHaveBeenCalledWith({
       name: 'mc-auth-job',
       workdir: '/tmp/mc-worktrees/mc-auth-job',
+      command: "bash '/tmp/mc-worktrees/mc-auth-job/.mc-launch.sh'",
     });
-    expect(mockSendKeys).toHaveBeenCalled();
+    expect(mockSendKeys).not.toHaveBeenCalled();
 
     // Verify job is in state
     const jobs = getJobs();
@@ -505,7 +505,7 @@ describe('Workflow 2: OMO mode launch with plans', () => {
     ).rejects.toThrow('OMO mode "plan" requires Oh-My-OpenCode');
 
     // Verify cleanup happened
-    expect(mockKillSession).toHaveBeenCalledWith('mc-fail-omo');
+    expect(mockKillSession).not.toHaveBeenCalled();
     expect(mockRemoveWorktree).toHaveBeenCalled();
   });
 

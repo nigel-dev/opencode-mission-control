@@ -8,7 +8,7 @@ import { isTmuxAvailable } from './lib/tmux';
 import { loadPlan } from './lib/plan-state';
 import { Orchestrator } from './lib/orchestrator';
 import { loadConfig } from './lib/config';
-import { setCurrentModel } from './lib/model-tracker';
+import { setCurrentModel, setCurrentModelFromSDK, setConfigFallbackModel } from './lib/model-tracker';
 import { mc_launch } from './tools/launch';
 import { mc_jobs } from './tools/jobs';
 import { mc_status } from './tools/status';
@@ -162,6 +162,13 @@ export const MissionControl: Plugin = async ({ client }) => {
 
   monitor.start();
 
+  client.config.get().then((result) => {
+    const config = result.data;
+    if (config?.model) {
+      setConfigFallbackModel(config.model);
+    }
+  }).catch(() => {});
+
   loadPlan().then(async (plan) => {
     if (plan && (plan.status === 'running' || plan.status === 'paused')) {
       const config = await loadConfig();
@@ -184,6 +191,22 @@ export const MissionControl: Plugin = async ({ client }) => {
     'tool.execute.before': async (input: { sessionID?: string; [key: string]: unknown }) => {
       if (input.sessionID && isValidSessionID(input.sessionID)) {
         activeSessionID = input.sessionID;
+      }
+    },
+    'chat.message': async (input) => {
+      if (input.sessionID && isValidSessionID(input.sessionID)) {
+        activeSessionID = input.sessionID;
+      }
+      if (input.model) {
+        setCurrentModel(input.model, input.sessionID);
+      }
+    },
+    'chat.params': async (input) => {
+      if (input.sessionID && isValidSessionID(input.sessionID)) {
+        activeSessionID = input.sessionID;
+      }
+      if (input.model) {
+        setCurrentModelFromSDK(input.model, input.sessionID);
       }
     },
     tool: {
@@ -217,12 +240,16 @@ export const MissionControl: Plugin = async ({ client }) => {
             info?: {
               role?: string;
               model?: { providerID: string; modelID: string };
+              providerID?: string;
+              modelID?: string;
             };
           };
         };
         const info = messageEvent.properties?.info;
         if (info?.model) {
-          setCurrentModel(info.model);
+          setCurrentModel(info.model, sessionID);
+        } else if (info?.providerID && info?.modelID) {
+          setCurrentModel({ providerID: info.providerID, modelID: info.modelID }, sessionID);
         }
       }
 

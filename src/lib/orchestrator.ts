@@ -19,7 +19,6 @@ import {
   isPaneRunning,
   killSession,
   killWindow,
-  sendKeys,
   setPaneDiedHook,
 } from './tmux';
 
@@ -142,6 +141,7 @@ export class Orchestrator {
   private isRunning = false;
   private isReconciling = false;
   private activePlanId: string | null = null;
+  private planModelSnapshot: string | undefined;
   private planPlacement: 'session' | 'window' | null = null;
   private subscriptionsActive = false;
   private checkpoint: CheckpointType | null = null;
@@ -173,6 +173,10 @@ export class Orchestrator {
       this.toastCallback = callbacks?.toast ?? null;
       this.notifyCallback = callbacks?.notify ?? null;
     }
+  }
+
+  setPlanModelSnapshot(model: string | undefined): void {
+    this.planModelSnapshot = model;
   }
 
   private showToast(title: string, message: string, variant: ToastVariant): void {
@@ -576,7 +580,7 @@ If your work needs human review before it can proceed: mc_report(status: "needs_
         : '';
       const jobPrompt = job.prompt + mcReportSuffix + autoCommitSuffix;
       promptFilePath = await writePromptFile(worktreePath, jobPrompt);
-      const model = getCurrentModel();
+      const model = this.planModelSnapshot ?? getCurrentModel();
       const launcherPath = await writeLauncherScript(worktreePath, promptFilePath, model);
 
       const initialCommand = `bash '${launcherPath}'`;

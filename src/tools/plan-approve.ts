@@ -4,6 +4,7 @@ import { Orchestrator } from '../lib/orchestrator';
 import { getSharedMonitor, getSharedNotifyCallback, setSharedOrchestrator } from '../lib/orchestrator-singleton';
 import type { CheckpointType } from '../lib/plan-types';
 import { loadConfig } from '../lib/config';
+import { getCurrentModel } from '../lib/model-tracker';
 
 export const mc_plan_approve: ToolDefinition = tool({
   description:
@@ -29,6 +30,7 @@ export const mc_plan_approve: ToolDefinition = tool({
       const config = await loadConfig();
       const orchestrator = new Orchestrator(getSharedMonitor(), config, { notify: getSharedNotifyCallback() ?? undefined });
       setSharedOrchestrator(orchestrator);
+      orchestrator.setPlanModelSnapshot(getCurrentModel());
       await orchestrator.resumePlan();
 
       return [
@@ -53,6 +55,7 @@ export const mc_plan_approve: ToolDefinition = tool({
     const config = await loadConfig();
     const orchestrator = new Orchestrator(getSharedMonitor(), config, { notify: getSharedNotifyCallback() ?? undefined });
     setSharedOrchestrator(orchestrator);
+    orchestrator.setPlanModelSnapshot(getCurrentModel());
     await orchestrator.resumePlan();
 
     return [

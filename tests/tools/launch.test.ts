@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi, type Mock } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { Job } from '../../src/lib/job-state';
 import * as jobState from '../../src/lib/job-state';
 import * as worktree from '../../src/lib/worktree';
@@ -6,6 +6,8 @@ import * as tmux from '../../src/lib/tmux';
 import * as configMod from '../../src/lib/config';
 import * as promptFile from '../../src/lib/prompt-file';
 import * as worktreeSetup from '../../src/lib/worktree-setup';
+import * as omo from '../../src/lib/omo';
+import * as planCopier from '../../src/lib/plan-copier';
 
 vi.mock('crypto', () => ({
   randomUUID: vi.fn(() => 'test-uuid-1234'),
@@ -13,23 +15,22 @@ vi.mock('crypto', () => ({
 
 const { mc_launch } = await import('../../src/tools/launch');
 
-let mockGetJobByName: Mock;
-let mockAddJob: Mock;
-let mockCreateWorktree: Mock;
-let mockRemoveWorktree: Mock;
-let mockCreateSession: Mock;
-let mockCreateWindow: Mock;
-let mockSetPaneDiedHook: Mock;
-let mockSendKeys: Mock;
-let mockKillSession: Mock;
-let mockGetCurrentSession: Mock;
-let mockIsInsideTmux: Mock;
-let mockLoadConfig: Mock;
-let mockIsTmuxAvailable: Mock;
-let mockWritePromptFile: Mock;
-let mockCleanupPromptFile: Mock;
-let mockBuildPromptFileCommand: Mock;
-let mockResolvePostCreateHook: Mock;
+let mockGetJobByName: any;
+let mockAddJob: any;
+let mockCreateWorktree: any;
+let mockRemoveWorktree: any;
+let mockCreateSession: any;
+let mockCreateWindow: any;
+let mockSetPaneDiedHook: any;
+let mockSendKeys: any;
+let mockKillSession: any;
+let mockGetCurrentSession: any;
+let mockIsInsideTmux: any;
+let mockLoadConfig: any;
+let mockWritePromptFile: any;
+let mockWriteLauncherScript: any;
+let mockDetectOMO: any;
+let mockCopyPlansToWorktree: any;
 
 const mockContext = {
   sessionID: 'test-session',
@@ -56,6 +57,10 @@ function setupDefaultMocks() {
   mockCreateWindow.mockResolvedValue(undefined);
   mockSetPaneDiedHook.mockResolvedValue(undefined);
   mockSendKeys.mockResolvedValue(undefined);
+  mockWritePromptFile.mockResolvedValue('/tmp/mc-worktrees/test-job/.mc-prompt.txt');
+  mockWriteLauncherScript.mockResolvedValue('/tmp/mc-worktrees/test-job/.mc-launch.sh');
+  mockDetectOMO.mockResolvedValue({ detected: true, configSource: 'local', sisyphusPath: './.sisyphus' });
+  mockCopyPlansToWorktree.mockResolvedValue(undefined);
   mockAddJob.mockResolvedValue(undefined);
   mockKillSession.mockResolvedValue(undefined);
   mockRemoveWorktree.mockResolvedValue(undefined);
@@ -77,12 +82,15 @@ describe('mc_launch', () => {
     mockKillSession = vi.spyOn(tmux, 'killSession').mockImplementation(() => undefined as any);
     mockGetCurrentSession = vi.spyOn(tmux, 'getCurrentSession').mockImplementation(() => 'main-session' as any);
     mockIsInsideTmux = vi.spyOn(tmux, 'isInsideTmux').mockImplementation(() => true as any);
-    mockIsTmuxAvailable = vi.spyOn(tmux, 'isTmuxAvailable').mockImplementation(() => Promise.resolve(true) as any);
+    vi.spyOn(tmux, 'isTmuxAvailable').mockImplementation(() => Promise.resolve(true) as any);
     mockLoadConfig = vi.spyOn(configMod, 'loadConfig').mockImplementation(() => ({ defaultPlacement: 'session', pollInterval: 10000, idleThreshold: 300000, worktreeBasePath: '/tmp/mc-worktrees', omo: { enabled: false, defaultMode: 'vanilla' } } as any));
     mockWritePromptFile = vi.spyOn(promptFile, 'writePromptFile').mockImplementation(() => Promise.resolve('/tmp/mc-worktrees/test-job/.mc-prompt.txt') as any);
-    mockCleanupPromptFile = vi.spyOn(promptFile, 'cleanupPromptFile').mockImplementation(() => undefined as any);
-    mockBuildPromptFileCommand = vi.spyOn(promptFile, 'buildPromptFileCommand').mockImplementation((path) => `opencode --prompt "$(cat '${path}')"` as any);
-    mockResolvePostCreateHook = vi.spyOn(worktreeSetup, 'resolvePostCreateHook').mockImplementation(() => ({ symlinkDirs: ['.opencode'] } as any));
+    vi.spyOn(promptFile, 'cleanupPromptFile').mockImplementation(() => undefined as any);
+    mockWriteLauncherScript = vi.spyOn(promptFile, 'writeLauncherScript').mockImplementation(() => Promise.resolve('/tmp/mc-worktrees/test-job/.mc-launch.sh') as any);
+    vi.spyOn(promptFile, 'cleanupLauncherScript').mockImplementation(() => undefined as any);
+    mockDetectOMO = vi.spyOn(omo, 'detectOMO').mockImplementation(() => Promise.resolve({ detected: true, configSource: 'local', sisyphusPath: './.sisyphus' }) as any);
+    mockCopyPlansToWorktree = vi.spyOn(planCopier, 'copyPlansToWorktree').mockImplementation(() => Promise.resolve(undefined) as any);
+    vi.spyOn(worktreeSetup, 'resolvePostCreateHook').mockImplementation(() => ({ symlinkDirs: ['.opencode'] } as any));
     setupDefaultMocks();
   });
 
@@ -180,6 +188,7 @@ describe('mc_launch', () => {
       expect(mockCreateSession).toHaveBeenCalledWith({
         name: 'mc-feature-auth',
         workdir: '/tmp/mc-worktrees/test-job',
+        command: "bash '/tmp/mc-worktrees/test-job/.mc-launch.sh'",
       });
       expect(mockCreateWindow).not.toHaveBeenCalled();
     });
@@ -201,6 +210,7 @@ describe('mc_launch', () => {
         session: 'my-session',
         name: 'feature-auth',
         workdir: '/tmp/mc-worktrees/test-job',
+        command: "bash '/tmp/mc-worktrees/test-job/.mc-launch.sh'",
       });
       expect(mockCreateSession).not.toHaveBeenCalled();
     });
@@ -217,17 +227,21 @@ describe('mc_launch', () => {
       );
     });
 
-    it('should send launch command to tmux pane', async () => {
+    it('should write launcher script and prompt file', async () => {
       await mc_launch.execute(
         { name: 'feature-auth', prompt: 'Add auth' },
         mockContext,
       );
 
-      expect(mockSendKeys).toHaveBeenCalledWith(
-        'mc-feature-auth',
-        expect.stringContaining('opencode'),
+      expect(mockWritePromptFile).toHaveBeenCalledWith(
+        '/tmp/mc-worktrees/test-job',
+        expect.stringContaining('Add auth'),
       );
-      expect(mockSendKeys).toHaveBeenCalledWith('mc-feature-auth', 'Enter');
+      expect(mockWriteLauncherScript).toHaveBeenCalledWith(
+        '/tmp/mc-worktrees/test-job',
+        '/tmp/mc-worktrees/test-job/.mc-prompt.txt',
+        undefined,
+      );
     });
 
     it('should add job to state', async () => {
@@ -441,14 +455,14 @@ describe('mc_launch', () => {
       );
     });
 
-    it('should cleanup tmux and worktree when sendKeys fails', async () => {
-      mockSendKeys.mockRejectedValue(new Error('pane not found'));
+    it('should cleanup worktree when launch file creation fails', async () => {
+      mockWritePromptFile.mockRejectedValue(new Error('write failed'));
 
       await expect(
         mc_launch.execute({ name: 'test', prompt: 'stuff' }, mockContext),
-      ).rejects.toThrow('Failed to send launch command');
+      ).rejects.toThrow('Failed to write launch files');
 
-      expect(mockKillSession).toHaveBeenCalledWith('mc-test');
+      expect(mockKillSession).not.toHaveBeenCalled();
       expect(mockRemoveWorktree).toHaveBeenCalledWith(
         '/tmp/mc-worktrees/test-job',
         true,
