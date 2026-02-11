@@ -1,14 +1,17 @@
-import { describe, it, expect, beforeEach, vi, type Mock } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import * as jobState from '../../src/lib/job-state';
+import * as awareness from '../../src/hooks/awareness';
 
-const { getCompactionContext } = await import('../../src/hooks/compaction');
+const { getCompactionContext, getJobCompactionContext } = await import('../../src/hooks/compaction');
 
-let mockGetRunningJobs: Mock;
+let mockGetRunningJobs: any;
+let mockGetWorktreeContext: any;
 
 describe('compaction hook', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockGetRunningJobs = vi.spyOn(jobState, 'getRunningJobs').mockImplementation(() => [] as any);
+    mockGetWorktreeContext = vi.spyOn(awareness, 'getWorktreeContext').mockResolvedValue({ isInJob: false });
   });
 
   it('should return "No Mission Control jobs running" when no jobs are running', async () => {
@@ -110,5 +113,49 @@ describe('compaction hook', () => {
     expect(context).toContain('test-job');
     expect(context).toContain('running');
     expect(context).toContain('1 job(s)');
+  });
+});
+
+describe('getJobCompactionContext', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetWorktreeContext = vi.spyOn(awareness, 'getWorktreeContext').mockResolvedValue({ isInJob: false });
+  });
+
+  it('should return job context string with jobName, mode, jobPrompt, and mc_report when in job', async () => {
+    mockGetWorktreeContext.mockResolvedValue({
+      isInJob: true,
+      jobName: 'feature-auth',
+      jobPrompt: 'Add OAuth support',
+      mode: 'vanilla',
+    });
+
+    const context = await getJobCompactionContext();
+
+    expect(context).toContain('feature-auth');
+    expect(context).toContain('vanilla');
+    expect(context).toContain('Add OAuth support');
+    expect(context).toContain('mc_report');
+  });
+
+  it('should return generic fallback when job context incomplete (isInJob true but no jobName)', async () => {
+    mockGetWorktreeContext.mockResolvedValue({
+      isInJob: true,
+      jobName: undefined,
+      jobPrompt: 'Some task',
+      mode: 'vanilla',
+    });
+
+    const context = await getJobCompactionContext();
+
+    expect(context).toBe('Mission Control Job Agent: Focus on your assigned task. Use mc_report to report status.');
+  });
+
+  it('should return generic fallback when not in job', async () => {
+    mockGetWorktreeContext.mockResolvedValue({ isInJob: false });
+
+    const context = await getJobCompactionContext();
+
+    expect(context).toBe('Mission Control Job Agent: Focus on your assigned task. Use mc_report to report status.');
   });
 });
