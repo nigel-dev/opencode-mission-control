@@ -648,3 +648,18 @@ Found a bug? Have an idea? Check out [CONTRIBUTING.md](CONTRIBUTING.md).
 ## License
 
 MIT
+
+## Inspired By
+
+This plugin was heavily inspired by great work across the OpenCode ecosystem (any bugs are still 100% mine):
+
+- [slkiser/opencode-quota](https://github.com/slkiser/opencode-quota)
+- [shekohex/opencode-pty](https://github.com/shekohex/opencode-pty)
+- [Opencode-DCP/opencode-dynamic-context-pruning](https://github.com/Opencode-DCP/opencode-dynamic-context-pruning)
+- [code-yeongyu/oh-my-opencode](https://github.com/code-yeongyu/oh-my-opencode)
+- [panta82/opencode-notificator](https://github.com/panta82/opencode-notificator)
+- [24601/opencode-zellij-namer](https://github.com/24601/opencode-zellij-namer)
+- [kdcokenny/opencode-background-agents](https://github.com/kdcokenny/opencode-background-agents)
+- [spoons-and-mirrors/subtask2](https://github.com/spoons-and-mirrors/subtask2)
+- [mailshieldai/opencode-canvas](https://github.com/mailshieldai/opencode-canvas)
+- [joshuadavidthomas/opencode-handoff](https://github.com/joshuadavidthomas/opencode-handoff)
