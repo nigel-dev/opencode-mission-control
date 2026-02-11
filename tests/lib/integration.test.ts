@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { join } from 'path';
+import { tmpdir } from 'os';
 import * as paths from '../../src/lib/paths';
 import {
   createIntegrationBranch,
@@ -8,7 +9,7 @@ import {
   refreshIntegrationFromMain,
 } from '../../src/lib/integration';
 
-const TEST_REPO_DIR = join(import.meta.dir, '..', '.tmp-integration-test-repo');
+const TEST_REPO_DIR = join(tmpdir(), '.tmp-integration-test-repo');
 
 async function exec(
   args: string[],
