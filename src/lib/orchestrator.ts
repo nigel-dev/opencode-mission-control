@@ -151,16 +151,25 @@ export class Orchestrator {
   private jobsLaunchedCount = 0;
   private firstJobCompleted = false;
 
-  private getMergeTrainConfig(): { testCommand?: string; testTimeout?: number; mergeStrategy?: 'squash' | 'ff-only' | 'merge' } {
+  private getMergeTrainConfig(): {
+    testCommand?: string;
+    testTimeout?: number;
+    mergeStrategy?: 'squash' | 'ff-only' | 'merge';
+    setupCommands?: string[];
+  } {
     const config = this.config as MCConfig & {
       testCommand?: string;
       testTimeout?: number;
       mergeStrategy?: 'squash' | 'ff-only' | 'merge';
+      worktreeSetup?: {
+        commands?: string[];
+      };
     };
     return {
       testCommand: config.testCommand,
       testTimeout: config.testTimeout,
       mergeStrategy: config.mergeStrategy,
+      setupCommands: config.worktreeSetup?.commands,
     };
   }
 

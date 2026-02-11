@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { join } from 'path';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import type { JobSpec } from '../../src/lib/plan-types';
-import { MergeTrain, detectTestCommand } from '../../src/lib/merge-train';
+import { MergeTrain, detectInstallCommand, detectTestCommand } from '../../src/lib/merge-train';
 
 type TestRepo = {
   rootDir: string;
@@ -66,6 +66,7 @@ async function setupRepo(): Promise<TestRepo> {
     join(repoDir, 'package.json'),
     JSON.stringify({ scripts: { test: 'true' } }, null, 2),
   );
+  writeFileSync(join(repoDir, '.gitignore'), 'node_modules\n');
   writeFileSync(join(repoDir, 'base.txt'), 'base\n');
 
   await mustExec(['git', 'add', '.'], repoDir);
@@ -74,6 +75,7 @@ async function setupRepo(): Promise<TestRepo> {
 
   await mustExec(['git', 'branch', 'integration'], repoDir);
   await mustExec(['git', 'worktree', 'add', integrationWorktree, 'integration'], repoDir);
+  mkdirSync(join(integrationWorktree, 'node_modules'), { recursive: true });
 
   return { rootDir, repoDir, integrationWorktree };
 }
@@ -188,6 +190,106 @@ describe('MergeTrain', () => {
 
     const command = await detectTestCommand(testRepo.integrationWorktree);
     expect(command).toBe('bun test tests/smoke.test.ts');
+  });
+
+  it('detects install command from lockfile', async () => {
+    writeFileSync(
+      join(testRepo.integrationWorktree, 'package-lock.json'),
+      '{"name":"repo","lockfileVersion":3}',
+    );
+
+    const command = await detectInstallCommand(testRepo.integrationWorktree);
+    expect(command).toBe('npm ci');
+  });
+
+  it('installs dependencies when node_modules is missing before tests', async () => {
+    await createBranchCommit(testRepo.repoDir, 'feature-install', 'install.txt', 'install\n');
+
+    rmSync(join(testRepo.integrationWorktree, 'node_modules'), {
+      recursive: true,
+      force: true,
+    });
+
+    writeFileSync(
+      join(testRepo.integrationWorktree, 'package.json'),
+      JSON.stringify(
+        {
+          name: 'repo',
+          version: '1.0.0',
+          packageManager: 'bun@1.0.0',
+          scripts: { test: 'test -d node_modules' },
+        },
+        null,
+        2,
+      ),
+    );
+
+    const train = new MergeTrain(testRepo.integrationWorktree, {
+      testCommand: 'test -d node_modules',
+      testTimeout: 60000,
+    });
+    train.enqueue(makeJob('feature-install'));
+
+    const result = await train.processNext();
+
+    expect(result.success).toBe(true);
+    expect(existsSync(join(testRepo.integrationWorktree, 'node_modules'))).toBe(true);
+  });
+
+  it('runs configured setup commands before tests', async () => {
+    await createBranchCommit(testRepo.repoDir, 'feature-setup', 'setup.txt', 'setup\n');
+
+    rmSync(join(testRepo.integrationWorktree, '.deps-ready'), {
+      recursive: true,
+      force: true,
+    });
+
+    const train = new MergeTrain(testRepo.integrationWorktree, {
+      setupCommands: ['touch .deps-ready'],
+      testCommand: 'test -f .deps-ready',
+      testTimeout: 60000,
+    });
+    train.enqueue(makeJob('feature-setup'));
+
+    const result = await train.processNext();
+
+    expect(result.success).toBe(true);
+    expect(existsSync(join(testRepo.integrationWorktree, '.deps-ready'))).toBe(true);
+  });
+
+  it('rolls back merge when setup command fails', async () => {
+    await createBranchCommit(
+      testRepo.repoDir,
+      'feature-setup-fail',
+      'setup-fail.txt',
+      'setup-fail\n',
+    );
+
+    const headBefore = await mustExec(
+      ['git', 'rev-parse', 'HEAD'],
+      testRepo.integrationWorktree,
+    );
+
+    const train = new MergeTrain(testRepo.integrationWorktree, {
+      setupCommands: ['false'],
+      testCommand: 'true',
+      testTimeout: 60000,
+    });
+    train.enqueue(makeJob('feature-setup-fail'));
+
+    const result = await train.processNext();
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.type).toBe('test_failure');
+      expect(result.output).toContain('Dependency setup command failed');
+    }
+
+    const headAfter = await mustExec(
+      ['git', 'rev-parse', 'HEAD'],
+      testRepo.integrationWorktree,
+    );
+    expect(headAfter).toBe(headBefore);
   });
 
   it('rolls back merge when tests fail', async () => {

@@ -1,4 +1,5 @@
 import { join } from 'path';
+import { existsSync, lstatSync, rmSync } from 'fs';
 import type { JobSpec } from './plan-types';
 import { gitCommand } from './git';
 import { getIntegrationWorktree } from './integration';
@@ -17,9 +18,19 @@ type MergeTrainConfig = {
   testCommand?: string;
   testTimeout?: number;
   mergeStrategy?: 'squash' | 'ff-only' | 'merge';
+  setupCommands?: string[];
 };
 
 const DEFAULT_TEST_TIMEOUT_MS = 600000;
+
+const INSTALL_COMMAND_BY_LOCKFILE = [
+  { file: 'bun.lockb', command: 'bun install --frozen-lockfile' },
+  { file: 'bun.lock', command: 'bun install --frozen-lockfile' },
+  { file: 'pnpm-lock.yaml', command: 'pnpm install --frozen-lockfile' },
+  { file: 'yarn.lock', command: 'yarn install --frozen-lockfile' },
+  { file: 'package-lock.json', command: 'npm ci' },
+  { file: 'npm-shrinkwrap.json', command: 'npm ci' },
+] as const;
 
 
 
@@ -61,6 +72,40 @@ export async function detectTestCommand(worktreePath: string): Promise<string | 
   }
 }
 
+export async function detectInstallCommand(worktreePath: string): Promise<string | null> {
+  try {
+    for (const entry of INSTALL_COMMAND_BY_LOCKFILE) {
+      const lockfile = Bun.file(join(worktreePath, entry.file));
+      if (await lockfile.exists()) {
+        return entry.command;
+      }
+    }
+
+    const packageJsonFile = Bun.file(join(worktreePath, 'package.json'));
+    if (!(await packageJsonFile.exists())) {
+      return null;
+    }
+
+    const packageJson = JSON.parse(await packageJsonFile.text()) as {
+      packageManager?: string;
+    };
+    const packageManager = packageJson.packageManager?.toLowerCase() ?? '';
+    if (packageManager.startsWith('bun@')) {
+      return 'bun install';
+    }
+    if (packageManager.startsWith('pnpm@')) {
+      return 'pnpm install';
+    }
+    if (packageManager.startsWith('yarn@')) {
+      return 'yarn install';
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 export async function runTestCommand(
   worktreePath: string,
   command: string,
@@ -91,6 +136,103 @@ export async function runTestCommand(
     success: !timedOut && exitCode === 0,
     output,
     timedOut,
+  };
+}
+
+function normalizeCommands(commands?: string[]): string[] {
+  if (!commands) {
+    return [];
+  }
+  return [...new Set(commands.map((command) => command.trim()).filter(Boolean))];
+}
+
+function getNodeModulesStatus(worktreePath: string): 'present' | 'missing' | 'dangling_symlink' {
+  const nodeModulesPath = join(worktreePath, 'node_modules');
+  if (existsSync(nodeModulesPath)) {
+    return 'present';
+  }
+
+  try {
+    const stat = lstatSync(nodeModulesPath);
+    if (stat.isSymbolicLink()) {
+      return 'dangling_symlink';
+    }
+  } catch {}
+
+  return 'missing';
+}
+
+async function ensureTestDependencies(
+  worktreePath: string,
+  timeoutMs: number,
+  setupCommands?: string[],
+): Promise<{ success: boolean; output: string; timedOut: boolean }> {
+  const configuredSetupCommands = normalizeCommands(setupCommands);
+  if (configuredSetupCommands.length > 0) {
+    for (const command of configuredSetupCommands) {
+      const setupResult = await runTestCommand(worktreePath, command, timeoutMs);
+      if (setupResult.success) {
+        continue;
+      }
+
+      const prefix = setupResult.timedOut
+        ? `Dependency setup command timed out after ${timeoutMs}ms`
+        : 'Dependency setup command failed';
+
+      return {
+        ...setupResult,
+        output: setupResult.output
+          ? `${prefix} (${command})\n${setupResult.output}`
+          : `${prefix} (${command})`,
+      };
+    }
+
+    return {
+      success: true,
+      output: '',
+      timedOut: false,
+    };
+  }
+
+  const installCommand = await detectInstallCommand(worktreePath);
+  if (!installCommand) {
+    return {
+      success: true,
+      output: '',
+      timedOut: false,
+    };
+  }
+
+  const nodeModulesStatus = getNodeModulesStatus(worktreePath);
+  if (nodeModulesStatus === 'present') {
+    return {
+      success: true,
+      output: '',
+      timedOut: false,
+    };
+  }
+
+  if (nodeModulesStatus === 'dangling_symlink') {
+    rmSync(join(worktreePath, 'node_modules'), {
+      force: true,
+      recursive: true,
+    });
+  }
+
+  const installResult = await runTestCommand(worktreePath, installCommand, timeoutMs);
+  if (installResult.success) {
+    return installResult;
+  }
+
+  const prefix = installResult.timedOut
+    ? `Dependency install timed out after ${timeoutMs}ms`
+    : 'Dependency install failed';
+
+  return {
+    ...installResult,
+    output: installResult.output
+      ? `${prefix} (${installCommand})\n${installResult.output}`
+      : `${prefix} (${installCommand})`,
   };
 }
 
@@ -253,7 +395,7 @@ export class MergeTrain {
 
     if (!testCommand) {
       console.warn(
-        `No test command found in ${this.integrationWorktree}/package.json. Skipping test gating.`,
+        `No test command configured or detected in ${this.integrationWorktree}. Skipping test gating.`,
       );
       return {
         success: true,
@@ -262,6 +404,21 @@ export class MergeTrain {
     }
 
     const timeoutMs = this.config?.testTimeout ?? DEFAULT_TEST_TIMEOUT_MS;
+    const dependencySetupResult = await ensureTestDependencies(
+      this.integrationWorktree,
+      timeoutMs,
+      this.config?.setupCommands,
+    );
+
+    if (!dependencySetupResult.success) {
+      await rollbackMergeToHead(this.integrationWorktree, headBeforeStr);
+      return {
+        success: false,
+        type: 'test_failure',
+        output: dependencySetupResult.output,
+      };
+    }
+
     const testResult = await runTestCommand(this.integrationWorktree, testCommand, timeoutMs);
 
     if (testResult.timedOut) {
