@@ -144,11 +144,32 @@ export const MissionControl: Plugin = async ({ client }) => {
     }
   };
 
+  // Detect if we're a subagent spawned by another OpenCode session
+  let _isSubagentCached: boolean | null = null;
+  const isSubagent = async (): Promise<boolean> => {
+    if (_isSubagentCached !== null) return _isSubagentCached;
+    try {
+      const sessionID = await getActiveSessionID();
+      if (!sessionID) {
+        _isSubagentCached = false;
+        return false;
+      }
+      const session = await client.session.get({ path: { id: sessionID } });
+      const data = (session as any)?.data ?? session;
+      _isSubagentCached = !!(data?.parentID || data?.parentId);
+      return _isSubagentCached;
+    } catch {
+      _isSubagentCached = false;
+      return false;
+    }
+  };
+
   if (!isJobAgent) {
     setupNotifications({
       client,
       monitor,
       getActiveSessionID,
+      isSubagent,
     });
   }
 

@@ -13,6 +13,7 @@ interface SetupNotificationsOptions {
   client: Client;
   monitor: JobMonitorLike;
   getActiveSessionID: () => Promise<string | undefined>;
+  isSubagent: () => Promise<boolean>;
 }
 
 function formatDuration(createdAt: string): string {
@@ -56,7 +57,7 @@ function getDedupKey(event: NotificationEvent, job: Job, reportTimestamp?: strin
 }
 
 export function setupNotifications(options: SetupNotificationsOptions): void {
-  const { client, monitor, getActiveSessionID } = options;
+  const { client, monitor, getActiveSessionID, isSubagent } = options;
   const sent = new Set<string>();
   let pending: Promise<void> = Promise.resolve();
 
@@ -65,6 +66,13 @@ export function setupNotifications(options: SetupNotificationsOptions): void {
     const dedupKey = getDedupKey(event, job, report?.timestamp);
     if (sent.has(dedupKey)) {
       return;
+    }
+
+    // Skip notifications in subagent sessions
+    try {
+      if (await isSubagent()) return;
+    } catch {
+      // If detection fails, continue sending (safer default)
     }
 
     const sessionID = await getActiveSessionID();
