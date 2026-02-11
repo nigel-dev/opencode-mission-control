@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as jobState from '../../src/lib/job-state';
 import * as reports from '../../src/lib/reports';
 import * as awareness from '../../src/hooks/awareness';
@@ -35,6 +35,10 @@ describe('compaction hook', () => {
     mockLoadJobState = vi.spyOn(jobState, 'loadJobState').mockResolvedValue(makeJobState([]));
     mockReadAllReports = vi.spyOn(reports, 'readAllReports').mockResolvedValue([]);
     mockGetWorktreeContext = vi.spyOn(awareness, 'getWorktreeContext').mockResolvedValue({ isInJob: false });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   it('should return "No Mission Control jobs running" when no jobs exist', async () => {
@@ -229,6 +233,10 @@ describe('getJobCompactionContext', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockGetWorktreeContext = vi.spyOn(awareness, 'getWorktreeContext').mockResolvedValue({ isInJob: false });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   it('should return job context string with jobName, mode, jobPrompt, and mc_report when in job', async () => {
