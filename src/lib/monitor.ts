@@ -4,7 +4,7 @@ import { isPaneRunning, capturePane, captureExitStatus } from './tmux.js';
 import { loadConfig } from './config.js';
 import { readReport, type AgentReport } from './reports.js';
 
-type JobEventType = 'complete' | 'failed' | 'blocked' | 'needs_review' | 'agent_report';
+type JobEventType = 'complete' | 'failed' | 'blocked' | 'needs_review' | 'awaiting_input' | 'agent_report';
 type JobEventHandler = (job: Job) => void;
 
 interface IdleTracker {
@@ -21,7 +21,7 @@ function hashOutput(output: string): string {
   return Bun.hash(output).toString(36);
 }
 
-type SessionState = 'idle' | 'streaming' | 'unknown';
+type SessionState = 'idle' | 'streaming' | 'awaiting_input' | 'unknown';
 
 function detectSessionState(output: string): SessionState {
   const lines = output.split('\n');
@@ -29,6 +29,11 @@ function detectSessionState(output: string): SessionState {
 
   if (bottomChunk.includes('⬝') || bottomChunk.includes('esc interrupt')) {
     return 'streaming';
+  }
+
+  const isQuestionPrompt = bottomChunk.includes('↑↓ select') || bottomChunk.includes('enter submit') || bottomChunk.includes('esc dismiss');
+  if (isQuestionPrompt) {
+    return 'awaiting_input';
   }
 
   if (bottomChunk.includes('ctrl+p commands')) {
@@ -44,6 +49,7 @@ export class JobMonitor extends EventEmitter {
   private intervalId?: Timer;
   private isRunning = false;
   private idleTrackers: Map<string, IdleTracker> = new Map();
+  private awaitingInputNotified: Set<string> = new Set();
 
   private explicitIdleThreshold: boolean;
 
@@ -90,6 +96,7 @@ export class JobMonitor extends EventEmitter {
       this.intervalId = undefined;
     }
     this.idleTrackers.clear();
+    this.awaitingInputNotified.clear();
   }
 
   on(event: JobEventType, handler: JobEventHandler): this {
@@ -142,14 +149,20 @@ export class JobMonitor extends EventEmitter {
         this.idleTrackers.delete(id);
       }
     }
+    for (const id of this.awaitingInputNotified) {
+      if (!activeJobIds.has(id)) {
+        this.awaitingInputNotified.delete(id);
+      }
+    }
 
      for (const job of jobs) {
        try {
          const isRunning = await isPaneRunning(job.tmuxTarget);
 
-         if (!isRunning) {
-           this.idleTrackers.delete(job.id);
-           const now = new Date().toISOString();
+        if (!isRunning) {
+            this.idleTrackers.delete(job.id);
+            this.awaitingInputNotified.delete(job.id);
+            const now = new Date().toISOString();
            
            // Check exit status to determine success vs failure
            const exitCode = await captureExitStatus(job.tmuxTarget);
@@ -170,6 +183,13 @@ export class JobMonitor extends EventEmitter {
         if (reportHandled) continue;
 
         const output = await capturePane(job.tmuxTarget, 50);
+        const state = detectSessionState(output);
+        
+        if (state === 'awaiting_input' && !this.awaitingInputNotified.has(job.id)) {
+          this.awaitingInputNotified.add(job.id);
+          this.emit('awaiting_input', job);
+        }
+        
         const currentHash = hashOutput(output);
         const now = Date.now();
         const tracker = this.idleTrackers.get(job.id);
@@ -185,12 +205,9 @@ export class JobMonitor extends EventEmitter {
           continue;
         }
 
-        if (now - tracker.lastChangedAt >= this.idleThreshold) {
-          const state = detectSessionState(output);
-          if (state !== 'idle') {
-            continue;
-          }
+        if (now - tracker.lastChangedAt >= this.idleThreshold && state === 'idle') {
           this.idleTrackers.delete(job.id);
+          this.awaitingInputNotified.delete(job.id);
           const completedAt = new Date().toISOString();
           await updateJob(job.id, { status: 'completed', completedAt });
           this.emit('complete', { ...job, status: 'completed', completedAt });

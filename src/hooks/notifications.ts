@@ -3,7 +3,7 @@ import type { Job } from '../lib/job-state';
 import { readReport } from '../lib/reports';
 
 type Client = PluginInput['client'];
-type NotificationEvent = 'complete' | 'failed' | 'blocked' | 'needs_review';
+type NotificationEvent = 'complete' | 'failed' | 'blocked' | 'needs_review' | 'awaiting_input';
 
 interface JobMonitorLike {
   on(event: NotificationEvent, handler: (job: Job) => void): void;
@@ -49,6 +49,9 @@ function getDedupKey(event: NotificationEvent, job: Job, reportTimestamp?: strin
   if (event === 'complete' || event === 'failed') {
     return `${event}:${job.id}:${job.completedAt ?? ''}`;
   }
+  if (event === 'awaiting_input') {
+    return `${event}:${job.id}`;
+  }
   return `${event}:${job.id}:${reportTimestamp ?? ''}`;
 }
 
@@ -79,6 +82,8 @@ export function setupNotifications(options: SetupNotificationsOptions): void {
     } else if (event === 'blocked') {
       const detail = report?.message ? ` Agent says: ${report.message}` : '';
       message = `⚠️ Job '${job.name}' is blocked (${duration} elapsed). Branch: ${job.branch}.${detail} Next: run mc_status(name: '${job.name}') and unblock, then continue or relaunch.`;
+    } else if (event === 'awaiting_input') {
+      message = `❓ Job '${job.name}' is waiting for input (${duration} elapsed). The agent asked a clarifying question. Next: run mc_attach(name: '${job.name}') to answer the question, or mc_kill(name: '${job.name}') to abort.`;
     } else {
       const detail = report?.message ? ` Reviewer note: ${report.message}` : '';
       message = `👀 Job '${job.name}' needs review (${duration} elapsed). Branch: ${job.branch}.${detail} Next: run mc_diff(name: '${job.name}') and mc_capture(name: '${job.name}') before approving next steps.`;
@@ -96,4 +101,5 @@ export function setupNotifications(options: SetupNotificationsOptions): void {
   monitor.on('failed', (job) => enqueue('failed', job));
   monitor.on('blocked', (job) => enqueue('blocked', job));
   monitor.on('needs_review', (job) => enqueue('needs_review', job));
+  monitor.on('awaiting_input', (job) => enqueue('awaiting_input', job));
 }
