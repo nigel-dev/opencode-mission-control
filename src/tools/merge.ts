@@ -19,6 +19,21 @@ async function getBaseBranch(cwd: string): Promise<string> {
   throw new Error('Could not find main or master branch');
 }
 
+async function assertCleanWorktree(cwd: string): Promise<void> {
+  const status = await gitCommand(['status', '--porcelain'], { cwd });
+  if (status.exitCode !== 0) {
+    throw new Error(
+      `Failed to check main worktree status: ${status.stderr || status.stdout}`,
+    );
+  }
+
+  if (status.stdout.trim() !== '') {
+    throw new Error(
+      'Main worktree has uncommitted changes. Refusing merge because automatic rollback may discard local changes. Commit, stash, or clean the worktree and retry.',
+    );
+  }
+}
+
 export const mc_merge: ToolDefinition = tool({
   description: 'Merge a job\'s branch back to main (for non-PR workflows)',
   args: {
@@ -60,7 +75,8 @@ export const mc_merge: ToolDefinition = tool({
       );
     }
 
-    // 7. Execute merge based on strategy
+    await assertCleanWorktree(mainWorktreePath);
+
     if (mergeStrategy === 'squash') {
       // Squash: merge --squash then commit
       const squashResult = await gitCommand(['merge', '--squash', job.branch], {
@@ -146,7 +162,6 @@ export const mc_merge: ToolDefinition = tool({
       }
     }
 
-    // 8. Check if job belongs to active plan
     let planWarning = '';
     if (job.planId) {
       const activePlan = await loadPlan();
@@ -156,7 +171,6 @@ export const mc_merge: ToolDefinition = tool({
       }
     }
 
-    // 9. Return success message
     const lines: string[] = [
       `${planWarning}Successfully merged '${job.branch}' into '${baseBranch}'`,
       '',

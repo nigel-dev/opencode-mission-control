@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi, type Mock } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { join } from 'path';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
@@ -7,10 +7,11 @@ import * as jobState from '../../src/lib/job-state';
 import * as worktree from '../../src/lib/worktree';
 import * as config from '../../src/lib/config';
 import * as planState from '../../src/lib/plan-state';
+import * as git from '../../src/lib/git';
 
 const { mc_merge } = await import('../../src/tools/merge');
 
-let mockGetJobByName: Mock;
+let mockGetJobByName: any;
 
 const mockContext = {
   sessionID: 'test-session',
@@ -25,8 +26,42 @@ const mockContext = {
 
 describe('mc_merge', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.restoreAllMocks();
     mockGetJobByName = vi.spyOn(jobState, 'getJobByName').mockImplementation(() => undefined as any);
+    vi.spyOn(worktree, 'getMainWorktree').mockResolvedValue('/tmp/mc-merge-mock-main');
+    vi.spyOn(config, 'loadConfig').mockResolvedValue({ mergeStrategy: 'squash' } as any);
+    vi.spyOn(planState, 'loadPlan').mockResolvedValue(null);
+    vi.spyOn(git, 'gitCommand').mockImplementation(async (args: string[]) => {
+      if (
+        args[0] === 'rev-parse' &&
+        args.includes('--verify') &&
+        args[args.length - 1] === 'main'
+      ) {
+        return { stdout: 'main', stderr: '', exitCode: 0 };
+      }
+
+      if (
+        args[0] === 'rev-parse' &&
+        args.includes('--verify') &&
+        args[args.length - 1] === 'master'
+      ) {
+        return { stdout: '', stderr: '', exitCode: 1 };
+      }
+
+      if (args[0] === 'rev-parse' && args.includes('--abbrev-ref')) {
+        return { stdout: 'main', stderr: '', exitCode: 0 };
+      }
+
+      if (args[0] === 'merge' && args.includes('--squash')) {
+        return { stdout: '', stderr: 'mock squash merge failure', exitCode: 1 };
+      }
+
+      return { stdout: '', stderr: '', exitCode: 0 };
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   describe('tool definition', () => {
@@ -56,6 +91,49 @@ describe('mc_merge', () => {
       await expect(
         mc_merge.execute({ name: 'nonexistent' }, mockContext),
       ).rejects.toThrow('Job "nonexistent" not found');
+    });
+  });
+
+  describe('safety guard', () => {
+    it('should refuse merge when main worktree has uncommitted changes', async () => {
+      const job: Job = {
+        id: 'job-dirty',
+        name: 'dirty-merge',
+        worktreePath: '/tmp/mc-worktrees/dirty-merge',
+        branch: 'mc/dirty-merge',
+        tmuxTarget: 'mc-dirty-merge',
+        placement: 'session',
+        status: 'running',
+        prompt: 'Dirty merge test',
+        mode: 'vanilla',
+        createdAt: new Date().toISOString(),
+      };
+
+      mockGetJobByName.mockResolvedValue(job);
+
+      (git.gitCommand as any).mockImplementation(async (args: string[]) => {
+        if (
+          args[0] === 'rev-parse' &&
+          args.includes('--verify') &&
+          args[args.length - 1] === 'main'
+        ) {
+          return { stdout: 'main', stderr: '', exitCode: 0 };
+        }
+
+        if (args[0] === 'rev-parse' && args.includes('--abbrev-ref')) {
+          return { stdout: 'main', stderr: '', exitCode: 0 };
+        }
+
+        if (args[0] === 'status' && args.includes('--porcelain')) {
+          return { stdout: ' M README.md', stderr: '', exitCode: 0 };
+        }
+
+        return { stdout: '', stderr: '', exitCode: 0 };
+      });
+
+      await expect(
+        mc_merge.execute({ name: 'dirty-merge' }, mockContext),
+      ).rejects.toThrow('Main worktree has uncommitted changes');
     });
   });
 
