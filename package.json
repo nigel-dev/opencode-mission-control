@@ -19,6 +19,7 @@
   "scripts": {
     "build": "bun build ./src/index.ts --outdir ./dist --target bun",
     "test": "bun test",
+    "release": "semantic-release",
     "prepublishOnly": "bun run build"
   },
   "dependencies": {
@@ -27,6 +28,11 @@
   },
   "devDependencies": {
     "@types/bun": "latest",
+    "@semantic-release/commit-analyzer": "^13.0.1",
+    "@semantic-release/github": "^11.0.6",
+    "@semantic-release/npm": "^12.0.1",
+    "@semantic-release/release-notes-generator": "^14.1.0",
+    "semantic-release": "^24.2.9",
     "typescript": "^5.0.0"
   },
   "license": "MIT",

@@ -1,0 +1,69 @@
+name: Conventional Commits
+
+on:
+  pull_request:
+    types:
+      - opened
+      - edited
+      - reopened
+      - synchronize
+  push:
+    branches:
+      - main
+
+jobs:
+  conventional-commits:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Validate pull request title
+        if: github.event_name == 'pull_request'
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          if [[ ! "$PR_TITLE" =~ ^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([a-z0-9._/-]+\))?(!)?:\ .+ ]]; then
+            echo "Pull request title must follow Conventional Commits format."
+            echo "Example: feat(worktree): add integration branch cleanup"
+            echo "Current title: $PR_TITLE"
+            exit 1
+          fi
+
+      - name: Checkout
+        if: github.event_name == 'push'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate commit subjects on main
+        if: github.event_name == 'push'
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+          AFTER_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          if [ "$BEFORE_SHA" = "0000000000000000000000000000000000000000" ]; then
+            RANGE="$AFTER_SHA"
+          else
+            RANGE="$BEFORE_SHA..$AFTER_SHA"
+          fi
+
+          invalid=0
+          while IFS= read -r subject; do
+            [ -z "$subject" ] && continue
+
+            if [[ "$subject" =~ ^Merge\  ]]; then
+              continue
+            fi
+
+            if [[ "$subject" =~ ^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([a-z0-9._/-]+\))?(!)?:\ .+ ]]; then
+              continue
+            fi
+
+            echo "Invalid commit subject: $subject"
+            invalid=1
+          done < <(git log --format=%s "$RANGE")
+
+          if [ "$invalid" -ne 0 ]; then
+            exit 1
+          fi

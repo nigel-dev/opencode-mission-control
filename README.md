@@ -11,16 +11,17 @@
 <p align="center">
   <a href="https://www.npmjs.com/package/opencode-mission-control"><img src="https://img.shields.io/npm/v/opencode-mission-control.svg" alt="npm version" /></a>
   <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT" /></a>
-  <a href="https://github.com/nigel-dev/opencode-mission-control/stargazers"><img src="https://img.shields.io/github/stars/nigel-dev/opencode-mission-control.svg" alt="GitHub stars" /></a>
-  <a href="https://github.com/nigel-dev/opencode-mission-control/issues"><img src="https://img.shields.io/github/issues/nigel-dev/opencode-mission-control.svg" alt="GitHub issues" /></a>
+  <a href="https://github.com/nigel-dev/opencode-mission-control/actions/workflows/ci.yml"><img src="https://github.com/nigel-dev/opencode-mission-control/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
 </p>
 
 <p align="center">
   <a href="#quick-start">Quick Start</a> &bull;
+  <a href="#more-usage-examples">Examples</a> &bull;
   <a href="#how-it-works">How It Works</a> &bull;
   <a href="#tools-reference">Tools Reference</a> &bull;
   <a href="#orchestrated-plans">Orchestrated Plans</a> &bull;
   <a href="#configuration">Configuration</a> &bull;
+  <a href="#release--npm-deploy">Release</a> &bull;
   <a href="#faq">FAQ</a>
 </p>
 
@@ -28,13 +29,13 @@
 
 ## The Problem
 
-AI coding is fast, but context switching is slow. Running multiple agents in a single directory leads to file conflicts, messy git history, and "who-changed-what" headaches. You end up waiting for one agent to finish before starting the next, wasting the most valuable resource you have: **your time**.
+AI coding is fast, but context switching is slow. Running multiple agents in a single directory leads to file conflicts, messy git history, and "who-changed-what" headaches. You end up waiting for one agent to finish before starting the next, wasting the most valuable resource you have: **your time** (and, occasionally, your patience).
 
 ## The Solution
 
 Mission Control orchestrates **isolated environments** for your AI agents. Each job gets its own git worktree and tmux session — complete filesystem isolation. You can monitor progress, capture output, or attach to any session at any time. When the work is done, sync changes back or create a PR with a single command.
 
-For complex multi-task workflows, the **Plan System** handles dependency graphs, merge ordering, automated testing, and PR creation — all orchestrated automatically.
+For complex multi-task workflows, the **Plan System** handles dependency graphs, merge ordering, automated testing, and PR creation — all orchestrated automatically. Less herding cats, more shipping code.
 
 ## How It Works
 
@@ -82,13 +83,11 @@ For complex multi-task workflows, the **Plan System** handles dependency graphs,
 | **[git](https://git-scm.com/)** | Yes | Worktree management |
 | **[gh](https://cli.github.com/)** | For `mc_pr` | GitHub PR creation |
 
-### Installation
+### Installation (OpenCode Plugin)
 
-```bash
-npm install opencode-mission-control
-```
+Most OpenCode setups install plugins listed in `opencode.json` automatically, so you usually **do not** run `npm install` manually.
 
-Add to your `opencode.json`:
+Add this plugin entry:
 
 ```json
 {
@@ -97,6 +96,8 @@ Add to your `opencode.json`:
   ]
 }
 ```
+
+If you are developing this repository itself, use the local dev flow in [Development](#development).
 
 ### Your First Job
 
@@ -117,6 +118,62 @@ You: "Login fix looks good. Create a PR."
 AI: → mc_pr(name: "fix-login", title: "Fix: auth token validation")
     PR created: https://github.com/you/repo/pull/42
 ```
+
+### More Usage Examples
+
+#### 1) Run two tasks in parallel, then compare output
+
+```
+You: "Run a docs cleanup and a bugfix in parallel."
+
+AI: → mc_launch(name: "docs-cleanup", prompt: "Clean up README wording")
+    → mc_launch(name: "fix-auth-timeout", prompt: "Fix token timeout bug")
+
+You: "Show me what changed in the bugfix branch."
+
+AI: → mc_diff(name: "fix-auth-timeout")
+```
+
+#### 2) Monitor everything in one command
+
+```
+You: "What's happening right now?"
+
+AI: → mc_overview()
+```
+
+#### 3) Stop a runaway job and clean up
+
+```
+You: "Kill the experiment and remove its worktree."
+
+AI: → mc_kill(name: "wild-experiment")
+    → mc_cleanup(name: "wild-experiment", deleteBranch: true)
+```
+
+#### 4) Keep a long job current with main
+
+```
+You: "Rebase the feature job onto latest main."
+
+AI: → mc_sync(name: "feature-checkout", strategy: "rebase")
+```
+
+#### 5) Orchestrate dependent work automatically
+
+```
+AI: → mc_plan(
+      name: "search-upgrade",
+      mode: "autopilot",
+      jobs: [
+        { name: "schema", prompt: "Add search index tables" },
+        { name: "api", prompt: "Implement search endpoints", dependsOn: ["schema"] },
+        { name: "ui", prompt: "Build search UI", dependsOn: ["api"] }
+      ]
+    )
+```
+
+Because waiting is overrated.
 
 ---
 
@@ -551,6 +608,28 @@ A: If the configured `testCommand` fails after a merge, the merge is automatical
 
 **Q: Is this built by the OpenCode team?**
 A: No. This is an independent community plugin — not affiliated with or endorsed by the OpenCode team.
+
+**Q: Do I need to manually install this with npm first?**
+A: Usually no. Put it in `opencode.json` and let OpenCode handle plugin installation. Manual npm install is mostly for local development or debugging.
+
+---
+
+## Release & npm Deploy
+
+This repo uses semantic versioning with **semantic-release** for automated npm releases.
+
+How it works:
+
+1. Merge a Conventional Commit into `main` (for example: `feat:`, `fix:`, or `BREAKING CHANGE:`).
+2. GitHub Actions runs build + tests.
+3. `semantic-release` calculates the next version, publishes to npm, creates a GitHub Release, and tags automatically.
+
+Expected repository secrets:
+
+- `NPM_TOKEN` — npm publish token with package publish rights.
+- `GITHUB_TOKEN` — provided automatically by GitHub Actions.
+
+If your commit messages are vague, semantic-release gets moody.
 
 ---
 

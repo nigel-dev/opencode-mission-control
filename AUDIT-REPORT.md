@@ -134,7 +134,7 @@ From opencode-dynamic-context-pruning and subtask2: **`output.messages` must be 
 | Debounce + deduplication for notifications | quota, notificator | Prevent notification spam |
 | Zod schemas for config validation | scheduler, quota | MC declares Zod but never uses it |
 
-### Novel Patterns Worth Stealing
+### Novel Patterns Worth Barrowing
 
 | Pattern | Source Plugin | How MC Should Use It |
 |---------|-------------|---------------------|
@@ -393,7 +393,7 @@ MC's notification hooks (`notifications.ts`, `awareness.ts`) were dead code. The
 | Plugin | Key Insight for MC |
 |--------|-------------------|
 | **opencode-quota** | Definitive guide for `session.prompt({noReply: true})`. Copy their debounce + `parentID` skip logic. |
-| **opencode-pty** | `notifyOnExit` + ring buffer output = push notifications without polling. Steal this for pane death detection. |
+| **opencode-pty** | `notifyOnExit` + ring buffer output = push notifications without polling. Barrow this for pane death detection. |
 | **opencode-dynamic-context-pruning** | `output.messages` MUST be mutated in-place. Staleness-based pruning for MC's context injection. |
 | **oh-my-opencode** | Agent orchestration is prompt-driven. Tmux pane visibility for real-time watching. Session continuity via `session_id`. |
 | **opencode-notificator** | Most mature notification plugin. Uses `event` hook + `node-notifier` for OS alerts. Rate-limited. |
