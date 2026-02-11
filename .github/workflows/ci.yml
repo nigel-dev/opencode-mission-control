@@ -26,4 +26,10 @@ jobs:
         run: bun run build
 
       - name: Test
-        run: bun test --max-concurrency=1
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s globstar nullglob
+          for file in tests/**/*.test.ts; do
+            bun test "$file"
+          done
