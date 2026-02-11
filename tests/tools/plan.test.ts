@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as planState from '../../src/lib/plan-state';
 import * as orchestrator from '../../src/lib/orchestrator';
 import * as git from '../../src/lib/git';
@@ -20,7 +20,7 @@ const mockContext = {
 
 describe('mc_plan', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.restoreAllMocks();
     vi.spyOn(planState, 'loadPlan').mockResolvedValue(null);
     vi.spyOn(planState, 'savePlan').mockResolvedValue(undefined);
     vi.spyOn(planState, 'validateGhAuth').mockResolvedValue(true);
@@ -39,6 +39,10 @@ describe('mc_plan', () => {
     vi.spyOn(monitor, 'JobMonitor').mockImplementation(
       () => ({ start: vi.fn(), on: vi.fn(), off: vi.fn() }) as any,
     );
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   describe('tool definition', () => {
