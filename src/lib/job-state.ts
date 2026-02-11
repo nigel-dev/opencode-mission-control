@@ -1,45 +1,28 @@
 import { join } from 'path';
+import { z } from 'zod';
 import { getDataDir } from './paths';
 import { GitMutex } from './git-mutex';
 import { isValidJobTransition, VALID_JOB_TRANSITIONS } from './plan-types';
 import type { JobStatus } from './plan-types';
+import { JobSchema, JobStateSchema } from './schemas';
 
-export interface Job {
-  id: string;
-  name: string;
-  worktreePath: string;
-  branch: string;
-  tmuxTarget: string;
-  placement: 'session' | 'window';
-  status: 'running' | 'completed' | 'failed' | 'stopped';
-  prompt: string;
-  mode: 'vanilla' | 'plan' | 'ralph' | 'ulw';
-  planFile?: string;
-  createdAt: string;
-  completedAt?: string;
-  exitCode?: number;
-  planId?: string;
-}
-
-export interface JobState {
-  version: 1 | 2;
-  jobs: Job[];
-  updatedAt: string;
-}
+export type Job = z.infer<typeof JobSchema>;
+export type JobState = z.infer<typeof JobStateSchema>;
 
 export function migrateJobState(state: Record<string, unknown>): JobState {
   const version = (state.version as number) ?? 1;
 
   if (version < 2) {
     const jobs = (state.jobs as Job[]) ?? [];
-    return {
-      version: 2,
+    const migrated = {
+      version: 2 as const,
       jobs: jobs.map((job) => ({ ...job, planId: job.planId ?? undefined })),
       updatedAt: (state.updatedAt as string) ?? new Date().toISOString(),
     };
+    return JobStateSchema.parse(migrated);
   }
 
-  return state as unknown as JobState;
+  return JobStateSchema.parse(state);
 }
 
 const STATE_FILE = 'jobs.json';
@@ -71,7 +54,6 @@ async function getStateFilePath(): Promise<string> {
 async function atomicWrite(filePath: string, data: string): Promise<void> {
   const tempPath = `${filePath}.tmp`;
   await Bun.write(tempPath, data);
-  // Use fs.renameSync for atomic rename operation
   const fs = await import('fs');
   fs.renameSync(tempPath, filePath);
 }
@@ -95,8 +77,11 @@ export async function loadJobState(): Promise<JobState> {
     if (!parsed.version || parsed.version < 2) {
       return migrateJobState(parsed);
     }
-    return parsed as JobState;
+    return JobStateSchema.parse(parsed);
   } catch (error) {
+    if (error instanceof z.ZodError) {
+      throw new Error(`Invalid job state in ${filePath}: ${error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ')}`);
+    }
     throw new Error(`Failed to load job state from ${filePath}: ${error}`);
   }
 }

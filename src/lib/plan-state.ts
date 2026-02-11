@@ -1,8 +1,10 @@
 import { join } from 'path';
+import { z } from 'zod';
 import { getDataDir } from './paths';
 import { GitMutex } from './git-mutex';
 import type { PlanSpec, JobSpec } from './plan-types';
 import { isValidPlanTransition, isValidJobTransition } from './plan-types';
+import { PlanSpecSchema } from './schemas';
 
 const PLAN_FILE = 'plan.json';
 
@@ -31,8 +33,12 @@ export async function loadPlan(): Promise<PlanSpec | null> {
 
   try {
     const content = await file.text();
-    return JSON.parse(content) as PlanSpec;
+    const parsed = JSON.parse(content);
+    return PlanSpecSchema.parse(parsed);
   } catch (error) {
+    if (error instanceof z.ZodError) {
+      throw new Error(`Invalid plan state in ${filePath}: ${error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ')}`);
+    }
     throw new Error(`Failed to load plan state from ${filePath}: ${error}`);
   }
 }

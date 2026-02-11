@@ -1,29 +1,16 @@
 import { join } from 'path';
 import { homedir } from 'os';
+import { z } from 'zod';
 import { getDataDir } from './paths';
+import { MCConfigSchema, PartialMCConfigSchema } from './schemas';
 
-export interface WorktreeSetup {
+export type WorktreeSetup = {
   copyFiles?: string[];
   symlinkDirs?: string[];
   commands?: string[];
-}
+};
 
-export interface MCConfig {
-  defaultPlacement: 'session' | 'window';
-  pollInterval: number;
-  idleThreshold: number;
-  worktreeBasePath: string;
-  maxParallel?: number;
-  autoCommit?: boolean;
-  testCommand?: string;
-  testTimeout?: number;
-  mergeStrategy?: 'squash' | 'ff-only' | 'merge';
-  worktreeSetup?: WorktreeSetup;
-  omo: {
-    enabled: boolean;
-    defaultMode: 'vanilla' | 'plan' | 'ralph' | 'ulw';
-  };
-}
+export type MCConfig = z.infer<typeof MCConfigSchema>;
 
 const DEFAULT_CONFIG: MCConfig = {
   defaultPlacement: 'session',
@@ -66,7 +53,7 @@ export async function loadConfig(): Promise<MCConfig> {
 
   try {
     const content = await file.text();
-    const fileConfig = JSON.parse(content) as Partial<MCConfig>;
+    const fileConfig = PartialMCConfigSchema.parse(JSON.parse(content));
     const result: MCConfig = {
       ...DEFAULT_CONFIG,
       ...fileConfig,
@@ -77,6 +64,9 @@ export async function loadConfig(): Promise<MCConfig> {
     };
     return result;
   } catch (error) {
+    if (error instanceof z.ZodError) {
+      throw new Error(`Invalid config in ${filePath}: ${error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ')}`);
+    }
     throw new Error(`Failed to load config from ${filePath}: ${error}`);
   }
 }
