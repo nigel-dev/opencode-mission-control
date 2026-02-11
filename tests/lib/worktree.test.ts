@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { join } from 'path';
+import { realpathSync } from 'fs';
 import { homedir, tmpdir } from 'os';
 import {
   listWorktrees,
@@ -13,8 +14,9 @@ import {
 } from '../../src/lib/worktree';
 import type { WorktreeInfo } from '../../src/lib/providers/worktree-provider';
 
-const TEST_REPO_DIR = join(tmpdir(), '.tmp-test-repo');
-const TEST_WORKTREE_DIR = join(tmpdir(), '.tmp-test-worktrees');
+const TEST_TMP_DIR = realpathSync(tmpdir());
+const TEST_REPO_DIR = join(TEST_TMP_DIR, '.tmp-test-repo');
+const TEST_WORKTREE_DIR = join(TEST_TMP_DIR, '.tmp-test-worktrees');
 
 async function exec(
   args: string[],
@@ -111,7 +113,7 @@ describe('worktree', () => {
   describe('createWorktree', () => {
     it('should create a worktree for a new branch', async () => {
       const fs = await import('fs');
-      const worktreePath = fs.realpathSync(join(TEST_WORKTREE_DIR, 'test-branch'));
+      const worktreePath = join(TEST_WORKTREE_DIR, 'test-branch');
       const result = await createWorktree({
         branch: 'test-branch',
         basePath: worktreePath,
@@ -127,8 +129,7 @@ describe('worktree', () => {
         TEST_REPO_DIR,
       );
 
-      const fs = await import('fs');
-      const worktreePath = fs.realpathSync(join(TEST_WORKTREE_DIR, 'existing-branch'));
+      const worktreePath = join(TEST_WORKTREE_DIR, 'existing-branch');
       const result = await createWorktree({
         branch: 'existing-branch',
         basePath: worktreePath,
@@ -141,7 +142,7 @@ describe('worktree', () => {
       const fs = await import('fs');
       fs.writeFileSync(join(TEST_REPO_DIR, '.env.example'), 'KEY=value');
 
-      const worktreePath = fs.realpathSync(join(TEST_WORKTREE_DIR, 'hook-copy'));
+      const worktreePath = join(TEST_WORKTREE_DIR, 'hook-copy');
       await createWorktree({
         branch: 'hook-copy',
         basePath: worktreePath,
@@ -164,7 +165,7 @@ describe('worktree', () => {
       fs.mkdirSync(nodeModulesDir, { recursive: true });
       fs.writeFileSync(join(nodeModulesDir, 'marker'), 'exists');
 
-      const worktreePath = fs.realpathSync(join(TEST_WORKTREE_DIR, 'hook-symlink'));
+      const worktreePath = join(TEST_WORKTREE_DIR, 'hook-symlink');
       await createWorktree({
         branch: 'hook-symlink',
         basePath: worktreePath,
@@ -179,7 +180,7 @@ describe('worktree', () => {
 
     it('should run postCreate commands', async () => {
       const fs = await import('fs');
-      const worktreePath = fs.realpathSync(join(TEST_WORKTREE_DIR, 'hook-cmd'));
+      const worktreePath = join(TEST_WORKTREE_DIR, 'hook-cmd');
       await createWorktree({
         branch: 'hook-cmd',
         basePath: worktreePath,
@@ -194,8 +195,7 @@ describe('worktree', () => {
 
   describe('removeWorktree', () => {
     it('should remove a clean worktree', async () => {
-      const fs = await import('fs');
-      const worktreePath = fs.realpathSync(join(TEST_WORKTREE_DIR, 'to-remove'));
+      const worktreePath = join(TEST_WORKTREE_DIR, 'to-remove');
       await createWorktree({
         branch: 'to-remove',
         basePath: worktreePath,
@@ -210,7 +210,7 @@ describe('worktree', () => {
 
     it('should refuse to remove dirty worktree without force', async () => {
       const fs = await import('fs');
-      const worktreePath = fs.realpathSync(join(TEST_WORKTREE_DIR, 'dirty-wt'));
+      const worktreePath = join(TEST_WORKTREE_DIR, 'dirty-wt');
       await createWorktree({
         branch: 'dirty-wt',
         basePath: worktreePath,
@@ -225,7 +225,7 @@ describe('worktree', () => {
 
     it('should remove dirty worktree with force=true', async () => {
       const fs = await import('fs');
-      const worktreePath = fs.realpathSync(join(TEST_WORKTREE_DIR, 'force-remove'));
+      const worktreePath = join(TEST_WORKTREE_DIR, 'force-remove');
       await createWorktree({
         branch: 'force-remove',
         basePath: worktreePath,
@@ -243,8 +243,7 @@ describe('worktree', () => {
 
   describe('getWorktreeForBranch', () => {
     it('should find worktree by branch name', async () => {
-      const fs = await import('fs');
-      const worktreePath = fs.realpathSync(join(TEST_WORKTREE_DIR, 'find-branch'));
+      const worktreePath = join(TEST_WORKTREE_DIR, 'find-branch');
       await createWorktree({
         branch: 'find-branch',
         basePath: worktreePath,
@@ -298,8 +297,7 @@ describe('worktree', () => {
 
     it('should create and remove worktrees through provider', async () => {
       const provider = new GitWorktreeProvider();
-      const fs = await import('fs');
-      const worktreePath = fs.realpathSync(join(TEST_WORKTREE_DIR, 'provider-test'));
+      const worktreePath = join(TEST_WORKTREE_DIR, 'provider-test');
 
       const path = await provider.create({
         branch: 'provider-test',
