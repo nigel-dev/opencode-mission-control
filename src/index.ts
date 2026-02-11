@@ -8,7 +8,7 @@ import { isTmuxAvailable } from './lib/tmux';
 import { loadPlan } from './lib/plan-state';
 import { Orchestrator } from './lib/orchestrator';
 import { loadConfig } from './lib/config';
-import { setCurrentModel, setCurrentModelFromSDK, setConfigFallbackModel } from './lib/model-tracker';
+import { setCurrentModel, setConfigFallbackModel } from './lib/model-tracker';
 import { isInManagedWorktree } from './lib/worktree';
 import { mc_launch } from './tools/launch';
 import { mc_jobs } from './tools/jobs';
@@ -220,9 +220,8 @@ export const MissionControl: Plugin = async ({ client }) => {
       if (input.sessionID && isValidSessionID(input.sessionID)) {
         activeSessionID = input.sessionID;
       }
-      if (input.model) {
-        setCurrentModelFromSDK(input.model, input.sessionID);
-      }
+      // chat.params fires for background LLM calls too (title gen, summarization)
+      // which use smaller models — do not track model here, chat.message is authoritative
     },
     tool: isJobAgent 
       ? { mc_report, mc_status } as any
