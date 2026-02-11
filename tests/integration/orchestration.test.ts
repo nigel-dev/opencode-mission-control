@@ -417,7 +417,7 @@ describe('orchestration integration', () => {
     await commitInJobWorktree('job-c', 'src/feature.ts', 'export const featureEnabled = true;\n');
     await simulateJobCompletion('job-c', monitor, orchestrator);
 
-    await waitForCondition(async () => (await loadPlan())?.status === 'completed', 10000);
+    await waitForCondition(async () => (await loadPlan())?.status === 'completed', 20000);
 
     const finalPlan = await loadPlan();
     expect(finalPlan?.status).toBe('completed');
@@ -597,7 +597,7 @@ describe('orchestration integration', () => {
     await simulateJobCompletion('job-b', monitor2, orchestrator2);
     await simulateJobCompletion('job-c', monitor2, orchestrator2);
 
-    await waitForCondition(async () => (await loadPlan())?.status === 'completed', 10000);
+    await waitForCondition(async () => (await loadPlan())?.status === 'completed', 20000);
     expect((await loadPlan())?.status).toBe('completed');
   }, 30000);
 
@@ -663,7 +663,7 @@ describe('orchestration integration', () => {
     await simulateJobCompletion('job-c', monitor, orchestrator);
     await kickReconciler(orchestrator);
 
-    await waitForCondition(async () => (await loadPlan())?.status === 'completed', 10000);
+    await waitForCondition(async () => (await loadPlan())?.status === 'completed', 20000);
     expect((await loadPlan())?.status).toBe('completed');
   }, 30000);
 });

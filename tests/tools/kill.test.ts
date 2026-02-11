@@ -1,14 +1,14 @@
-import { describe, it, expect, beforeEach, vi, type Mock } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi, type MockInstance } from 'vitest';
 import type { Job } from '../../src/lib/job-state';
 import * as jobState from '../../src/lib/job-state';
 import * as tmux from '../../src/lib/tmux';
 
 const { mc_kill } = await import('../../src/tools/kill');
 
-let mockGetJobByName: Mock;
-let mockUpdateJob: Mock;
-let mockKillSession: Mock;
-let mockKillWindow: Mock;
+let mockGetJobByName: MockInstance;
+let mockUpdateJob: MockInstance;
+let mockKillSession: MockInstance;
+let mockKillWindow: MockInstance;
 
 const mockContext = {
   sessionID: 'test-session',
@@ -35,6 +35,10 @@ describe('mc_kill', () => {
     mockKillSession = vi.spyOn(tmux, 'killSession').mockImplementation(() => undefined as any);
     mockKillWindow = vi.spyOn(tmux, 'killWindow').mockImplementation(() => undefined as any);
     setupDefaultMocks();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   describe('tool definition', () => {

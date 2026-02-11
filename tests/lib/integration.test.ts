@@ -14,16 +14,30 @@ const TEST_REPO_DIR = join(tmpdir(), '.tmp-integration-test-repo');
 async function exec(
   args: string[],
   cwdOrOpts?: string | { cwd?: string },
-): Promise<{ stdout: string; exitCode: number }> {
+): Promise<{ stdout: string; stderr: string; exitCode: number }> {
   const cwd = typeof cwdOrOpts === 'string' ? cwdOrOpts : cwdOrOpts?.cwd;
   const proc = Bun.spawn(args, {
     cwd,
     stdout: 'pipe',
     stderr: 'pipe',
   });
-  const stdout = await new Response(proc.stdout).text();
+  const [stdout, stderr] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+  ]);
   const exitCode = await proc.exited;
-  return { stdout: stdout.trim(), exitCode };
+  return { stdout: stdout.trim(), stderr: stderr.trim(), exitCode };
+}
+
+async function mustExec(
+  args: string[],
+  cwdOrOpts?: string | { cwd?: string },
+): Promise<string> {
+  const result = await exec(args, cwdOrOpts);
+  if (result.exitCode !== 0) {
+    throw new Error(`Command failed: ${args.join(' ')}\n${result.stderr}`);
+  }
+  return result.stdout;
 }
 
 async function setupTestRepo(): Promise<void> {
@@ -35,19 +49,20 @@ async function setupTestRepo(): Promise<void> {
 
   const bareRepoDir = join(TEST_REPO_DIR, 'bare.git');
   fs.mkdirSync(bareRepoDir, { recursive: true });
-  await exec(['git', 'init', '--bare'], bareRepoDir);
+  await mustExec(['git', 'init', '--bare'], bareRepoDir);
 
   const mainRepoDir = join(TEST_REPO_DIR, 'main');
   fs.mkdirSync(mainRepoDir, { recursive: true });
-  await exec(['git', 'init'], mainRepoDir);
-  await exec(['git', 'config', 'user.email', 'test@test.com'], mainRepoDir);
-  await exec(['git', 'config', 'user.name', 'Test'], mainRepoDir);
-  await exec(['git', 'remote', 'add', 'origin', bareRepoDir], mainRepoDir);
+  await mustExec(['git', 'init'], mainRepoDir);
+  await mustExec(['git', 'branch', '-M', 'main'], mainRepoDir);
+  await mustExec(['git', 'config', 'user.email', 'test@test.com'], mainRepoDir);
+  await mustExec(['git', 'config', 'user.name', 'Test'], mainRepoDir);
+  await mustExec(['git', 'remote', 'add', 'origin', bareRepoDir], mainRepoDir);
 
   fs.writeFileSync(join(mainRepoDir, 'test.txt'), 'initial content');
-  await exec(['git', 'add', '.'], mainRepoDir);
-  await exec(['git', 'commit', '-m', 'initial'], mainRepoDir);
-  await exec(['git', 'push', '-u', 'origin', 'main'], mainRepoDir);
+  await mustExec(['git', 'add', '.'], mainRepoDir);
+  await mustExec(['git', 'commit', '-m', 'initial'], mainRepoDir);
+  await mustExec(['git', 'push', '-u', 'origin', 'main'], mainRepoDir);
 
   process.chdir(mainRepoDir);
 }
@@ -191,14 +206,14 @@ describe('integration', () => {
   describe('refreshIntegrationFromMain', () => {
     it('should refresh without conflicts', async () => {
       const planId = 'test-plan-7';
-      const createResult = await createIntegrationBranch(planId);
+      await createIntegrationBranch(planId);
 
       const filePath = join(mainRepoDir, 'test.txt');
       const fs = await import('fs');
       fs.writeFileSync(filePath, 'updated content');
-      await exec(['git', 'add', 'test.txt'], mainRepoDir);
-      await exec(['git', 'commit', '-m', 'update on main'], mainRepoDir);
-      await exec(['git', 'push', 'origin', 'main'], mainRepoDir);
+      await mustExec(['git', 'add', 'test.txt'], mainRepoDir);
+      await mustExec(['git', 'commit', '-m', 'update on main'], mainRepoDir);
+      await mustExec(['git', 'push', 'origin', 'main'], mainRepoDir);
 
       const result = await refreshIntegrationFromMain(planId);
 
@@ -213,16 +228,16 @@ describe('integration', () => {
       const filePath = join(mainRepoDir, 'test.txt');
       const fs = await import('fs');
       fs.writeFileSync(filePath, 'main version');
-      await exec(['git', 'add', 'test.txt'], mainRepoDir);
-      await exec(['git', 'commit', '-m', 'main change'], mainRepoDir);
-      await exec(['git', 'push', 'origin', 'main'], mainRepoDir);
+      await mustExec(['git', 'add', 'test.txt'], mainRepoDir);
+      await mustExec(['git', 'commit', '-m', 'main change'], mainRepoDir);
+      await mustExec(['git', 'push', 'origin', 'main'], mainRepoDir);
 
       const integrationFilePath = join(createResult.worktreePath, 'test.txt');
       fs.writeFileSync(integrationFilePath, 'integration version');
-      await exec(['git', 'add', 'test.txt'], {
+      await mustExec(['git', 'add', 'test.txt'], {
         cwd: createResult.worktreePath,
       });
-      await exec(['git', 'commit', '-m', 'integration change'], {
+      await mustExec(['git', 'commit', '-m', 'integration change'], {
         cwd: createResult.worktreePath,
       });
 
