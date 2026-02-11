@@ -1,16 +1,21 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import * as paths from '../../src/lib/paths';
 import type { PlanSpec, JobSpec } from '../../src/lib/plan-types';
-import {
+
+vi.mock('../../src/lib/paths', () => ({
+  getDataDir: vi.fn(),
+}));
+
+const paths = await import('../../src/lib/paths');
+const {
   loadPlan,
   savePlan,
   getActivePlan,
   updatePlanJob,
   clearPlan,
   validateGhAuth,
-} from '../../src/lib/plan-state';
+} = await import('../../src/lib/plan-state');
 
 let testStateDir: string;
 
@@ -49,8 +54,9 @@ function makeJob(overrides: Partial<JobSpec> = {}): JobSpec {
 
 describe('plan-state', () => {
   beforeEach(async () => {
+    vi.clearAllMocks();
     testStateDir = await createTempDir();
-    vi.spyOn(paths, 'getDataDir').mockResolvedValue(testStateDir);
+    (paths.getDataDir as any).mockResolvedValue(testStateDir);
   });
 
   afterEach(async () => {
