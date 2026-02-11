@@ -1,41 +1,16 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 const mockState = { isManaged: false };
-
-vi.mock('../src/lib/tmux', () => ({
-  isTmuxAvailable: vi.fn().mockResolvedValue(true),
-}));
-
-vi.mock('../src/lib/worktree', () => ({
-  isInManagedWorktree: vi.fn(() => Promise.resolve({ isManaged: mockState.isManaged })),
-}));
-
-vi.mock('../src/lib/orchestrator-singleton', () => ({
-  getSharedMonitor: vi.fn().mockReturnValue({
-    start: vi.fn(),
-    on: vi.fn(),
-  }),
-  setSharedNotifyCallback: vi.fn(),
-  getSharedNotifyCallback: vi.fn(),
-  setSharedOrchestrator: vi.fn(),
-}));
-
-vi.mock('../src/hooks/notifications', () => ({
-  setupNotifications: vi.fn(),
-}));
-
-vi.mock('../src/lib/plan-state', () => ({
-  loadPlan: vi.fn().mockResolvedValue(null),
-}));
-
-vi.mock('../src/lib/config', () => ({
-  loadConfig: vi.fn().mockResolvedValue({}),
-}));
-
+import * as tmux from '../src/lib/tmux';
 import * as worktree from '../src/lib/worktree';
 import * as orchestrator from '../src/lib/orchestrator-singleton';
 import * as notifications from '../src/hooks/notifications';
 import * as planState from '../src/lib/plan-state';
+
+const mockMonitor = {
+  start: vi.fn(),
+  on: vi.fn(),
+};
 
 const createMockClient = () => ({
   session: {
@@ -53,6 +28,20 @@ const createMockClient = () => ({
 describe('plugin initialization', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.spyOn(tmux, 'isTmuxAvailable').mockResolvedValue(true);
+    vi.spyOn(worktree, 'isInManagedWorktree').mockImplementation(() =>
+      Promise.resolve({ isManaged: mockState.isManaged }),
+    );
+    vi.spyOn(orchestrator, 'getSharedMonitor').mockReturnValue(mockMonitor as any);
+    vi.spyOn(orchestrator, 'setSharedNotifyCallback').mockImplementation(() => {});
+    vi.spyOn(orchestrator, 'getSharedNotifyCallback').mockReturnValue(null);
+    vi.spyOn(orchestrator, 'setSharedOrchestrator').mockImplementation(() => {});
+    vi.spyOn(notifications, 'setupNotifications').mockImplementation(() => {});
+    vi.spyOn(planState, 'loadPlan').mockResolvedValue(null);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   describe('job agent context', () => {
