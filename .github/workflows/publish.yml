@@ -49,7 +49,7 @@ jobs:
         run: bun run build
 
       - name: Test
-        run: bun test
+        run: bun test --max-concurrency=1
 
       - name: Semantic release
         run: |
