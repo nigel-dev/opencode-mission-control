@@ -5,7 +5,7 @@
  */
 
 import { join } from 'path';
-import { gitCommand } from './git';
+import { gitCommand, getDefaultBranch } from './git';
 import { getProjectId, getXdgDataDir } from './paths';
 import { createWorktree, removeWorktree } from './worktree';
 import type { PostCreateHook } from './providers/worktree-provider';
@@ -42,9 +42,10 @@ export async function createIntegrationBranch(
   }
 
   // Get the current main HEAD to create branch from
-  const mainHeadResult = await gitCommand(['rev-parse', 'main']);
+  const defaultBranch = await getDefaultBranch();
+  const mainHeadResult = await gitCommand(['rev-parse', defaultBranch]);
   if (mainHeadResult.exitCode !== 0) {
-    throw new Error('Failed to get main HEAD: ' + mainHeadResult.stderr);
+    throw new Error(`Failed to get ${defaultBranch} HEAD: ` + mainHeadResult.stderr);
   }
 
   // Create the branch from main HEAD
@@ -142,8 +143,9 @@ export async function refreshIntegrationFromMain(
     return { success: false, conflicts: ['Failed to fetch from origin'] };
   }
 
-  // Attempt to rebase onto main
-  const rebaseResult = await gitCommand(['-C', worktreePath, 'rebase', 'origin/main']);
+  // Attempt to rebase onto the default branch
+  const defaultBranch = await getDefaultBranch();
+  const rebaseResult = await gitCommand(['-C', worktreePath, 'rebase', `origin/${defaultBranch}`]);
 
   if (rebaseResult.exitCode !== 0) {
     // Extract conflicts from stderr

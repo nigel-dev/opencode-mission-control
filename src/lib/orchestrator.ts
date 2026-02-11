@@ -2,6 +2,7 @@ import { randomUUID } from 'crypto';
 import type { MCConfig } from './config';
 import type { PlanSpec, JobSpec, PlanStatus, CheckpointType } from './plan-types';
 import { loadPlan, savePlan, updatePlanJob, clearPlan, validateGhAuth } from './plan-state';
+import { getDefaultBranch } from './git';
 import { createIntegrationBranch, deleteIntegrationBranch } from './integration';
 import { MergeTrain } from './merge-train';
 import { addJob, getRunningJobs, updateJob, loadJobState, removeJob, type Job } from './job-state';
@@ -804,6 +805,7 @@ If your work needs human review before it can proceed: mc_report(status: "needs_
       throw new Error(`Failed to push integration branch: ${pushResult.stderr || pushResult.stdout}`);
     }
 
+    const defaultBranch = await getDefaultBranch();
     const title = plan.name.replace(/"/g, '\\"');
     const body = `Automated PR from Mission Control plan: ${plan.name}\n\nJobs:\n${plan.jobs.map((j) => `- ${j.name}`).join('\n')}`;
     const prResult = await this.runCommand([
@@ -813,7 +815,7 @@ If your work needs human review before it can proceed: mc_report(status: "needs_
       '--head',
       plan.integrationBranch,
       '--base',
-      'main',
+      defaultBranch,
       '--title',
       title,
       '--body',

@@ -1,4 +1,5 @@
 import { tool, type ToolDefinition } from '@opencode-ai/plugin';
+import { getDefaultBranch } from '../lib/git';
 import { getJobByName } from '../lib/job-state';
 
 export async function executeGhCommand(args: string[]): Promise<string> {
@@ -60,10 +61,11 @@ export const mc_pr: ToolDefinition = tool({
     const prTitle = args.title || job.prompt;
 
     // 4. Build gh pr create arguments
+    const defaultBranch = await getDefaultBranch(job.worktreePath);
     const ghArgs: string[] = [
       '--title', prTitle,
       '--head', job.branch,
-      '--base', 'main',
+      '--base', defaultBranch,
     ];
 
     // 5. Add optional body
