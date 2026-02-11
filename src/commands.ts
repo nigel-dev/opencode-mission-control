@@ -54,6 +54,23 @@ export function registerCommands(config: any) {
     template: '',
     description: 'Clean up finished job worktrees and metadata',
   };
+  config.command['mc-capture'] = {
+    template: '',
+    description: 'Capture terminal output from a running job',
+  };
+  config.command['mc-diff'] = {
+    template: '',
+    description: 'Show changes in a job\'s branch compared to base',
+  };
+  config.command['mc-approve'] = {
+    template: '',
+    description: 'Approve a pending plan or clear a supervisor checkpoint',
+  };
+  config.command['mc-plan'] = {
+    template:
+      'Create and execute a Mission Control orchestrated plan for: $ARGUMENTS',
+    description: 'Create a multi-job orchestrated plan',
+  };
 }
 
 // Handle command execution for direct commands
@@ -63,7 +80,7 @@ export function createCommandHandler(client: Client) {
     _output: { parts: any[] }
   ) => {
     // Only handle our direct commands (not mc-launch which is template-based)
-    const ourCommands = ['mc', 'mc-jobs', 'mc-status', 'mc-attach', 'mc-cleanup'];
+    const ourCommands = ['mc', 'mc-jobs', 'mc-status', 'mc-attach', 'mc-cleanup', 'mc-capture', 'mc-diff', 'mc-approve'];
     if (!ourCommands.includes(input.command)) return;
 
     try {
@@ -112,6 +129,38 @@ export function createCommandHandler(client: Client) {
           } else {
             result = await mc_cleanup.execute({ all: true }, dummyContext);
           }
+          break;
+        }
+        case 'mc-capture': {
+          if (!args) {
+            const { mc_jobs } = await import('./tools/jobs');
+            const jobList = await mc_jobs.execute({}, dummyContext);
+            result =
+              'No job name provided. Here are your current jobs:\n\n' + jobList;
+            break;
+          }
+          const { mc_capture } = await import('./tools/capture');
+          result = await mc_capture.execute({ name: args }, dummyContext);
+          break;
+        }
+        case 'mc-diff': {
+          if (!args) {
+            const { mc_jobs } = await import('./tools/jobs');
+            const jobList = await mc_jobs.execute({}, dummyContext);
+            result =
+              'No job name provided. Here are your current jobs:\n\n' + jobList;
+            break;
+          }
+          const { mc_diff } = await import('./tools/diff');
+          result = await mc_diff.execute({ name: args }, dummyContext);
+          break;
+        }
+        case 'mc-approve': {
+          const { mc_plan_approve } = await import('./tools/plan-approve');
+          result = await mc_plan_approve.execute(
+            args ? { checkpoint: args as any } : {},
+            dummyContext
+          );
           break;
         }
         default:
