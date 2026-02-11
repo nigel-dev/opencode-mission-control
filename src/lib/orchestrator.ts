@@ -4,7 +4,7 @@ import type { PlanSpec, JobSpec, PlanStatus, CheckpointType } from './plan-types
 import { loadPlan, savePlan, updatePlanJob, clearPlan, validateGhAuth } from './plan-state';
 import { getDefaultBranch } from './git';
 import { createIntegrationBranch, deleteIntegrationBranch } from './integration';
-import { MergeTrain } from './merge-train';
+import { MergeTrain, type MergeTestReport } from './merge-train';
 import { addJob, getRunningJobs, updateJob, loadJobState, removeJob, type Job } from './job-state';
 import { JobMonitor } from './monitor';
 import { removeReport } from './reports';
@@ -38,6 +38,23 @@ const TERMINAL_PLAN_STATUSES: PlanStatus[] = ['completed', 'failed', 'canceled']
 
 function isTerminalPlanStatus(status: PlanStatus): boolean {
   return TERMINAL_PLAN_STATUSES.includes(status);
+}
+
+function compactOutput(output?: string, maxLength = 180): string | null {
+  if (!output) {
+    return null;
+  }
+
+  const normalized = output.replace(/\s+/g, ' ').trim();
+  if (!normalized) {
+    return null;
+  }
+
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+
+  return `${normalized.slice(0, maxLength - 3)}...`;
 }
 
 function toAdjacencyMap(jobs: JobSpec[]): Map<string, string[]> {
@@ -203,6 +220,54 @@ export class Orchestrator {
   private notify(message: string): void {
     if (!this.notifyCallback) return;
     this.notifyCallback(message);
+  }
+
+  private formatTestReportSummary(testReport?: MergeTestReport): string | null {
+    if (!testReport) {
+      return null;
+    }
+
+    const parts: string[] = [];
+
+    if (testReport.status === 'skipped') {
+      parts.push('tests skipped');
+    } else if (testReport.status === 'passed') {
+      parts.push('tests passed');
+    } else {
+      parts.push('tests failed');
+    }
+
+    if (testReport.command) {
+      parts.push(`command: ${testReport.command}`);
+    }
+
+    if (testReport.setup.status === 'passed') {
+      if (testReport.setup.commands.length > 0) {
+        parts.push(`setup passed: ${testReport.setup.commands.join(' && ')}`);
+      } else {
+        parts.push('setup skipped');
+      }
+    } else if (testReport.setup.status === 'failed') {
+      parts.push(`setup failed: ${testReport.setup.commands.join(' && ')}`);
+    } else {
+      parts.push('setup skipped');
+    }
+
+    if (testReport.reason) {
+      parts.push(`reason: ${testReport.reason}`);
+    }
+
+    const setupSnippet = compactOutput(testReport.setup.output);
+    if (setupSnippet) {
+      parts.push(`setup output: ${setupSnippet}`);
+    }
+
+    const testSnippet = compactOutput(testReport.output);
+    if (testSnippet) {
+      parts.push(`test output: ${testSnippet}`);
+    }
+
+    return parts.join(' | ');
   }
 
   getCheckpoint(): CheckpointType | null {
@@ -449,6 +514,10 @@ export class Orchestrator {
           }
           this.showToast('Mission Control', `Job "${nextJob.name}" merged successfully.`, 'success');
           this.notify(`✅ Job "${nextJob.name}" merged successfully. (${mergedCount + 1}/${mergeOrder.length} merged)`);
+          const testSummary = this.formatTestReportSummary(mergeResult.testReport);
+          if (testSummary) {
+            this.notify(`🧪 ${nextJob.name}: ${testSummary}`);
+          }
         } else if (mergeResult.type === 'conflict') {
           await updatePlanJob(plan.id, nextJob.name, {
             status: 'conflict',
@@ -468,6 +537,11 @@ export class Orchestrator {
             status: 'failed',
             error: mergeResult.output ?? 'merge train test failure',
           });
+
+          const testSummary = this.formatTestReportSummary(mergeResult.testReport);
+          if (testSummary) {
+            this.notify(`🧪 ${nextJob.name}: ${testSummary}`);
+          }
 
           if (this.isSupervisor(plan)) {
             await this.setCheckpoint('on_error', plan);

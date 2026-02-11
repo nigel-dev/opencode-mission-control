@@ -54,6 +54,7 @@ describe('orchestrator modes', () => {
   let runningJobs: Job[];
   let monitor: FakeMonitor;
   let toastCalls: { title: string; message: string; variant: string; duration: number }[];
+  let notifyCalls: string[];
   let toastCallback: ToastCallback;
 
   beforeEach(() => {
@@ -61,6 +62,7 @@ describe('orchestrator modes', () => {
     runningJobs = [];
     monitor = new FakeMonitor();
     toastCalls = [];
+    notifyCalls = [];
     toastCallback = (title, message, variant, duration) => {
       toastCalls.push({ title, message, variant, duration });
     };
@@ -459,6 +461,58 @@ describe('orchestrator modes', () => {
       const mergeToast = toastCalls.find((t) => t.message.includes('merged successfully'));
       expect(mergeToast).toBeTruthy();
       expect(mergeToast!.variant).toBe('success');
+    });
+
+    it('sends test execution details in notify after successful merge', async () => {
+      planState = makePlan({
+        mode: 'autopilot',
+        status: 'running',
+        jobs: [
+          makeJob('merge-me', { status: 'merging', mergeOrder: 0, branch: 'mc/merge-me' }),
+        ],
+      });
+
+      const mergeJob = planState.jobs[0];
+      const fakeTrain = {
+        queue: [mergeJob] as JobSpec[],
+        enqueue(job: JobSpec) {
+          this.queue.push(job);
+        },
+        getQueue() {
+          return [...this.queue];
+        },
+        async processNext() {
+          this.queue.shift();
+          return {
+            success: true as const,
+            mergedAt: '2026-01-02T00:00:00.000Z',
+            testReport: {
+              status: 'passed' as const,
+              command: 'bun test',
+              output: '12 passed',
+              setup: {
+                status: 'passed' as const,
+                commands: ['bun install'],
+                output: 'installed',
+              },
+            },
+          };
+        },
+      };
+
+      const orchestrator = new Orchestrator(monitor as any, DEFAULT_CONFIG as any, {
+        toast: toastCallback,
+        notify: (message) => notifyCalls.push(message),
+      });
+      (orchestrator as any).mergeTrain = fakeTrain;
+
+      await (orchestrator as any).reconcile();
+
+      const details = notifyCalls.find((message) => message.includes('tests passed'));
+      expect(details).toBeTruthy();
+      expect(details).toContain('command: bun test');
+      expect(details).toContain('setup passed: bun install');
+      expect(details).toContain('test output: 12 passed');
     });
 
     it('sends error toast on plan failure', async () => {

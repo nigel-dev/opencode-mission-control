@@ -113,6 +113,11 @@ describe('MergeTrain', () => {
     const result = await train.processNext();
 
     expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.testReport.status).toBe('passed');
+      expect(result.testReport.command).toBe('true');
+      expect(result.testReport.setup.status).toBe('skipped');
+    }
     const status = await mustExec(
       ['git', 'status', '--porcelain'],
       testRepo.integrationWorktree,
@@ -254,7 +259,33 @@ describe('MergeTrain', () => {
     const result = await train.processNext();
 
     expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.testReport.setup.status).toBe('passed');
+      expect(result.testReport.setup.commands).toEqual(['touch .deps-ready']);
+    }
     expect(existsSync(join(testRepo.integrationWorktree, '.deps-ready'))).toBe(true);
+  });
+
+  it('reports skipped tests when no test command is configured or detected', async () => {
+    await createBranchCommit(testRepo.repoDir, 'feature-skip-tests', 'skip.txt', 'skip\n');
+
+    rmSync(join(testRepo.integrationWorktree, 'package.json'), {
+      force: true,
+    });
+
+    const train = new MergeTrain(testRepo.integrationWorktree, {
+      testTimeout: 60000,
+    });
+    train.enqueue(makeJob('feature-skip-tests'));
+
+    const result = await train.processNext();
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.testReport.status).toBe('skipped');
+      expect(result.testReport.reason).toContain('No test command configured or detected');
+      expect(result.testReport.setup.status).toBe('skipped');
+    }
   });
 
   it('rolls back merge when setup command fails', async () => {
@@ -283,6 +314,8 @@ describe('MergeTrain', () => {
     if (!result.success) {
       expect(result.type).toBe('test_failure');
       expect(result.output).toContain('Dependency setup command failed');
+      expect(result.testReport?.status).toBe('skipped');
+      expect(result.testReport?.setup.status).toBe('failed');
     }
 
     const headAfter = await mustExec(
@@ -312,6 +345,8 @@ describe('MergeTrain', () => {
     expect(result.success).toBe(false);
     if (!result.success) {
       expect(result.type).toBe('test_failure');
+      expect(result.testReport?.status).toBe('failed');
+      expect(result.testReport?.command).toBe('false');
     }
 
     const headAfter = await mustExec(

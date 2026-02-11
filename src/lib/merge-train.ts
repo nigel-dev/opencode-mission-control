@@ -6,13 +6,29 @@ import { getIntegrationWorktree } from './integration';
 import { extractConflicts } from './utils';
 
 export type MergeResult =
-  | { success: true; mergedAt: string }
+  | { success: true; mergedAt: string; testReport: MergeTestReport }
   | {
       success: false;
       type: 'conflict' | 'test_failure';
       files?: string[];
       output?: string;
+      testReport?: MergeTestReport;
     };
+
+type MergeSetupReport = {
+  status: 'passed' | 'failed' | 'skipped';
+  commands: string[];
+  output?: string;
+};
+
+export type MergeTestReport = {
+  status: 'passed' | 'failed' | 'skipped';
+  command?: string;
+  output?: string;
+  timedOut?: boolean;
+  reason?: string;
+  setup: MergeSetupReport;
+};
 
 type MergeTrainConfig = {
   testCommand?: string;
@@ -166,7 +182,13 @@ async function ensureTestDependencies(
   worktreePath: string,
   timeoutMs: number,
   setupCommands?: string[],
-): Promise<{ success: boolean; output: string; timedOut: boolean }> {
+): Promise<{
+  success: boolean;
+  output: string;
+  timedOut: boolean;
+  commands: string[];
+  status: 'passed' | 'failed' | 'skipped';
+}> {
   const configuredSetupCommands = normalizeCommands(setupCommands);
   if (configuredSetupCommands.length > 0) {
     for (const command of configuredSetupCommands) {
@@ -181,6 +203,8 @@ async function ensureTestDependencies(
 
       return {
         ...setupResult,
+        commands: configuredSetupCommands,
+        status: 'failed',
         output: setupResult.output
           ? `${prefix} (${command})\n${setupResult.output}`
           : `${prefix} (${command})`,
@@ -191,6 +215,8 @@ async function ensureTestDependencies(
       success: true,
       output: '',
       timedOut: false,
+      commands: configuredSetupCommands,
+      status: 'passed',
     };
   }
 
@@ -200,6 +226,8 @@ async function ensureTestDependencies(
       success: true,
       output: '',
       timedOut: false,
+      commands: [],
+      status: 'skipped',
     };
   }
 
@@ -209,6 +237,8 @@ async function ensureTestDependencies(
       success: true,
       output: '',
       timedOut: false,
+      commands: [],
+      status: 'skipped',
     };
   }
 
@@ -221,7 +251,11 @@ async function ensureTestDependencies(
 
   const installResult = await runTestCommand(worktreePath, installCommand, timeoutMs);
   if (installResult.success) {
-    return installResult;
+    return {
+      ...installResult,
+      commands: [installCommand],
+      status: 'passed',
+    };
   }
 
   const prefix = installResult.timedOut
@@ -230,6 +264,8 @@ async function ensureTestDependencies(
 
   return {
     ...installResult,
+    commands: [installCommand],
+    status: 'failed',
     output: installResult.output
       ? `${prefix} (${installCommand})\n${installResult.output}`
       : `${prefix} (${installCommand})`,
@@ -400,6 +436,14 @@ export class MergeTrain {
       return {
         success: true,
         mergedAt: new Date().toISOString(),
+        testReport: {
+          status: 'skipped',
+          reason: 'No test command configured or detected',
+          setup: {
+            status: 'skipped',
+            commands: [],
+          },
+        },
       };
     }
 
@@ -416,6 +460,16 @@ export class MergeTrain {
         success: false,
         type: 'test_failure',
         output: dependencySetupResult.output,
+        testReport: {
+          status: 'skipped',
+          command: testCommand,
+          reason: 'Dependency setup failed before tests could run',
+          setup: {
+            status: dependencySetupResult.status,
+            commands: dependencySetupResult.commands,
+            output: dependencySetupResult.output,
+          },
+        },
       };
     }
 
@@ -427,6 +481,18 @@ export class MergeTrain {
         success: false,
         type: 'test_failure',
         output: `Test timed out after ${timeoutMs}ms`,
+        testReport: {
+          status: 'failed',
+          command: testCommand,
+          timedOut: true,
+          output: testResult.output,
+          reason: `Test timed out after ${timeoutMs}ms`,
+          setup: {
+            status: dependencySetupResult.status,
+            commands: dependencySetupResult.commands,
+            output: dependencySetupResult.output || undefined,
+          },
+        },
       };
     }
 
@@ -436,12 +502,32 @@ export class MergeTrain {
         success: false,
         type: 'test_failure',
         output: testResult.output,
+        testReport: {
+          status: 'failed',
+          command: testCommand,
+          output: testResult.output,
+          setup: {
+            status: dependencySetupResult.status,
+            commands: dependencySetupResult.commands,
+            output: dependencySetupResult.output || undefined,
+          },
+        },
       };
     }
 
     return {
       success: true,
       mergedAt: new Date().toISOString(),
+      testReport: {
+        status: 'passed',
+        command: testCommand,
+        output: testResult.output || undefined,
+        setup: {
+          status: dependencySetupResult.status,
+          commands: dependencySetupResult.commands,
+          output: dependencySetupResult.output || undefined,
+        },
+      },
     };
   }
 
