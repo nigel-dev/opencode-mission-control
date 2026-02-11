@@ -5,6 +5,7 @@ import { GitMutex } from './git-mutex';
 import type { PlanSpec, JobSpec } from './plan-types';
 import { isValidPlanTransition, isValidJobTransition } from './plan-types';
 import { PlanSpecSchema } from './schemas';
+import { atomicWrite } from './utils';
 
 const PLAN_FILE = 'plan.json';
 
@@ -15,12 +16,7 @@ async function getPlanFilePath(): Promise<string> {
   return join(dataDir, PLAN_FILE);
 }
 
-async function atomicWrite(filePath: string, data: string): Promise<void> {
-  const tempPath = `${filePath}.tmp`;
-  await Bun.write(tempPath, data);
-  const fs = await import('fs');
-  fs.renameSync(tempPath, filePath);
-}
+
 
 export async function loadPlan(): Promise<PlanSpec | null> {
   const filePath = await getPlanFilePath();

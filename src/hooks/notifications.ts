@@ -1,6 +1,7 @@
 import type { PluginInput } from '@opencode-ai/plugin';
 import type { Job } from '../lib/job-state';
 import { readReport } from '../lib/reports';
+import { formatElapsed } from '../lib/utils';
 
 type Client = PluginInput['client'];
 type NotificationEvent = 'complete' | 'failed' | 'blocked' | 'needs_review' | 'awaiting_input';
@@ -16,25 +17,7 @@ interface SetupNotificationsOptions {
   isSubagent: () => Promise<boolean>;
 }
 
-function formatDuration(createdAt: string): string {
-  const start = Date.parse(createdAt);
-  if (Number.isNaN(start)) {
-    return 'unknown duration';
-  }
 
-  const totalSeconds = Math.max(0, Math.floor((Date.now() - start) / 1000));
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const seconds = totalSeconds % 60;
-
-  if (hours > 0) {
-    return `${hours}h ${minutes}m ${seconds}s`;
-  }
-  if (minutes > 0) {
-    return `${minutes}m ${seconds}s`;
-  }
-  return `${seconds}s`;
-}
 
 async function sendMessage(client: Client, sessionID: string, text: string): Promise<void> {
   await client.session.prompt({
@@ -80,7 +63,7 @@ export function setupNotifications(options: SetupNotificationsOptions): void {
       return;
     }
 
-    const duration = formatDuration(job.createdAt);
+    const duration = formatElapsed(job.createdAt);
     let message = '';
 
     if (event === 'complete') {

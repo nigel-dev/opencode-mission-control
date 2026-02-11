@@ -5,6 +5,7 @@ import { GitMutex } from './git-mutex';
 import { isValidJobTransition, VALID_JOB_TRANSITIONS } from './plan-types';
 import type { JobStatus } from './plan-types';
 import { JobSchema, JobStateSchema } from './schemas';
+import { atomicWrite } from './utils';
 
 export type Job = z.infer<typeof JobSchema>;
 export type JobState = z.infer<typeof JobStateSchema>;
@@ -51,12 +52,7 @@ async function getStateFilePath(): Promise<string> {
   return join(dataDir, STATE_FILE);
 }
 
-async function atomicWrite(filePath: string, data: string): Promise<void> {
-  const tempPath = `${filePath}.tmp`;
-  await Bun.write(tempPath, data);
-  const fs = await import('fs');
-  fs.renameSync(tempPath, filePath);
-}
+
 
 export async function loadJobState(): Promise<JobState> {
   const filePath = await getStateFilePath();

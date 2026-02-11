@@ -3,6 +3,7 @@ import { homedir } from 'os';
 import { z } from 'zod';
 import { getDataDir } from './paths';
 import { MCConfigSchema, PartialMCConfigSchema } from './schemas';
+import { atomicWrite } from './utils';
 
 export type WorktreeSetup = {
   copyFiles?: string[];
@@ -34,13 +35,7 @@ export async function getConfigPath(): Promise<string> {
   return join(dataDir, CONFIG_FILE);
 }
 
-async function atomicWrite(filePath: string, data: string): Promise<void> {
-  const tempPath = `${filePath}.tmp`;
-  await Bun.write(tempPath, data);
-  // Use fs.renameSync for atomic rename operation
-  const fs = await import('fs');
-  fs.renameSync(tempPath, filePath);
-}
+
 
 export async function loadConfig(): Promise<MCConfig> {
   const filePath = await getConfigPath();

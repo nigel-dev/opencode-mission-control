@@ -8,6 +8,7 @@ import type {
   PostCreateHook,
   WorktreeProvider,
 } from './providers/worktree-provider';
+import { extractConflicts } from './utils';
 
 export type { WorktreeInfo, SyncResult, PostCreateHook };
 
@@ -247,17 +248,7 @@ export async function syncWorktree(
   return { success: true };
 }
 
-function extractConflicts(stderr: string): string[] {
-  const conflicts: string[] = [];
-  const lines = stderr.split('\n');
-  for (const line of lines) {
-    const conflictMatch = line.match(/CONFLICT \(.*?\): (?:Merge conflict in )?(.+)/);
-    if (conflictMatch) {
-      conflicts.push(conflictMatch[1]);
-    }
-  }
-  return conflicts.length > 0 ? conflicts : [stderr];
-}
+
 
 export class GitWorktreeProvider implements WorktreeProvider {
   async create(opts: {

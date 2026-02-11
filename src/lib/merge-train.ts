@@ -2,6 +2,7 @@ import { join } from 'path';
 import type { JobSpec } from './plan-types';
 import { gitCommand } from './git';
 import { getIntegrationWorktree } from './integration';
+import { extractConflicts } from './utils';
 
 export type MergeResult =
   | { success: true; mergedAt: string }
@@ -20,24 +21,7 @@ type MergeTrainConfig = {
 
 const DEFAULT_TEST_TIMEOUT_MS = 600000;
 
-function extractConflicts(stderr: string): string[] {
-  const conflicts: string[] = [];
-  const lines = stderr.split('\n');
 
-  for (const line of lines) {
-    const conflictMatch = line.match(/CONFLICT \(.*?\): (?:Merge conflict in )?(.+)/);
-    if (conflictMatch) {
-      conflicts.push(conflictMatch[1]);
-    }
-  }
-
-  if (conflicts.length > 0) {
-    return conflicts;
-  }
-
-  const fallback = stderr.trim();
-  return fallback ? [fallback] : [];
-}
 
 async function rollbackMerge(worktreePath: string): Promise<void> {
   // Try merge --abort first

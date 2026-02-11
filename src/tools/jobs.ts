@@ -1,21 +1,8 @@
 import { tool, type ToolDefinition } from '@opencode-ai/plugin';
 import { loadJobState, type Job } from '../lib/job-state';
+import { formatTimeAgo } from '../lib/utils';
 
-function formatDuration(startDate: string, endDate?: string): string {
-  const start = new Date(startDate);
-  const end = endDate ? new Date(endDate) : new Date();
-  const diffMs = end.getTime() - start.getTime();
 
-  const seconds = Math.floor(diffMs / 1000);
-  const minutes = Math.floor(seconds / 60);
-  const hours = Math.floor(minutes / 60);
-  const days = Math.floor(hours / 24);
-
-  if (days > 0) return `${days}d ago`;
-  if (hours > 0) return `${hours}h ago`;
-  if (minutes > 0) return `${minutes}m ago`;
-  return `${seconds}s ago`;
-}
 
 function truncatePrompt(prompt: string, maxLength: number = 50): string {
   if (prompt.length <= maxLength) return prompt;
@@ -78,10 +65,10 @@ function formatJobsOutput(grouped: Record<string, Job[]>): string {
     jobs.forEach((job) => {
       const indicator = getStatusIndicator(job.status);
       const truncatedPrompt = truncatePrompt(job.prompt);
-      const durationLabel =
-        job.status === 'completed' && job.completedAt
-          ? `Completed: ${formatDuration(job.completedAt)}`
-          : `Started: ${formatDuration(job.createdAt)}`;
+       const durationLabel =
+         job.status === 'completed' && job.completedAt
+           ? `Completed: ${formatTimeAgo(job.completedAt)}`
+           : `Started: ${formatTimeAgo(job.createdAt)}`;
 
       lines.push(
         `• ${job.name} [${job.status}] ${indicator} - "${truncatedPrompt}"`,

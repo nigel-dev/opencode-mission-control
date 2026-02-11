@@ -2,22 +2,9 @@ import { tool, type ToolDefinition } from '@opencode-ai/plugin';
 import { loadJobState, getRunningJobs, type Job } from '../lib/job-state';
 import { loadPlan } from '../lib/plan-state';
 import { readAllReports, type AgentReport } from '../lib/reports';
+import { formatTimeAgo } from '../lib/utils';
 
-function formatDuration(startDate: string, endDate?: string): string {
-  const start = new Date(startDate);
-  const end = endDate ? new Date(endDate) : new Date();
-  const diffMs = end.getTime() - start.getTime();
 
-  const seconds = Math.floor(diffMs / 1000);
-  const minutes = Math.floor(seconds / 60);
-  const hours = Math.floor(minutes / 60);
-  const days = Math.floor(hours / 24);
-
-  if (days > 0) return `${days}d ago`;
-  if (hours > 0) return `${hours}h ago`;
-  if (minutes > 0) return `${minutes}m ago`;
-  return `${seconds}s ago`;
-}
 
 function truncate(text: string, maxLength: number = 80): string {
   if (text.length <= maxLength) return text;
@@ -68,7 +55,7 @@ function formatRecentCompletions(jobs: Job[]): string[] {
   }
 
   return completed.map((job) => {
-    const duration = formatDuration(job.createdAt, job.completedAt);
+    const duration = formatTimeAgo(job.createdAt, job.completedAt);
     return `- ${job.name} | ${duration} | ${job.branch}`;
   });
 }
@@ -106,7 +93,7 @@ function formatRecentFailures(jobs: Job[]): string[] {
 
   return failed.map((job) => {
     const endedAt = job.completedAt ?? job.createdAt;
-    return `- ${job.name} | failed ${formatDuration(endedAt)} | ${job.branch}`;
+    return `- ${job.name} | failed ${formatTimeAgo(endedAt)} | ${job.branch}`;
   });
 }
 
@@ -231,7 +218,7 @@ export const mc_overview: ToolDefinition = tool({
           const reportText = lastReport
             ? `${lastReport.status}: ${truncate(lastReport.message, 60)}`
             : 'none';
-          return `- ${job.name} | ${formatDuration(job.createdAt)} | ${job.branch} | last report: ${reportText}`;
+           return `- ${job.name} | ${formatTimeAgo(job.createdAt)} | ${job.branch} | last report: ${reportText}`;
         });
       lines.push(...runningLines);
     }

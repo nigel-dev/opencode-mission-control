@@ -9,6 +9,7 @@ import { gitCommand, getDefaultBranch } from './git';
 import { getProjectId, getXdgDataDir } from './paths';
 import { createWorktree, removeWorktree } from './worktree';
 import type { PostCreateHook } from './providers/worktree-provider';
+import { extractConflicts } from './utils';
 
 const XDG_DATA_DIR = getXdgDataDir();
 
@@ -160,22 +161,4 @@ export async function refreshIntegrationFromMain(
   return { success: true };
 }
 
-/**
- * Extract conflicting files from git rebase stderr output.
- *
- * @param stderr - The stderr output from git rebase
- * @returns Array of conflicting file paths
- */
-function extractConflicts(stderr: string): string[] {
-  const conflicts: string[] = [];
-  const lines = stderr.split('\n');
 
-  for (const line of lines) {
-    const conflictMatch = line.match(/CONFLICT \(.*?\): (?:Merge conflict in )?(.+)/);
-    if (conflictMatch) {
-      conflicts.push(conflictMatch[1]);
-    }
-  }
-
-  return conflicts.length > 0 ? conflicts : [stderr];
-}
