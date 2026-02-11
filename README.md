@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/logo.png" alt="Mission Control" width="420" />
+  <img src="assets/banner.png" alt="OpenCode Mission Control" width="100%" />
 </p>
 
 <h1 align="center">OpenCode Mission Control</h1>
