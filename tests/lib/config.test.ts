@@ -1,14 +1,15 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { join } from 'path';
 import { homedir } from 'os';
 import { tmpdir } from 'os';
-import * as paths from '../../src/lib/paths';
-import {
-  loadConfig,
-  saveConfig,
-  getConfigPath,
-  type MCConfig,
-} from '../../src/lib/config';
+import type { MCConfig } from '../../src/lib/config';
+
+vi.mock('../../src/lib/paths', () => ({
+  getDataDir: vi.fn(),
+}));
+
+const paths = await import('../../src/lib/paths');
+const { loadConfig, saveConfig, getConfigPath } = await import('../../src/lib/config');
 
 let testConfigDir: string;
 
@@ -23,8 +24,9 @@ async function createTempDir(): Promise<string> {
 
 describe('config', () => {
   beforeEach(async () => {
+    vi.clearAllMocks();
     testConfigDir = await createTempDir();
-    vi.spyOn(paths, 'getDataDir').mockResolvedValue(testConfigDir);
+    (paths.getDataDir as any).mockResolvedValue(testConfigDir);
   });
 
   afterEach(async () => {
