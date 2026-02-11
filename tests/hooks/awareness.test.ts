@@ -1,18 +1,21 @@
-import { describe, it, expect, beforeEach, vi, type Mock } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { Job } from '../../src/lib/job-state';
 import * as worktree from '../../src/lib/worktree';
 import * as jobState from '../../src/lib/job-state';
+import * as awareness from '../../src/hooks/awareness';
 
-const { getWorktreeContext } = await import('../../src/hooks/awareness');
-
-let mockIsInManagedWorktree: Mock;
-let mockLoadJobState: Mock;
+let mockIsInManagedWorktree: any;
+let mockLoadJobState: any;
 
 describe('getWorktreeContext', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.restoreAllMocks();
     mockIsInManagedWorktree = vi.spyOn(worktree, 'isInManagedWorktree').mockImplementation(() => ({ isManaged: false } as any));
     mockLoadJobState = vi.spyOn(jobState, 'loadJobState').mockImplementation(() => ({ version: 1, jobs: [], updatedAt: new Date().toISOString() } as any));
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   describe('not in managed worktree', () => {
@@ -21,7 +24,7 @@ describe('getWorktreeContext', () => {
         isManaged: false,
       });
 
-      const context = await getWorktreeContext();
+      const context = await awareness.getWorktreeContext();
 
       expect(context).toEqual({ isInJob: false });
       expect(mockLoadJobState).not.toHaveBeenCalled();
@@ -57,7 +60,7 @@ describe('getWorktreeContext', () => {
         updatedAt: now,
       });
 
-      const context = await getWorktreeContext();
+      const context = await awareness.getWorktreeContext();
 
       expect(context).toEqual({
         isInJob: true,
@@ -95,7 +98,7 @@ describe('getWorktreeContext', () => {
         updatedAt: now,
       });
 
-      const context = await getWorktreeContext();
+      const context = await awareness.getWorktreeContext();
 
       expect(context).toEqual({
         isInJob: true,
@@ -119,7 +122,7 @@ describe('getWorktreeContext', () => {
         updatedAt: new Date().toISOString(),
       });
 
-      const context = await getWorktreeContext();
+      const context = await awareness.getWorktreeContext();
 
       expect(context).toEqual({
         isInJob: true,
@@ -157,7 +160,7 @@ describe('getWorktreeContext', () => {
         updatedAt: now,
       });
 
-      const context = await getWorktreeContext();
+      const context = await awareness.getWorktreeContext();
 
       expect(context.mode).toBe('ralph');
     });
@@ -214,7 +217,7 @@ describe('getWorktreeContext', () => {
         updatedAt: now,
       });
 
-      const context = await getWorktreeContext();
+      const context = await awareness.getWorktreeContext();
 
       expect(context).toEqual({
         isInJob: true,
