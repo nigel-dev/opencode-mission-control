@@ -39,6 +39,7 @@ describe('JobMonitor', () => {
     mockCapturePane.mockReset();
     mockCaptureExitStatus.mockReset();
     mockReadReport.mockReset();
+    mockGetRunningJobs.mockResolvedValue([]);
     mockReadReport.mockResolvedValue(null);
   });
 
