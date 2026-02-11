@@ -1,7 +1,7 @@
 # OpenCode Mission Control: Master Technical Audit & Ecosystem Strategy Report
 
-**Date:** February 7, 2026 (Cross-referenced: February 10, 2026)  
-**Version:** 0.1.0 Audit + Ecosystem Analysis (Updated: Phase 0 Complete, Phase 1 Cross-Referenced)  
+**Date:** February 7, 2026 (Cross-referenced: February 10, 2026; Updated: February 11, 2026)  
+**Version:** 0.1.0 Audit + Ecosystem Analysis (Updated: Phase 0 Complete, Phase 1 Largely Complete)  
 **Method:** 3 codebase analysis agents + 21 ecosystem research agents (24 parallel jobs total)  
 **Scope:** All 45 source files, 40 test files, and 21 OpenCode plugins from the ecosystem  
 
@@ -16,6 +16,8 @@ Yet MC suffered from **"Disconnected Brain Syndrome"**: powerful infrastructure,
 **Update (Feb 7):** Phase 0 is complete. All critical bugs fixed, all tests passing (470/470), build green.
 
 **Update (Feb 10):** Full codebase cross-reference of all 45 source files against this audit. Phase 0 items re-verified ✅. Phase 1 items status-checked — 3 done, 2 partially done, 6 still pending. Phase 2 and technical debt sections updated with current line numbers and accurate status. Auto-resume on startup was found to be already implemented.
+
+**Update (Feb 11):** Phase 1 implementation sprint. 7 of 8 actionable items completed. Remaining item (git root commit SHA as project ID) deferred — requires state directory migration strategy. Zod validation was already done in a prior commit. `awareness.ts` was found to be actively imported by `compaction.ts` (audit was wrong about it being dead code).
 
 **Phase 0 fixes delivered:**
 - ✅ **C1: Shell injection patched** — prompts now pass through temp files (`prompt-file.ts`), never shell-interpolated
@@ -33,7 +35,7 @@ Yet MC suffered from **"Disconnected Brain Syndrome"**: powerful infrastructure,
 - ✅ **`mc_overview` dashboard** — `/mc` slash command for single pane of glass
 - ✅ **`mc_report` scaffolded** — both launch paths inject status reporting instructions
 
-**The bottom line:** MC's critical attack surface and reliability issues are resolved. The engine and communication layer are both production-grade. Phase 1 quick wins are next.
+**The bottom line:** MC's critical attack surface and reliability issues are resolved. The engine and communication layer are both production-grade. Phase 1 is largely complete — only the git root SHA project ID remains (deferred). Phase 2 intelligence features are next.
 
 ---
 
@@ -234,10 +236,10 @@ MC's notification hooks (`notifications.ts`, `awareness.ts`) were dead code. The
 - Agents are instructed to call `mc_report` with progress %, blocked status, and review-ready signals
 - Unlocks the full agent → command center reporting pipeline
 
-### Remaining Gaps
+### ~~Remaining Gaps~~ ✅ All Resolved (Feb 11)
 
-- **Subagent detection** — still needed: `session.get().data.parentID` check to skip notifications in spawned sessions *(verified Feb 10: zero references to `parentID`/`parentId` in any source file)*
-- **Compaction context enrichment** — still thin one-liner; needs rich job cards + staleness tracking *(verified Feb 10: `compaction.ts` is only 19 lines)*
+- ~~**Subagent detection**~~ ✅ Implemented — `isSubagent()` in `index.ts` checks `session.get().data.parentID`. Notifications skip subagent sessions.
+- ~~**Compaction context enrichment**~~ ✅ Implemented — `compaction.ts` rewritten with rich job cards (name, status, duration, branch, mode, truncated prompt, report status, staleness markers). 14 tests passing.
 
 ---
 
@@ -246,17 +248,17 @@ MC's notification hooks (`notifications.ts`, `awareness.ts`) were dead code. The
 > *Cross-referenced Feb 10, 2026 against all 45 source files.*
 
 ### Dead Code & Duplication
-- 3x duplicated: `atomicWrite` (`config.ts:50`, `plan-state.ts:16`, `job-state.ts:71` — identical implementations)
-- 3x duplicated: `extractConflicts` (`integration.ts:167`, `worktree.ts:250`, `merge-train.ts:23` — identical implementations)
-- 4x duplicated: `formatDuration` (`notifications.ts:18`, `overview.ts:6`, `jobs.ts:4`, `status.ts:52` — 4 different signatures/implementations)
-- Dead: `test-runner.ts` (103 lines, not imported by any src/ file; `merge-train.ts` has its own `detectTestCommand()`/`runTestCommand()`)
-- Dead: `awareness.ts` (30 lines, not imported in `index.ts` or anywhere else in src/)
-- Unused dependency: Zod declared in `package.json` (`"zod": "^3.22.0"`) but zero imports in any source file
+- ~~3x duplicated: `atomicWrite`~~ ✅ Extracted to `src/lib/utils.ts` (Feb 11). `config.ts`, `plan-state.ts`, `job-state.ts` now import from `utils.ts`.
+- ~~3x duplicated: `extractConflicts`~~ ✅ Extracted to `src/lib/utils.ts` (Feb 11). `integration.ts`, `worktree.ts`, `merge-train.ts` now import from `utils.ts`. Uses merge-train's robust variant with empty-stderr fallback.
+- ~~4x duplicated: `formatDuration`~~ ✅ Extracted to `src/lib/utils.ts` as 3 distinct functions (Feb 11): `formatElapsed()` (notifications), `formatTimeAgo()` (overview, jobs), `formatDurationMs()` (status).
+- ~~Dead: `test-runner.ts`~~ ✅ Deleted (Feb 11). 103 lines removed; `merge-train.ts` has its own `detectTestCommand()`/`runTestCommand()`.
+- ~~Dead: `awareness.ts`~~ ❌ **Not dead** — `compaction.ts` imports `getRunningJobsSummary` from it. Audit was incorrect.
+- ~~Unused dependency: Zod~~ ✅ Already used — `config.ts`, `plan-state.ts`, `job-state.ts`, and `schemas.ts` all import and use Zod for validation. Prior commit `b24b1b9` added Zod schemas.
 
 ### Type Safety
 - `configInput: any` in `index.ts:182`, `commands.ts:29`
 - `determineJobsToClean` returns `any[]` at `cleanup.ts:28`
-- JSON state files parsed with `as Type` — no runtime validation (Zod available but unused)
+- ~~JSON state files parsed with `as Type` — no runtime validation (Zod available but unused)~~ ✅ Fixed — `job-state.ts`, `plan-state.ts`, and `config.ts` now use Zod schemas (`JobStateSchema.parse()`, `PlanSpecSchema.parse()`, `MCConfigSchema.parse()`) for runtime validation
 
 ### Architecture
 - `orchestrator.ts` is 891 lines (was 829 at original audit) — god object handling scheduling, merging, PR creation, notifications, checkpoints. Has grown, not shrunk.
@@ -265,7 +267,7 @@ MC's notification hooks (`notifications.ts`, `awareness.ts`) were dead code. The
 - No plugin API abstraction layer
 
 ### Robustness
-- Hardcoded `main` branch: **partially fixed** — `merge.ts:9-11` and `diff.ts:15` detect main/master. Still hardcoded in `integration.ts:45` (`gitCommand(['rev-parse', 'main'])`), `orchestrator.ts:816` (`'--base', 'main'`), `pr.ts:66` (`'--base', 'main'`)
+- ~~Hardcoded `main` branch~~ ✅ **Fully fixed** (Feb 11) — `getDefaultBranch()` added to `src/lib/git.ts`. All hardcoded references in `integration.ts`, `orchestrator.ts`, and `pr.ts` now use it. `merge.ts` and `diff.ts` already detected main/master.
 - Fixed `sleep(2000)` for OMO mode detection — still present at `launch.ts:268`
 - `isPaneRunning` returns `false` for ALL errors (could mark all jobs dead) — still present at `tmux.ts:315` (catch block returns false)
 - Reconciler race: concurrent triggers silently dropped — still present at `orchestrator.ts:316-318` (`isReconciling` boolean flag)
@@ -275,7 +277,7 @@ MC's notification hooks (`notifications.ts`, `awareness.ts`) were dead code. The
 
 ### Test Coverage Gaps
 - **Untested:** `commands.ts`, `index.ts`, `paths.ts`
-- **Tests for dead code:** `test-runner.ts`, `awareness.ts`
+- ~~**Tests for dead code:** `test-runner.ts`~~ ✅ Deleted (Feb 11). `awareness.ts` is NOT dead code — it's imported by `compaction.ts`.
 - **Undertested critical paths:** reconciler skip guard, plan cancel with running jobs, network errors in integration refresh
 
 ---
@@ -294,20 +296,17 @@ MC's notification hooks (`notifications.ts`, `awareness.ts`) were dead code. The
 
 **Implemented:** `MC_REPORT_SUFFIX` injected in both `launch.ts` (direct launches) and `orchestrator.ts` (plan-based launches). Spawned agents now receive status reporting instructions.
 
-### P1: Enrich Compaction Context with Job Cards
+### ~~P1: Enrich Compaction Context with Job Cards~~ ✅ DONE
 
-**Current:** Thin one-liner: `"Mission Control: 2 job(s) running"`.  
-**Ecosystem insight:** opencode-skillful uses `session.prompt({noReply: true})` for lazy injection. opencode-pruning uses staleness-based context management. Combine both.  
-**Effort:** 1-2 hours.
+**Implemented (Feb 11):** `compaction.ts` rewritten with rich job cards including name, status, duration, branch, mode, truncated prompt, report status, and staleness markers. 14 tests, all passing.
 
 ### ~~P1: Fix `output.messages` Mutation~~ ✅ VERIFIED
 
 **Audited:** Confirmed `output.messages` uses in-place mutation via `splice()` — correct per ecosystem consensus. No fix needed.
 
-### P2: Subagent Detection
+### ~~P2: Subagent Detection~~ ✅ DONE (moved from P2 to P1)
 
-**Pattern:** `session.get().data.parentID` check (from opencode-quota).  
-**Why:** Without this, spawned MC agents get notification spam from siblings.
+**Implemented (Feb 11):** `isSubagent()` function added to `index.ts` using `session.get().data.parentID` detection. Passed to `setupNotifications()` which skips notifications in subagent sessions. Cached after first check for performance.
 
 ### P2: Multiplexer Interface
 
@@ -342,20 +341,20 @@ MC's notification hooks (`notifications.ts`, `awareness.ts`) were dead code. The
 - [x] **C8:** Agent prompt emphasis — `MC_REPORT_SUFFIX` rewritten with CRITICAL/MANDATORY language
 - [x] **CONFIG:** Merge strategy config — `mergeStrategy: 'squash' | 'ff-only' | 'merge'` (default: `squash`)
 
-### Phase 1: Quick Wins (2-3 days)
-> Ecosystem alignment + command center UX.
+### Phase 1: Quick Wins ✅ LARGELY COMPLETE
+> Ecosystem alignment + command center UX. 7 of 8 actionable items done (Feb 11).
 
 - [x] Create `mc_overview` tool + `/mc` slash command *(Done Feb 7)*
 - [x] Scaffold `mc_report` in spawned agent prompts *(Done Feb 7)*
-- [ ] Enrich compaction context with rich job cards + staleness tracking *(Still pending — `compaction.ts` is only 19 lines, returns a thin one-liner: "Mission Control: N job(s) running - name (status)")*
-- [ ] Add subagent detection (`parentID` check) to notification logic *(Still pending — zero references to `parentID`/`parentId` in any source file)*
-- [ ] Add missing slash commands: `/mc-capture`, `/mc-diff`, `/mc-approve`, `/mc-plan` *(Partially done — `commands.ts` registers `/mc`, `/mc-jobs`, `/mc-launch`, `/mc-status`, `/mc-attach`, `/mc-cleanup`. Still missing: `/mc-capture`, `/mc-diff`, `/mc-approve`, `/mc-plan`)*
-- [ ] Extract shared utilities: `atomicWrite`, `extractConflicts`, `formatDuration` *(Still pending — `atomicWrite` duplicated 3x in `config.ts:50`, `plan-state.ts:16`, `job-state.ts:71`; `extractConflicts` duplicated 3x in `integration.ts:167`, `worktree.ts:250`, `merge-train.ts:23`; `formatDuration` duplicated 4x with different signatures in `notifications.ts:18`, `overview.ts:6`, `jobs.ts:4`, `status.ts:52`)*
-- [ ] Apply Zod validation to state file parsing (already a dependency) *(Still pending — Zod declared in `package.json` (`"zod": "^3.22.0"`) but zero imports in any source file. State files use `JSON.parse(content) as Type` with no runtime validation)*
-- [ ] Fix hardcoded `main` branch — detect default branch *(Partially done — `diff.ts:15` and `merge.ts:9-11` detect main/master. Still hardcoded in: `integration.ts:45`, `orchestrator.ts:816`, `pr.ts:66`)*
-- [ ] Remove dead code: `test-runner.ts`, `awareness.ts` *(Still pending — `test-runner.ts` (103 lines) is not imported by any src/ file; `awareness.ts` (30 lines) is not imported in `index.ts` or anywhere else)*
-- [ ] Adopt git root commit SHA as stable project identifier (from opencode-worktree) *(Still pending — `paths.ts` uses `basename(dirname(gitDir))` for project ID)*
-- [x] Auto-resume plan on plugin startup (reconciler dies when process exits) *(Done — `index.ts:172-179` calls `loadPlan()` on startup; if plan is running/paused, creates Orchestrator and calls `orchestrator.resumePlan()`)*
+- [x] Enrich compaction context with rich job cards + staleness tracking *(Done Feb 11 — `compaction.ts` rewritten with per-job cards: name, status, duration, branch, mode, truncated prompt, report data, staleness markers. 14 tests passing.)*
+- [x] Add subagent detection (`parentID` check) to notification logic *(Done Feb 11 — `isSubagent()` in `index.ts` using `session.get().data.parentID`, passed to `setupNotifications()` with cached result)*
+- [x] Add missing slash commands: `/mc-capture`, `/mc-diff`, `/mc-approve`, `/mc-plan` *(Done Feb 11 — all 4 commands added to `commands.ts`)*
+- [x] Extract shared utilities: `atomicWrite`, `extractConflicts`, `formatDuration` *(Done Feb 11 — new `src/lib/utils.ts` with 5 exports: `atomicWrite`, `extractConflicts`, `formatElapsed`, `formatTimeAgo`, `formatDurationMs`. All 10 consumer files updated.)*
+- [x] Apply Zod validation to state file parsing *(Already done in prior commit `b24b1b9` — `config.ts`, `plan-state.ts`, `job-state.ts` all use Zod schemas for parsing. `schemas.ts` defines `MCConfigSchema`, `JobSchema`, `JobStateSchema`, `PlanSpecSchema`.)*
+- [x] Fix hardcoded `main` branch — detect default branch *(Done Feb 11 — `getDefaultBranch()` added to `src/lib/git.ts`, used in `integration.ts`, `orchestrator.ts`, `pr.ts`)*
+- [x] Remove dead code: `test-runner.ts` *(Done Feb 11 — deleted `src/lib/test-runner.ts` and `tests/lib/test-runner.test.ts`. Note: `awareness.ts` was NOT deleted — audit was wrong, it's actively imported by `compaction.ts`.)*
+- [ ] Adopt git root commit SHA as stable project identifier *(Deferred — changing project ID computation breaks all existing state directories under `~/.local/share/opencode-mission-control/{project}/`. Requires migration strategy, not a quick win.)*
+- [x] Auto-resume plan on plugin startup *(Already done — `index.ts:172-179` calls `loadPlan()` on startup; if plan is running/paused, creates Orchestrator and calls `orchestrator.resumePlan()`)*
 
 ### Phase 2: Intelligence (1-2 weeks)
 > Activate latent capabilities + reliability.
@@ -438,4 +437,4 @@ MC's notification hooks (`notifications.ts`, `awareness.ts`) were dead code. The
 | "Session state detection: idle, streaming, unknown" | Implemented in monitor but never exposed to users. |
 | `mc_report` "Auto-detects which job is calling" | Only works for worktrees in the default `basePath`. Custom paths break detection. *(Note: spawned agents now receive `mc_report` instructions via prompt injection. `completed` status now wired to mark jobs done via `monitor.ts:115-124`.)* |
 | `worktreeSetup.commands` | Commands are NOT sanitized — arbitrary shell execution via config. |
-| Slash commands listed in README | README lists `/mc-jobs`, `/mc-launch`, `/mc-status`, `/mc-attach`, `/mc-cleanup`. These all exist in `commands.ts`. However, tools like `mc_capture`, `mc_diff`, `mc_plan`, `mc_plan_approve` have no corresponding slash commands. |
+| Slash commands listed in README | ✅ **Fixed (Feb 11).** README lists `/mc-jobs`, `/mc-launch`, `/mc-status`, `/mc-attach`, `/mc-cleanup`. `commands.ts` now also registers `/mc-capture`, `/mc-diff`, `/mc-approve`, `/mc-plan`. |
