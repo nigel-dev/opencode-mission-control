@@ -118,7 +118,6 @@ describe('worktree', () => {
       });
 
       expect(result).toBe(worktreePath);
-      const fs = await import('fs');
       expect(fs.existsSync(join(worktreePath, 'README.md'))).toBe(true);
     });
 
@@ -142,7 +141,6 @@ describe('worktree', () => {
       const fs = await import('fs');
       fs.writeFileSync(join(TEST_REPO_DIR, '.env.example'), 'KEY=value');
 
-      const fs = await import('fs');
       const worktreePath = fs.realpathSync(join(TEST_WORKTREE_DIR, 'hook-copy'));
       await createWorktree({
         branch: 'hook-copy',
@@ -166,7 +164,6 @@ describe('worktree', () => {
       fs.mkdirSync(nodeModulesDir, { recursive: true });
       fs.writeFileSync(join(nodeModulesDir, 'marker'), 'exists');
 
-      const fs = await import('fs');
       const worktreePath = fs.realpathSync(join(TEST_WORKTREE_DIR, 'hook-symlink'));
       await createWorktree({
         branch: 'hook-symlink',
@@ -191,7 +188,6 @@ describe('worktree', () => {
         },
       });
 
-      const fs = await import('fs');
       expect(fs.existsSync(join(worktreePath, '.setup-complete'))).toBe(true);
     });
   });
@@ -220,7 +216,6 @@ describe('worktree', () => {
         basePath: worktreePath,
       });
 
-      const fs = await import('fs');
       fs.writeFileSync(join(worktreePath, 'dirty-file.txt'), 'uncommitted');
 
       await expect(removeWorktree(worktreePath)).rejects.toThrow(
@@ -236,7 +231,6 @@ describe('worktree', () => {
         basePath: worktreePath,
       });
 
-      const fs = await import('fs');
       fs.writeFileSync(join(worktreePath, 'dirty-file.txt'), 'uncommitted');
 
       await removeWorktree(worktreePath, true);
