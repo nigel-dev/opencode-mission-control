@@ -17,6 +17,7 @@ describe('notifications hook', () => {
     };
   };
   let mockGetActiveSessionID: ReturnType<typeof vi.fn>;
+  let mockIsSubagent: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     mockMonitor = {
@@ -36,6 +37,7 @@ describe('notifications hook', () => {
     };
 
     mockGetActiveSessionID = vi.fn().mockResolvedValue('session-123');
+    mockIsSubagent = vi.fn().mockResolvedValue(false);
   });
 
   it('should set up notification handlers for all events', () => {
@@ -43,6 +45,7 @@ describe('notifications hook', () => {
       client: mockClient as any,
       monitor: mockMonitor as any,
       getActiveSessionID: mockGetActiveSessionID as any,
+      isSubagent: mockIsSubagent as any,
     });
 
     expect(mockMonitor.handlers.has('complete')).toBe(true);
@@ -60,6 +63,7 @@ describe('notifications hook', () => {
       client: mockClient as any,
       monitor: mockMonitor as any,
       getActiveSessionID: mockGetActiveSessionID as any,
+      isSubagent: mockIsSubagent as any,
     });
 
     const job: Job = {
@@ -92,6 +96,7 @@ describe('notifications hook', () => {
       client: mockClient as any,
       monitor: mockMonitor as any,
       getActiveSessionID: mockGetActiveSessionID as any,
+      isSubagent: mockIsSubagent as any,
     });
 
     const job: Job = {
@@ -126,6 +131,7 @@ describe('notifications hook', () => {
       client: mockClient as any,
       monitor: mockMonitor as any,
       getActiveSessionID: mockGetActiveSessionID as any,
+      isSubagent: mockIsSubagent as any,
     });
 
     const completedAt = new Date().toISOString();
@@ -167,6 +173,7 @@ describe('notifications hook', () => {
       client: mockClient as any,
       monitor: mockMonitor as any,
       getActiveSessionID: mockGetActiveSessionID as any,
+      isSubagent: mockIsSubagent as any,
     });
 
     const job: Job = {
@@ -196,6 +203,7 @@ describe('notifications hook', () => {
       client: mockClient as any,
       monitor: mockMonitor as any,
       getActiveSessionID: mockGetActiveSessionID as any,
+      isSubagent: mockIsSubagent as any,
     });
 
     const job: Job = {
@@ -226,6 +234,7 @@ describe('notifications hook', () => {
       client: mockClient as any,
       monitor: mockMonitor as any,
       getActiveSessionID: mockGetActiveSessionID as any,
+      isSubagent: mockIsSubagent as any,
     });
 
     const job: Job = {
