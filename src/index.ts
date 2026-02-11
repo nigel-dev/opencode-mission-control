@@ -1,6 +1,6 @@
 import type { Plugin } from '@opencode-ai/plugin';
 import { getSharedMonitor, setSharedNotifyCallback, getSharedNotifyCallback, setSharedOrchestrator } from './lib/orchestrator-singleton';
-import { getCompactionContext } from './hooks/compaction';
+import { getCompactionContext, getJobCompactionContext } from './hooks/compaction';
 import { shouldShowAutoStatus, getAutoStatusMessage } from './hooks/auto-status';
 import { setupNotifications } from './hooks/notifications';
 import { registerCommands, createCommandHandler } from './commands';
@@ -9,6 +9,7 @@ import { loadPlan } from './lib/plan-state';
 import { Orchestrator } from './lib/orchestrator';
 import { loadConfig } from './lib/config';
 import { setCurrentModel, setCurrentModelFromSDK, setConfigFallbackModel } from './lib/model-tracker';
+import { isInManagedWorktree } from './lib/worktree';
 import { mc_launch } from './tools/launch';
 import { mc_jobs } from './tools/jobs';
 import { mc_status } from './tools/status';
@@ -117,6 +118,10 @@ function extractSessionIDFromListResult(listResult: unknown): string | undefined
 let tmuxAvailable = false;
 
 export const MissionControl: Plugin = async ({ client }) => {
+  const cwd = process.cwd();
+  const worktreeInfo = await isInManagedWorktree(cwd);
+  const isJobAgent = worktreeInfo.isManaged;
+
   tmuxAvailable = await isTmuxAvailable();
   if (!tmuxAvailable) {
     console.warn('[Mission Control] tmux is not installed or not in PATH. Job launching will be unavailable.');
@@ -139,28 +144,34 @@ export const MissionControl: Plugin = async ({ client }) => {
     }
   };
 
-  setupNotifications({
-    client,
-    monitor,
-    getActiveSessionID,
-  });
+  if (!isJobAgent) {
+    setupNotifications({
+      client,
+      monitor,
+      getActiveSessionID,
+    });
+  }
 
   let notifyPending: Promise<void> = Promise.resolve();
-  setSharedNotifyCallback((message: string) => {
-    notifyPending = notifyPending.then(async () => {
-      const sessionID = await getActiveSessionID();
-      if (!sessionID || !sessionID.startsWith('ses')) return;
-      await client.session.prompt({
-        path: { id: sessionID },
-        body: {
-          noReply: true,
-          parts: [{ type: 'text' as const, text: message }],
-        },
+  if (!isJobAgent) {
+    setSharedNotifyCallback((message: string) => {
+      notifyPending = notifyPending.then(async () => {
+        const sessionID = await getActiveSessionID();
+        if (!sessionID || !sessionID.startsWith('ses')) return;
+        await client.session.prompt({
+          path: { id: sessionID },
+          body: {
+            noReply: true,
+            parts: [{ type: 'text' as const, text: message }],
+          },
+        }).catch(() => {});
       }).catch(() => {});
-    }).catch(() => {});
-  });
+    });
+  }
 
-  monitor.start();
+  if (!isJobAgent) {
+    monitor.start();
+  }
 
   client.config.get().then((result) => {
     const config = result.data;
@@ -169,18 +180,22 @@ export const MissionControl: Plugin = async ({ client }) => {
     }
   }).catch(() => {});
 
-  loadPlan().then(async (plan) => {
-    if (plan && (plan.status === 'running' || plan.status === 'paused')) {
-      const config = await loadConfig();
-      const orchestrator = new Orchestrator(monitor, config, { notify: getSharedNotifyCallback() ?? undefined });
-      setSharedOrchestrator(orchestrator);
-      await orchestrator.resumePlan();
-    }
-  }).catch(() => {});
+  if (!isJobAgent) {
+    loadPlan().then(async (plan) => {
+      if (plan && (plan.status === 'running' || plan.status === 'paused')) {
+        const config = await loadConfig();
+        const orchestrator = new Orchestrator(monitor, config, { notify: getSharedNotifyCallback() ?? undefined });
+        setSharedOrchestrator(orchestrator);
+        await orchestrator.resumePlan();
+      }
+    }).catch(() => {});
+  }
 
   return {
     config: async (configInput: any) => {
-      registerCommands(configInput);
+      if (!isJobAgent) {
+        registerCommands(configInput);
+      }
     },
     'command.execute.before': (input: { command: string; sessionID: string; arguments: string }, output: { parts: unknown[] }) => {
       if (isValidSessionID(input.sessionID)) {
@@ -209,25 +224,9 @@ export const MissionControl: Plugin = async ({ client }) => {
         setCurrentModelFromSDK(input.model, input.sessionID);
       }
     },
-    tool: {
-      mc_launch,
-      mc_jobs,
-      mc_status,
-      mc_diff,
-      mc_pr,
-      mc_merge,
-      mc_sync,
-      mc_cleanup,
-      mc_kill,
-      mc_attach,
-      mc_capture,
-      mc_plan,
-      mc_plan_status,
-      mc_plan_cancel,
-      mc_plan_approve,
-      mc_report,
-      mc_overview,
-    },
+    tool: isJobAgent 
+      ? { mc_report, mc_status } as any
+      : { mc_launch, mc_jobs, mc_status, mc_diff, mc_pr, mc_merge, mc_sync, mc_cleanup, mc_kill, mc_attach, mc_capture, mc_plan, mc_plan_status, mc_plan_cancel, mc_plan_approve, mc_report, mc_overview },
     event: async ({ event }) => {
       const sessionID = extractSessionIDFromEvent(event);
       if (sessionID) {
@@ -274,7 +273,7 @@ export const MissionControl: Plugin = async ({ client }) => {
     // (push/splice). Direct reassignment (e.g. output.context = [...]) is
     // silently ignored. See: opencode Plugin.trigger() proxy semantics.
     'experimental.session.compacting': async (_input, output) => {
-      output.context.push(await getCompactionContext());
+      output.context.push(await (isJobAgent ? getJobCompactionContext() : getCompactionContext()));
     },
   };
 };
