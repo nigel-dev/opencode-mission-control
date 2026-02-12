@@ -42,6 +42,21 @@ If tests fail, identify whether failures are pre-existing vs introduced by your 
 - Use the **Nuclear Cleanup** sequence before and after manual testing to avoid leftover tmux sessions, worktrees, branches, and state files.
 - Follow plan safety rules exactly: `tmc-` test naming, no remote push flows during testing (`mc_pr` is structural only), and explicit SHA-based resets.
 
+## CI & GitHub Workflows
+
+- **CI** (`.github/workflows/ci.yml`) — Runs `bun run build` and `bun test` on PRs and pushes to `main`.
+- **Conventional Commits** (`.github/workflows/conventional-commits.yml`) — Validates PR titles follow the convention.
+- **CodeQL** (`.github/workflows/codeql.yml`) — Static analysis for TypeScript; runs on PRs, pushes to `main`, and weekly.
+- **Publish** (`.github/workflows/publish.yml`) — semantic-release to npm on `main`.
+- **Dependabot** (`.github/dependabot.yml`) — Opens weekly PRs for npm and GitHub Actions dependency updates. These use `chore(deps):` and `ci(deps):` commit prefixes.
+
+## Branch & Merge Rules
+
+- Direct pushes to `main` are blocked; all changes go through PRs.
+- Merge commits are disabled — only **squash** and **rebase** merges are allowed.
+- PRs require 1 approving review, passing `build-and-test` and `conventional-commits` checks, and all conversations resolved.
+- A PR template (`.github/pull_request_template.md`) is provided — fill it out when opening PRs.
+
 ## Release Notes for Agents
 
 - npm package output is `dist/` only (`package.json -> files`).
