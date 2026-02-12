@@ -75,7 +75,7 @@ export const VALID_JOB_TRANSITIONS: Record<JobStatus, JobStatus[]> = {
   waiting_deps: ['running', 'stopped', 'canceled'],
   running: ['completed', 'failed', 'stopped', 'canceled'],
   completed: ['ready_to_merge', 'stopped', 'canceled'],
-  failed: ['stopped', 'canceled'],
+  failed: ['ready_to_merge', 'stopped', 'canceled'],
   ready_to_merge: ['merging', 'stopped', 'canceled'],
   merging: ['merged', 'conflict', 'stopped', 'canceled'],
   merged: ['needs_rebase'],

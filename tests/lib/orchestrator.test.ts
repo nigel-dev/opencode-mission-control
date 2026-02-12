@@ -287,7 +287,7 @@ describe('orchestrator', () => {
     expect(planState?.prUrl).toBe('https://example.com/pr/1');
   });
 
-  it('failed job event stops the plan', async () => {
+  it('failed job event pauses the plan', async () => {
     const orchestrator = new Orchestrator(monitor as any, {
       defaultPlacement: 'session',
       pollInterval: 10000,
@@ -312,7 +312,121 @@ describe('orchestrator', () => {
 
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(planState?.status).toBe('failed');
+    expect(planState?.status).toBe('paused');
+    expect(planState?.checkpoint).toBe('on_error');
+  });
+
+  it('autopilot plan should pause on merge conflict instead of failing', async () => {
+    planState = makePlan({
+      status: 'running',
+      jobs: [
+        makeJob('conflict-job', { status: 'ready_to_merge', mergeOrder: 0, branch: 'mc/conflict-job' }),
+      ],
+    });
+
+    const fakeTrain = {
+      queue: [] as JobSpec[],
+      enqueue(job: JobSpec) {
+        this.queue.push(job);
+      },
+      getQueue() {
+        return [...this.queue];
+      },
+      async processNext() {
+        this.queue.shift();
+        return { success: false, type: 'conflict', files: ['src/index.ts'] };
+      },
+    };
+
+    const orchestrator = new Orchestrator(monitor as any, {
+      defaultPlacement: 'session',
+      pollInterval: 10000,
+      idleThreshold: 300000,
+      worktreeBasePath: '/tmp',
+      omo: { enabled: false, defaultMode: 'vanilla' },
+    } as any);
+    (orchestrator as any).mergeTrain = fakeTrain;
+
+    await (orchestrator as any).reconcile();
+
+    expect(planState?.status).toBe('paused');
+    expect(planState?.checkpoint).toBe('on_error');
+    // Verify updatePlanJob was called with conflict status
+    expect(planStateMod.updatePlanJob).toHaveBeenCalledWith('plan-1', 'conflict-job', {
+      status: 'conflict',
+      error: 'src/index.ts',
+    });
+  });
+
+  it('autopilot plan should pause on test failure instead of failing', async () => {
+    planState = makePlan({
+      status: 'running',
+      jobs: [
+        makeJob('test-fail-job', { status: 'ready_to_merge', mergeOrder: 0, branch: 'mc/test-fail-job' }),
+      ],
+    });
+
+    const fakeTrain = {
+      queue: [] as JobSpec[],
+      enqueue(job: JobSpec) {
+        this.queue.push(job);
+      },
+      getQueue() {
+        return [...this.queue];
+      },
+      async processNext() {
+        this.queue.shift();
+        return { success: false, type: 'test_failure', output: 'tests failed' };
+      },
+    };
+
+    const orchestrator = new Orchestrator(monitor as any, {
+      defaultPlacement: 'session',
+      pollInterval: 10000,
+      idleThreshold: 300000,
+      worktreeBasePath: '/tmp',
+      omo: { enabled: false, defaultMode: 'vanilla' },
+    } as any);
+    (orchestrator as any).mergeTrain = fakeTrain;
+
+    await (orchestrator as any).reconcile();
+
+    expect(planState?.status).toBe('paused');
+    expect(planState?.checkpoint).toBe('on_error');
+    expect(planStateMod.updatePlanJob).toHaveBeenCalledWith('plan-1', 'test-fail-job', {
+      status: 'failed',
+      error: 'tests failed',
+    });
+  });
+
+  it('autopilot plan should pause on job monitor failure', async () => {
+    const orchestrator = new Orchestrator(monitor as any, {
+      defaultPlacement: 'session',
+      pollInterval: 10000,
+      idleThreshold: 300000,
+      worktreeBasePath: '/tmp',
+      omo: { enabled: false, defaultMode: 'vanilla' },
+    } as any);
+    spyOn(orchestrator as any, 'startReconciler').mockImplementation(() => {});
+
+    await orchestrator.startPlan(
+      makePlan({
+        status: 'pending',
+        mode: 'autopilot',
+        jobs: [makeJob('monitor-fail', { status: 'queued' })],
+      }),
+    );
+
+    monitor.emit('failed', {
+      id: 'j1',
+      name: 'monitor-fail',
+      planId: 'plan-1',
+    } as Job);
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(planState?.status).toBe('paused');
+    expect(planState?.checkpoint).toBe('on_error');
   });
 
   it('cancelPlan stops plan jobs and cleans up integration branch', async () => {

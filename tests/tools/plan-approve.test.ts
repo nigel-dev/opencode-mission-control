@@ -69,6 +69,119 @@ describe('mc_plan_approve', () => {
     });
   });
 
+  describe('retry failed job', () => {
+    it('should reset a failed job to ready_to_merge when retry is provided', async () => {
+      vi.spyOn(planState, 'loadPlan').mockResolvedValue({
+        id: 'plan-1',
+        name: 'Retry Plan',
+        mode: 'autopilot',
+        status: 'paused',
+        checkpoint: 'on_error',
+        jobs: [
+          { id: 'j1', name: 'good-job', prompt: 'do good', status: 'merged' },
+          { id: 'j2', name: 'bad-job', prompt: 'do bad', status: 'failed', error: 'test failure' },
+        ],
+        integrationBranch: 'mc/integration/plan-1',
+        baseCommit: 'abc123',
+        createdAt: new Date().toISOString(),
+      });
+
+      const mockSavePlan = vi.spyOn(planState, 'savePlan').mockResolvedValue(undefined);
+      const mockUpdatePlanJob = vi.spyOn(planState, 'updatePlanJob').mockResolvedValue(undefined);
+      const mockResumePlan = vi.fn().mockResolvedValue(undefined);
+      vi.spyOn(orchestrator, 'Orchestrator').mockImplementation(
+        () =>
+          ({
+            resumePlan: mockResumePlan,
+            setPlanModelSnapshot: vi.fn(),
+          }) as any,
+      );
+
+      const result = await mc_plan_approve.execute({ checkpoint: 'on_error', retry: 'bad-job' }, mockContext);
+
+      expect(mockUpdatePlanJob).toHaveBeenCalledWith('plan-1', 'bad-job', { status: 'ready_to_merge', error: undefined });
+      expect(result).toContain('bad-job');
+      expect(result).toContain('ready_to_merge');
+      expect(result).toContain('resuming');
+      expect(mockSavePlan).toHaveBeenCalled();
+      expect(mockResumePlan).toHaveBeenCalled();
+    });
+
+    it('should throw if retry job name is not found in plan', async () => {
+      vi.spyOn(planState, 'loadPlan').mockResolvedValue({
+        id: 'plan-1',
+        name: 'Retry Plan',
+        mode: 'autopilot',
+        status: 'paused',
+        checkpoint: 'on_error',
+        jobs: [
+          { id: 'j1', name: 'existing-job', prompt: 'do stuff', status: 'failed' },
+        ],
+        integrationBranch: 'mc/integration/plan-1',
+        baseCommit: 'abc123',
+        createdAt: new Date().toISOString(),
+      });
+
+      await expect(
+        mc_plan_approve.execute({ checkpoint: 'on_error', retry: 'nonexistent' }, mockContext),
+      ).rejects.toThrow('Job "nonexistent" not found in plan');
+    });
+
+    it('should throw if retry job is not in a retryable state', async () => {
+      vi.spyOn(planState, 'loadPlan').mockResolvedValue({
+        id: 'plan-1',
+        name: 'Retry Plan',
+        mode: 'autopilot',
+        status: 'paused',
+        checkpoint: 'on_error',
+        jobs: [
+          { id: 'j1', name: 'running-job', prompt: 'do stuff', status: 'running' },
+        ],
+        integrationBranch: 'mc/integration/plan-1',
+        baseCommit: 'abc123',
+        createdAt: new Date().toISOString(),
+      });
+
+      await expect(
+        mc_plan_approve.execute({ checkpoint: 'on_error', retry: 'running-job' }, mockContext),
+      ).rejects.toThrow('not in a retryable state');
+    });
+
+    it('should clear checkpoint without retry (backward compatible)', async () => {
+      vi.spyOn(planState, 'loadPlan').mockResolvedValue({
+        id: 'plan-1',
+        name: 'Checkpoint Plan',
+        mode: 'supervisor',
+        status: 'paused',
+        checkpoint: 'pre_merge',
+        jobs: [
+          { id: 'j1', name: 'merge-job', prompt: 'do merge', status: 'ready_to_merge' },
+        ],
+        integrationBranch: 'mc/integration/plan-1',
+        baseCommit: 'abc123',
+        createdAt: new Date().toISOString(),
+      });
+
+      const mockSavePlan = vi.spyOn(planState, 'savePlan').mockResolvedValue(undefined);
+      const mockResumePlan = vi.fn().mockResolvedValue(undefined);
+      vi.spyOn(orchestrator, 'Orchestrator').mockImplementation(
+        () =>
+          ({
+            resumePlan: mockResumePlan,
+            setPlanModelSnapshot: vi.fn(),
+          }) as any,
+      );
+
+      const result = await mc_plan_approve.execute({ checkpoint: 'pre_merge' }, mockContext);
+
+      expect(result).toContain('Checkpoint "pre_merge" cleared');
+      expect(result).toContain('resuming');
+      expect(result).not.toContain('ready_to_merge');
+      expect(mockSavePlan).toHaveBeenCalled();
+      expect(mockResumePlan).toHaveBeenCalled();
+    });
+  });
+
   describe('approve pending plan', () => {
     it('should transition plan to running and resume via orchestrator', async () => {
       vi.spyOn(planState, 'loadPlan').mockResolvedValue({

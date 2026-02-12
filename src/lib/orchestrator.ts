@@ -538,14 +538,10 @@ export class Orchestrator {
             error: mergeResult.files?.join(', ') ?? 'merge conflict',
           });
 
-          if (this.isSupervisor(plan)) {
-            await this.setCheckpoint('on_error', plan);
-            return;
-          }
-
-          plan.status = 'failed';
-          this.showToast('Mission Control', `Merge conflict in job "${nextJob.name}".`, 'error');
-          this.notify(`❌ Merge conflict in job "${nextJob.name}". Files: ${mergeResult.files?.join(', ') ?? 'unknown'}. Plan failed.`);
+          this.showToast('Mission Control', `Merge conflict in job "${nextJob.name}". Plan paused.`, 'error');
+          this.notify(`❌ Merge conflict in job "${nextJob.name}". Files: ${mergeResult.files?.join(', ') ?? 'unknown'}. Fix the branch and retry with mc_plan_approve(checkpoint: "on_error", retry: "${nextJob.name}").`);
+          await this.setCheckpoint('on_error', plan);
+          return;
         } else {
           await updatePlanJob(plan.id, nextJob.name, {
             status: 'failed',
@@ -557,14 +553,10 @@ export class Orchestrator {
             this.notify(`🧪 ${nextJob.name}: ${testSummary}`);
           }
 
-          if (this.isSupervisor(plan)) {
-            await this.setCheckpoint('on_error', plan);
-            return;
-          }
-
-          plan.status = 'failed';
-          this.showToast('Mission Control', `Job "${nextJob.name}" failed during merge.`, 'error');
-          this.notify(`❌ Job "${nextJob.name}" failed merge tests. Plan failed.`);
+          this.showToast('Mission Control', `Job "${nextJob.name}" failed merge tests. Plan paused.`, 'error');
+          this.notify(`❌ Job "${nextJob.name}" failed merge tests. Fix the branch and retry with mc_plan_approve(checkpoint: "on_error", retry: "${nextJob.name}").`);
+          await this.setCheckpoint('on_error', plan);
+          return;
         }
       }
 
@@ -794,16 +786,9 @@ If your work needs human review before it can proceed: mc_report(status: "needs_
             return;
           }
 
-          if (this.isSupervisor(plan)) {
-            await this.setCheckpoint('on_error', plan);
-            return;
-          }
-
-          plan.status = 'failed';
-          plan.completedAt = new Date().toISOString();
-          await savePlan(plan);
-          this.showToast('Mission Control', `Plan failed: job "${job.name}" failed.`, 'error');
-          this.notify(`❌ Plan failed: job "${job.name}" failed.`);
+          this.showToast('Mission Control', `Job "${job.name}" failed. Plan paused.`, 'error');
+          this.notify(`❌ Job "${job.name}" failed. Fix and retry with mc_plan_approve(checkpoint: "on_error", retry: "${job.name}").`);
+          await this.setCheckpoint('on_error', plan);
         })
         .catch(() => {})
         .finally(() => {

@@ -171,6 +171,10 @@ describe('plan-types', () => {
       expect(isValidJobTransition('merged', 'needs_rebase')).toBe(true);
       expect(isValidJobTransition('needs_rebase', 'ready_to_merge')).toBe(true);
     });
+
+    it('should support failed job retry: failed -> ready_to_merge', () => {
+      expect(isValidJobTransition('failed', 'ready_to_merge')).toBe(true);
+    });
   });
 
   describe('isValidPlanTransition', () => {
