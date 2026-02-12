@@ -4,7 +4,7 @@ import type { PlanSpec, JobSpec, PlanStatus, CheckpointType } from './plan-types
 import { loadPlan, savePlan, updatePlanJob, clearPlan, validateGhAuth } from './plan-state';
 import { getDefaultBranch } from './git';
 import { createIntegrationBranch, deleteIntegrationBranch } from './integration';
-import { MergeTrain, type MergeTestReport } from './merge-train';
+import { MergeTrain, checkMergeability, type MergeTestReport, validateTouchSet } from './merge-train';
 import { addJob, getRunningJobs, updateJob, loadJobState, removeJob, type Job } from './job-state';
 import { JobMonitor } from './monitor';
 import { removeReport } from './reports';
@@ -473,6 +473,22 @@ export class Orchestrator {
 
       for (const job of mergeOrder) {
         if (job.status === 'completed') {
+          if (job.touchSet && job.touchSet.length > 0 && job.branch && plan.integrationBranch) {
+            const validation = await validateTouchSet(job.branch, plan.integrationBranch, job.touchSet);
+            if (!validation.valid && validation.violations) {
+              await updatePlanJob(plan.id, job.name, {
+                status: 'failed',
+                error: `Modified files outside touchSet: ${validation.violations.join(', ')}. Expected only: ${job.touchSet.join(', ')}`,
+              });
+              job.status = 'failed';
+
+              this.showToast('Mission Control', `Job "${job.name}" touched files outside its touchSet. Plan paused.`, 'error');
+              this.notify(`❌ Job "${job.name}" modified files outside its touchSet:\n  Violations: ${validation.violations.join(', ')}\n  Allowed: ${job.touchSet.join(', ')}\nFix the branch and retry with mc_plan_approve(checkpoint: "on_error", retry: "${job.name}").`);
+              await this.setCheckpoint('on_error', plan);
+              return;
+            }
+          }
+
           await updatePlanJob(plan.id, job.name, { status: 'ready_to_merge' });
           job.status = 'ready_to_merge';
         }
@@ -492,6 +508,22 @@ export class Orchestrator {
         });
         if (!canMergeNow) {
           continue;
+        }
+
+        if (job.branch && plan.integrationWorktree) {
+          const mergeCheck = await checkMergeability(plan.integrationWorktree, job.branch);
+          if (!mergeCheck.canMerge) {
+            await updatePlanJob(plan.id, job.name, {
+              status: 'needs_rebase',
+              error: mergeCheck.conflicts?.join(', ') ?? 'merge conflict detected in trial merge',
+            });
+            job.status = 'needs_rebase';
+
+            this.showToast('Mission Control', `Job "${job.name}" has merge conflicts. Plan paused.`, 'error');
+            this.notify(`❌ Job "${job.name}" would conflict with the integration branch.\n  Files: ${mergeCheck.conflicts?.join(', ') ?? 'unknown'}\nRebase the job branch and retry with mc_plan_approve(checkpoint: "on_error", retry: "${job.name}").`);
+            await this.setCheckpoint('on_error', plan);
+            return;
+          }
         }
 
         if (this.isSupervisor(plan) && !this.approvedForMerge.has(job.name)) {
@@ -538,14 +570,10 @@ export class Orchestrator {
             error: mergeResult.files?.join(', ') ?? 'merge conflict',
           });
 
-          if (this.isSupervisor(plan)) {
-            await this.setCheckpoint('on_error', plan);
-            return;
-          }
-
-          plan.status = 'failed';
-          this.showToast('Mission Control', `Merge conflict in job "${nextJob.name}".`, 'error');
-          this.notify(`❌ Merge conflict in job "${nextJob.name}". Files: ${mergeResult.files?.join(', ') ?? 'unknown'}. Plan failed.`);
+          this.showToast('Mission Control', `Merge conflict in job "${nextJob.name}". Plan paused.`, 'error');
+          this.notify(`❌ Merge conflict in job "${nextJob.name}". Files: ${mergeResult.files?.join(', ') ?? 'unknown'}. Fix the branch and retry with mc_plan_approve(checkpoint: "on_error", retry: "${nextJob.name}").`);
+          await this.setCheckpoint('on_error', plan);
+          return;
         } else {
           await updatePlanJob(plan.id, nextJob.name, {
             status: 'failed',
@@ -557,14 +585,10 @@ export class Orchestrator {
             this.notify(`🧪 ${nextJob.name}: ${testSummary}`);
           }
 
-          if (this.isSupervisor(plan)) {
-            await this.setCheckpoint('on_error', plan);
-            return;
-          }
-
-          plan.status = 'failed';
-          this.showToast('Mission Control', `Job "${nextJob.name}" failed during merge.`, 'error');
-          this.notify(`❌ Job "${nextJob.name}" failed merge tests. Plan failed.`);
+          this.showToast('Mission Control', `Job "${nextJob.name}" failed merge tests. Plan paused.`, 'error');
+          this.notify(`❌ Job "${nextJob.name}" failed merge tests. Fix the branch and retry with mc_plan_approve(checkpoint: "on_error", retry: "${nextJob.name}").`);
+          await this.setCheckpoint('on_error', plan);
+          return;
         }
       }
 
@@ -763,22 +787,24 @@ If your work needs human review before it can proceed: mc_report(status: "needs_
   }
 
   private handleJobComplete = (job: Job): void => {
-    if (job.planId && this.activePlanId && job.planId === this.activePlanId) {
-      if (!this.firstJobCompleted) {
-        this.firstJobCompleted = true;
-        this.showToast('Mission Control', `First job completed: "${job.name}".`, 'success');
-      }
-
-      updatePlanJob(job.planId, job.name, {
-        status: 'completed',
-      }).catch((error) => {
-        console.error('Failed to update completed job state:', error);
-      });
-
-      this.reconcile().catch((error) => {
-        console.error('Reconcile after completion failed:', error);
-      });
+    if (!job.planId || !this.activePlanId || job.planId !== this.activePlanId) {
+      return;
     }
+
+    if (!this.firstJobCompleted) {
+      this.firstJobCompleted = true;
+      this.showToast('Mission Control', `First job completed: "${job.name}".`, 'success');
+    }
+
+    const planId = job.planId;
+    (async () => {
+      await updatePlanJob(planId, job.name, {
+        status: 'completed',
+      });
+      await this.reconcile();
+    })().catch((error) => {
+      console.error('Failed to reconcile completed job state:', error);
+    });
   }
 
   private handleJobFailed = (job: Job): void => {
@@ -794,16 +820,9 @@ If your work needs human review before it can proceed: mc_report(status: "needs_
             return;
           }
 
-          if (this.isSupervisor(plan)) {
-            await this.setCheckpoint('on_error', plan);
-            return;
-          }
-
-          plan.status = 'failed';
-          plan.completedAt = new Date().toISOString();
-          await savePlan(plan);
-          this.showToast('Mission Control', `Plan failed: job "${job.name}" failed.`, 'error');
-          this.notify(`❌ Plan failed: job "${job.name}" failed.`);
+          this.showToast('Mission Control', `Job "${job.name}" failed. Plan paused.`, 'error');
+          this.notify(`❌ Job "${job.name}" failed. Fix and retry with mc_plan_approve(checkpoint: "on_error", retry: "${job.name}").`);
+          await this.setCheckpoint('on_error', plan);
         })
         .catch(() => {})
         .finally(() => {

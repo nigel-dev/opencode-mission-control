@@ -4,6 +4,7 @@ import type { Job, JobState } from '../../src/lib/job-state';
 import type { JobSpec, PlanSpec } from '../../src/lib/plan-types';
 import * as integrationMod from '../../src/lib/integration';
 import * as jobStateMod from '../../src/lib/job-state';
+import * as mergeTrainMod from '../../src/lib/merge-train';
 import { Orchestrator, hasCircularDependency, topologicalSort } from '../../src/lib/orchestrator';
 import * as planStateMod from '../../src/lib/plan-state';
 import * as tmuxMod from '../../src/lib/tmux';
@@ -99,6 +100,8 @@ describe('orchestrator', () => {
     spyOn(tmuxMod, 'killWindow').mockResolvedValue();
     spyOn(tmuxMod, 'sendKeys').mockResolvedValue();
     spyOn(tmuxMod, 'setPaneDiedHook').mockResolvedValue();
+
+    spyOn(mergeTrainMod, 'checkMergeability').mockResolvedValue({ canMerge: true });
   });
 
   afterEach(() => {
@@ -287,7 +290,7 @@ describe('orchestrator', () => {
     expect(planState?.prUrl).toBe('https://example.com/pr/1');
   });
 
-  it('failed job event stops the plan', async () => {
+  it('failed job event pauses the plan', async () => {
     const orchestrator = new Orchestrator(monitor as any, {
       defaultPlacement: 'session',
       pollInterval: 10000,
@@ -312,7 +315,121 @@ describe('orchestrator', () => {
 
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(planState?.status).toBe('failed');
+    expect(planState?.status).toBe('paused');
+    expect(planState?.checkpoint).toBe('on_error');
+  });
+
+  it('autopilot plan should pause on merge conflict instead of failing', async () => {
+    planState = makePlan({
+      status: 'running',
+      jobs: [
+        makeJob('conflict-job', { status: 'ready_to_merge', mergeOrder: 0, branch: 'mc/conflict-job' }),
+      ],
+    });
+
+    const fakeTrain = {
+      queue: [] as JobSpec[],
+      enqueue(job: JobSpec) {
+        this.queue.push(job);
+      },
+      getQueue() {
+        return [...this.queue];
+      },
+      async processNext() {
+        this.queue.shift();
+        return { success: false, type: 'conflict', files: ['src/index.ts'] };
+      },
+    };
+
+    const orchestrator = new Orchestrator(monitor as any, {
+      defaultPlacement: 'session',
+      pollInterval: 10000,
+      idleThreshold: 300000,
+      worktreeBasePath: '/tmp',
+      omo: { enabled: false, defaultMode: 'vanilla' },
+    } as any);
+    (orchestrator as any).mergeTrain = fakeTrain;
+
+    await (orchestrator as any).reconcile();
+
+    expect(planState?.status).toBe('paused');
+    expect(planState?.checkpoint).toBe('on_error');
+    // Verify updatePlanJob was called with conflict status
+    expect(planStateMod.updatePlanJob).toHaveBeenCalledWith('plan-1', 'conflict-job', {
+      status: 'conflict',
+      error: 'src/index.ts',
+    });
+  });
+
+  it('autopilot plan should pause on test failure instead of failing', async () => {
+    planState = makePlan({
+      status: 'running',
+      jobs: [
+        makeJob('test-fail-job', { status: 'ready_to_merge', mergeOrder: 0, branch: 'mc/test-fail-job' }),
+      ],
+    });
+
+    const fakeTrain = {
+      queue: [] as JobSpec[],
+      enqueue(job: JobSpec) {
+        this.queue.push(job);
+      },
+      getQueue() {
+        return [...this.queue];
+      },
+      async processNext() {
+        this.queue.shift();
+        return { success: false, type: 'test_failure', output: 'tests failed' };
+      },
+    };
+
+    const orchestrator = new Orchestrator(monitor as any, {
+      defaultPlacement: 'session',
+      pollInterval: 10000,
+      idleThreshold: 300000,
+      worktreeBasePath: '/tmp',
+      omo: { enabled: false, defaultMode: 'vanilla' },
+    } as any);
+    (orchestrator as any).mergeTrain = fakeTrain;
+
+    await (orchestrator as any).reconcile();
+
+    expect(planState?.status).toBe('paused');
+    expect(planState?.checkpoint).toBe('on_error');
+    expect(planStateMod.updatePlanJob).toHaveBeenCalledWith('plan-1', 'test-fail-job', {
+      status: 'failed',
+      error: 'tests failed',
+    });
+  });
+
+  it('autopilot plan should pause on job monitor failure', async () => {
+    const orchestrator = new Orchestrator(monitor as any, {
+      defaultPlacement: 'session',
+      pollInterval: 10000,
+      idleThreshold: 300000,
+      worktreeBasePath: '/tmp',
+      omo: { enabled: false, defaultMode: 'vanilla' },
+    } as any);
+    spyOn(orchestrator as any, 'startReconciler').mockImplementation(() => {});
+
+    await orchestrator.startPlan(
+      makePlan({
+        status: 'pending',
+        mode: 'autopilot',
+        jobs: [makeJob('monitor-fail', { status: 'queued' })],
+      }),
+    );
+
+    monitor.emit('failed', {
+      id: 'j1',
+      name: 'monitor-fail',
+      planId: 'plan-1',
+    } as Job);
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(planState?.status).toBe('paused');
+    expect(planState?.checkpoint).toBe('on_error');
   });
 
   it('cancelPlan stops plan jobs and cleans up integration branch', async () => {
@@ -362,6 +479,79 @@ describe('orchestrator', () => {
     expect(planStateMod.clearPlan).toHaveBeenCalled();
   });
 
+  it('should mark job needs_rebase and pause plan when trial merge detects conflicts', async () => {
+    planState = makePlan({
+      status: 'running',
+      jobs: [
+        makeJob('merge-conflict', { status: 'completed', mergeOrder: 0, branch: 'mc/merge-conflict' }),
+      ],
+    });
+
+    spyOn(mergeTrainMod, 'checkMergeability').mockResolvedValue({
+      canMerge: false,
+      conflicts: ['src/index.ts'],
+    });
+
+    const orchestrator = new Orchestrator(monitor as any, {
+      defaultPlacement: 'session',
+      pollInterval: 10000,
+      idleThreshold: 300000,
+      worktreeBasePath: '/tmp',
+      omo: { enabled: false, defaultMode: 'vanilla' },
+    } as any);
+
+    await (orchestrator as any).reconcile();
+
+    expect(planStateMod.updatePlanJob).toHaveBeenCalledWith('plan-1', 'merge-conflict', {
+      status: 'needs_rebase',
+      error: 'src/index.ts',
+    });
+    expect(planState?.status).toBe('paused');
+    expect(planState?.checkpoint).toBe('on_error');
+  });
+
+  it('should proceed to merge when trial merge succeeds', async () => {
+    planState = makePlan({
+      status: 'running',
+      jobs: [
+        makeJob('clean-merge', { status: 'completed', mergeOrder: 0, branch: 'mc/clean-merge' }),
+      ],
+    });
+
+    spyOn(mergeTrainMod, 'checkMergeability').mockResolvedValue({ canMerge: true });
+
+    const fakeTrain = {
+      queue: [] as JobSpec[],
+      enqueue(job: JobSpec) {
+        this.queue.push(job);
+      },
+      getQueue() {
+        return [...this.queue];
+      },
+      async processNext() {
+        this.queue.shift();
+        return { success: true, mergedAt: '2026-01-02T00:00:00.000Z' };
+      },
+    };
+
+    const orchestrator = new Orchestrator(monitor as any, {
+      defaultPlacement: 'session',
+      pollInterval: 10000,
+      idleThreshold: 300000,
+      worktreeBasePath: '/tmp',
+      omo: { enabled: false, defaultMode: 'vanilla' },
+    } as any);
+    (orchestrator as any).mergeTrain = fakeTrain;
+
+    await (orchestrator as any).reconcile();
+
+    expect(planStateMod.updatePlanJob).toHaveBeenCalledWith('plan-1', 'clean-merge', { status: 'merging' });
+    expect(planStateMod.updatePlanJob).toHaveBeenCalledWith('plan-1', 'clean-merge', {
+      status: 'merged',
+      mergedAt: '2026-01-02T00:00:00.000Z',
+    });
+  });
+
   it('resumePlan reconstructs state and marks dead running panes failed', async () => {
     planState = makePlan({
       status: 'running',
@@ -401,6 +591,114 @@ describe('orchestrator', () => {
     );
     expect(planState?.status).toBe('failed');
     expect(startSpy).not.toHaveBeenCalled();
+  });
+
+  it('should fail job and pause plan when touchSet is violated', async () => {
+    planState = makePlan({
+      status: 'running',
+      jobs: [
+        makeJob('touch-violator', {
+          status: 'completed',
+          mergeOrder: 0,
+          branch: 'mc/touch-violator',
+          touchSet: ['src/**'],
+        }),
+      ],
+    });
+
+    spyOn(mergeTrainMod, 'validateTouchSet').mockResolvedValue({
+      valid: false,
+      violations: ['README.md'],
+      changedFiles: ['src/app.ts', 'README.md'],
+    });
+
+    const orchestrator = new Orchestrator(monitor as any, {
+      defaultPlacement: 'session',
+      pollInterval: 10000,
+      idleThreshold: 300000,
+      worktreeBasePath: '/tmp',
+      omo: { enabled: false, defaultMode: 'vanilla' },
+    } as any);
+
+    await (orchestrator as any).reconcile();
+
+    expect(planStateMod.updatePlanJob).toHaveBeenCalledWith(
+      'plan-1',
+      'touch-violator',
+      expect.objectContaining({
+        status: 'failed',
+        error: expect.stringContaining('Modified files outside touchSet'),
+      }),
+    );
+    expect(planState?.status).toBe('paused');
+    expect(planState?.checkpoint).toBe('on_error');
+  });
+
+  it('should allow transition to ready_to_merge when touchSet is satisfied', async () => {
+    planState = makePlan({
+      status: 'running',
+      jobs: [
+        makeJob('touch-ok', {
+          status: 'completed',
+          mergeOrder: 0,
+          branch: 'mc/touch-ok',
+          touchSet: ['src/**'],
+        }),
+      ],
+    });
+
+    spyOn(mergeTrainMod, 'validateTouchSet').mockResolvedValue({
+      valid: true,
+      changedFiles: ['src/app.ts'],
+    });
+
+    const orchestrator = new Orchestrator(monitor as any, {
+      defaultPlacement: 'session',
+      pollInterval: 10000,
+      idleThreshold: 300000,
+      worktreeBasePath: '/tmp',
+      omo: { enabled: false, defaultMode: 'vanilla' },
+    } as any);
+
+    await (orchestrator as any).reconcile();
+
+    expect(planStateMod.updatePlanJob).toHaveBeenCalledWith(
+      'plan-1',
+      'touch-ok',
+      { status: 'ready_to_merge' },
+    );
+  });
+
+  it('should skip touchSet validation when touchSet is not defined', async () => {
+    planState = makePlan({
+      status: 'running',
+      jobs: [
+        makeJob('no-touchset', {
+          status: 'completed',
+          mergeOrder: 0,
+          branch: 'mc/no-touchset',
+        }),
+      ],
+    });
+
+    const validateSpy = spyOn(mergeTrainMod, 'validateTouchSet');
+
+    const orchestrator = new Orchestrator(monitor as any, {
+      defaultPlacement: 'session',
+      pollInterval: 10000,
+      idleThreshold: 300000,
+      worktreeBasePath: '/tmp',
+      omo: { enabled: false, defaultMode: 'vanilla' },
+    } as any);
+
+    await (orchestrator as any).reconcile();
+
+    expect(validateSpy).not.toHaveBeenCalled();
+    expect(planStateMod.updatePlanJob).toHaveBeenCalledWith(
+      'plan-1',
+      'no-touchset',
+      { status: 'ready_to_merge' },
+    );
   });
 });
 

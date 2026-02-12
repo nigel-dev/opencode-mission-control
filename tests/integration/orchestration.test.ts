@@ -447,7 +447,7 @@ describe('orchestration integration', () => {
     expect(tmux.sendKeys).toHaveBeenCalledTimes(0);
   }, 30000);
 
-  it('marks plan failed when a merge conflict occurs and leaves integration clean', async () => {
+  it('pauses plan on merge conflict for retry instead of failing', async () => {
     const monitor = new FakeMonitor();
     mockTmux();
     const orchestrator = new Orchestrator(monitor as any, {
@@ -497,22 +497,23 @@ describe('orchestration integration', () => {
     await waitForCondition(async () => {
       const currentPlan = await loadPlan();
       const second = currentPlan?.jobs.find((job) => job.id === 'job-2');
-      return currentPlan?.status === 'failed' && second?.status === 'conflict';
+      return currentPlan?.status === 'paused' && second?.status === 'needs_rebase';
     }, 8000);
 
-    const failedPlan = await loadPlan();
-    expect(failedPlan?.status).toBe('failed');
-    expect(failedPlan?.jobs.find((job) => job.id === 'job-2')?.status).toBe('conflict');
+    const pausedPlan = await loadPlan();
+    expect(pausedPlan?.status).toBe('paused');
+    expect(pausedPlan?.checkpoint).toBe('on_error');
+    expect(pausedPlan?.jobs.find((job) => job.id === 'job-2')?.status).toBe('needs_rebase');
 
     const status = await mustExec(
       ['git', 'status', '--porcelain'],
-      failedPlan!.integrationWorktree!,
+      pausedPlan!.integrationWorktree!,
     );
     expect(status).toBe('');
 
     const mergeHead = await exec(
       ['git', 'rev-parse', '-q', '--verify', 'MERGE_HEAD'],
-      failedPlan!.integrationWorktree!,
+      pausedPlan!.integrationWorktree!,
     );
     expect(mergeHead.exitCode).not.toBe(0);
   }, 30000);

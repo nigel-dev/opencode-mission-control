@@ -50,6 +50,71 @@ const INSTALL_COMMAND_BY_LOCKFILE = [
 
 
 
+export async function validateTouchSet(
+  jobBranch: string,
+  baseBranch: string,
+  touchSet: string[],
+  opts?: { cwd?: string },
+): Promise<{ valid: boolean; violations?: string[]; changedFiles?: string[] }> {
+  if (touchSet.length === 0) {
+    return { valid: true };
+  }
+
+  const diffResult = await gitCommand(['diff', '--name-only', `${baseBranch}...${jobBranch}`], opts);
+  if (diffResult.exitCode !== 0) {
+    return { valid: false, violations: [`Failed to diff: ${diffResult.stderr}`] };
+  }
+
+  const changedFiles = diffResult.stdout.split('\n').map(f => f.trim()).filter(Boolean);
+  if (changedFiles.length === 0) {
+    return { valid: true, changedFiles: [] };
+  }
+
+  const violations: string[] = [];
+  for (const file of changedFiles) {
+    const matchesAny = touchSet.some(pattern => {
+      const glob = new Bun.Glob(pattern);
+      return glob.match(file);
+    });
+    if (!matchesAny) {
+      violations.push(file);
+    }
+  }
+
+  return {
+    valid: violations.length === 0,
+    violations: violations.length > 0 ? violations : undefined,
+    changedFiles,
+  };
+}
+
+export async function checkMergeability(
+  integrationWorktree: string,
+  jobBranch: string,
+): Promise<{ canMerge: boolean; conflicts?: string[] }> {
+  const testMerge = await gitCommand([
+    '-C', integrationWorktree,
+    'merge', '--no-commit', '--no-ff', jobBranch,
+  ]);
+
+  // Always clean up — leave worktree pristine
+  await gitCommand(['-C', integrationWorktree, 'merge', '--abort']).catch(() => {});
+  await gitCommand(['-C', integrationWorktree, 'reset', '--hard', 'HEAD']).catch(() => {});
+  await gitCommand(['-C', integrationWorktree, 'clean', '-fd']).catch(() => {});
+
+  if (testMerge.exitCode !== 0) {
+    const conflicts = extractConflicts(
+      [testMerge.stdout, testMerge.stderr].filter(Boolean).join('\n'),
+    );
+    return {
+      canMerge: false,
+      conflicts: conflicts.length > 0 ? conflicts : undefined,
+    };
+  }
+
+  return { canMerge: true };
+}
+
 async function rollbackMerge(worktreePath: string): Promise<void> {
   // Try merge --abort first
   await gitCommand(['-C', worktreePath, 'merge', '--abort']).catch(() => {});
