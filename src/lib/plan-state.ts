@@ -33,7 +33,7 @@ export async function loadPlan(): Promise<PlanSpec | null> {
     return PlanSpecSchema.parse(parsed);
   } catch (error) {
     if (error instanceof z.ZodError) {
-      throw new Error(`Invalid plan state in ${filePath}: ${error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ')}`);
+      throw new Error(`Invalid plan state in ${filePath}: ${error.issues.map(e => `${e.path.join('.')}: ${e.message}`).join(', ')}`);
     }
     throw new Error(`Failed to load plan state from ${filePath}: ${error}`);
   }
