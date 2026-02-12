@@ -1,10 +1,7 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import * as planState from '../../src/lib/plan-state';
 import * as orchestrator from '../../src/lib/orchestrator';
 import * as config from '../../src/lib/config';
-import * as monitor from '../../src/lib/monitor';
-import * as integration from '../../src/lib/integration';
-import * as worktreeSetup from '../../src/lib/worktree-setup';
 
 const { mc_plan_approve } = await import('../../src/tools/plan-approve');
 
@@ -15,23 +12,20 @@ const mockContext = {
   directory: '/test/dir',
   worktree: '/test/worktree',
   abort: new AbortController().signal,
-  metadata: vi.fn(),
-  ask: vi.fn(),
+  metadata: mock(),
+  ask: mock(),
 } as any;
 
 describe('mc_plan_approve', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
-    vi.spyOn(config, 'loadConfig').mockResolvedValue({
+    mock.restore();
+    spyOn(config, 'loadConfig').mockResolvedValue({
       defaultPlacement: 'session',
       pollInterval: 10000,
       idleThreshold: 300000,
       worktreeBasePath: '/tmp',
       omo: { enabled: false, defaultMode: 'vanilla' },
     });
-    vi.spyOn(monitor, 'JobMonitor').mockImplementation(
-      () => ({ start: vi.fn(), on: vi.fn(), off: vi.fn() }) as any,
-    );
   });
 
   describe('tool definition', () => {
@@ -42,9 +36,9 @@ describe('mc_plan_approve', () => {
 
   describe('no active plan', () => {
     it('should throw error when no plan exists', async () => {
-      vi.spyOn(planState, 'loadPlan').mockResolvedValue(null);
+      spyOn(planState, 'loadPlan').mockResolvedValue(null);
 
-      await expect(
+      expect(
         mc_plan_approve.execute({}, mockContext),
       ).rejects.toThrow('No active plan to approve');
     });
@@ -52,7 +46,7 @@ describe('mc_plan_approve', () => {
 
   describe('non-pending plan', () => {
     it('should throw error when plan is not pending', async () => {
-      vi.spyOn(planState, 'loadPlan').mockResolvedValue({
+      spyOn(planState, 'loadPlan').mockResolvedValue({
         id: 'plan-1',
         name: 'Test Plan',
         mode: 'copilot',
@@ -63,7 +57,7 @@ describe('mc_plan_approve', () => {
         createdAt: new Date().toISOString(),
       });
 
-      await expect(
+      expect(
         mc_plan_approve.execute({}, mockContext),
       ).rejects.toThrow('not pending');
     });
@@ -71,7 +65,7 @@ describe('mc_plan_approve', () => {
 
   describe('retry validation', () => {
     it('should reset a failed job to ready_to_merge when retry is provided', async () => {
-      vi.spyOn(planState, 'loadPlan').mockResolvedValue({
+      spyOn(planState, 'loadPlan').mockResolvedValue({
         id: 'plan-1',
         name: 'Retry Plan',
         mode: 'autopilot',
@@ -86,16 +80,11 @@ describe('mc_plan_approve', () => {
         createdAt: new Date().toISOString(),
       });
 
-      const mockSavePlan = vi.spyOn(planState, 'savePlan').mockResolvedValue(undefined);
-      const mockUpdatePlanJob = vi.spyOn(planState, 'updatePlanJob').mockResolvedValue(undefined);
-      const mockResumePlan = vi.fn().mockResolvedValue(undefined);
-      vi.spyOn(orchestrator, 'Orchestrator').mockImplementation(
-        () =>
-          ({
-            resumePlan: mockResumePlan,
-            setPlanModelSnapshot: vi.fn(),
-          }) as any,
-      );
+      const mockSavePlan = spyOn(planState, 'savePlan').mockResolvedValue(undefined);
+      const mockUpdatePlanJob = spyOn(planState, 'updatePlanJob').mockResolvedValue(undefined);
+      const mockResumePlan = mock().mockResolvedValue(undefined);
+      spyOn(orchestrator.Orchestrator.prototype, 'resumePlan').mockImplementation(mockResumePlan);
+      spyOn(orchestrator.Orchestrator.prototype, 'setPlanModelSnapshot').mockImplementation(() => {});
 
       const result = await mc_plan_approve.execute({ checkpoint: 'on_error', retry: 'bad-job' }, mockContext);
 
@@ -108,7 +97,7 @@ describe('mc_plan_approve', () => {
     });
 
     it('should allow retry of needs_rebase jobs', async () => {
-      vi.spyOn(planState, 'loadPlan').mockResolvedValue({
+      spyOn(planState, 'loadPlan').mockResolvedValue({
         id: 'plan-1',
         name: 'Test Plan',
         mode: 'supervisor',
@@ -122,16 +111,11 @@ describe('mc_plan_approve', () => {
         createdAt: new Date().toISOString(),
       });
 
-      const mockUpdatePlanJob = vi.spyOn(planState, 'updatePlanJob').mockResolvedValue(undefined);
-      const mockSavePlan = vi.spyOn(planState, 'savePlan').mockResolvedValue(undefined);
-      const mockResumePlan = vi.fn().mockResolvedValue(undefined);
-      vi.spyOn(orchestrator, 'Orchestrator').mockImplementation(
-        () =>
-          ({
-            resumePlan: mockResumePlan,
-            setPlanModelSnapshot: vi.fn(),
-          }) as any,
-      );
+      const mockUpdatePlanJob = spyOn(planState, 'updatePlanJob').mockResolvedValue(undefined);
+      const mockSavePlan = spyOn(planState, 'savePlan').mockResolvedValue(undefined);
+      const mockResumePlan = mock().mockResolvedValue(undefined);
+      spyOn(orchestrator.Orchestrator.prototype, 'resumePlan').mockImplementation(mockResumePlan);
+      spyOn(orchestrator.Orchestrator.prototype, 'setPlanModelSnapshot').mockImplementation(() => {});
 
       const result = await mc_plan_approve.execute({ checkpoint: 'on_error', retry: 'conflicting-job' }, mockContext);
 
@@ -143,7 +127,7 @@ describe('mc_plan_approve', () => {
     });
 
     it('should throw if retry job name is not found in plan', async () => {
-      vi.spyOn(planState, 'loadPlan').mockResolvedValue({
+      spyOn(planState, 'loadPlan').mockResolvedValue({
         id: 'plan-1',
         name: 'Retry Plan',
         mode: 'autopilot',
@@ -155,13 +139,13 @@ describe('mc_plan_approve', () => {
         createdAt: new Date().toISOString(),
       });
 
-      await expect(
+      expect(
         mc_plan_approve.execute({ checkpoint: 'on_error', retry: 'nonexistent' }, mockContext),
       ).rejects.toThrow('Job "nonexistent" not found in plan');
     });
 
     it('should reject retry of non-retryable jobs', async () => {
-      vi.spyOn(planState, 'loadPlan').mockResolvedValue({
+      spyOn(planState, 'loadPlan').mockResolvedValue({
         id: 'plan-1',
         name: 'Test Plan',
         mode: 'supervisor',
@@ -173,13 +157,13 @@ describe('mc_plan_approve', () => {
         createdAt: new Date().toISOString(),
       });
 
-      await expect(
+      expect(
         mc_plan_approve.execute({ retry: 'running-job' }, mockContext),
       ).rejects.toThrow('not in a retryable state');
     });
 
     it('should clear checkpoint without retry (backward compatible)', async () => {
-      vi.spyOn(planState, 'loadPlan').mockResolvedValue({
+      spyOn(planState, 'loadPlan').mockResolvedValue({
         id: 'plan-1',
         name: 'Checkpoint Plan',
         mode: 'supervisor',
@@ -191,15 +175,10 @@ describe('mc_plan_approve', () => {
         createdAt: new Date().toISOString(),
       });
 
-      const mockSavePlan = vi.spyOn(planState, 'savePlan').mockResolvedValue(undefined);
-      const mockResumePlan = vi.fn().mockResolvedValue(undefined);
-      vi.spyOn(orchestrator, 'Orchestrator').mockImplementation(
-        () =>
-          ({
-            resumePlan: mockResumePlan,
-            setPlanModelSnapshot: vi.fn(),
-          }) as any,
-      );
+      const mockSavePlan = spyOn(planState, 'savePlan').mockResolvedValue(undefined);
+      const mockResumePlan = mock().mockResolvedValue(undefined);
+      spyOn(orchestrator.Orchestrator.prototype, 'resumePlan').mockImplementation(mockResumePlan);
+      spyOn(orchestrator.Orchestrator.prototype, 'setPlanModelSnapshot').mockImplementation(() => {});
 
       const result = await mc_plan_approve.execute({ checkpoint: 'pre_merge' }, mockContext);
 
@@ -213,7 +192,7 @@ describe('mc_plan_approve', () => {
 
   describe('approve pending plan', () => {
     it('should transition plan to running and resume via orchestrator', async () => {
-      vi.spyOn(planState, 'loadPlan').mockResolvedValue({
+      spyOn(planState, 'loadPlan').mockResolvedValue({
         id: 'plan-1',
         name: 'Feature Sprint',
         mode: 'copilot',
@@ -222,25 +201,15 @@ describe('mc_plan_approve', () => {
           { id: 'j1', name: 'auth', prompt: 'do auth', status: 'queued' },
           { id: 'j2', name: 'api', prompt: 'do api', status: 'queued' },
         ],
-        integrationBranch: 'mc/integration-plan-1',
+        integrationBranch: 'mc/integration/plan-1',
         baseCommit: 'abc123',
         createdAt: new Date().toISOString(),
       });
 
-      const mockSavePlan = vi.spyOn(planState, 'savePlan').mockResolvedValue(undefined);
-      const mockResumePlan = vi.fn().mockResolvedValue(undefined);
-      vi.spyOn(orchestrator, 'Orchestrator').mockImplementation(
-        () =>
-          ({
-            resumePlan: mockResumePlan,
-            setPlanModelSnapshot: vi.fn(),
-          }) as any,
-      );
-      vi.spyOn(integration, 'createIntegrationBranch').mockResolvedValue({
-        branch: 'mc/integration-plan-1',
-        worktreePath: '/tmp/integration-plan-1',
-      });
-      vi.spyOn(worktreeSetup, 'resolvePostCreateHook').mockReturnValue(undefined as any);
+      const mockSavePlan = spyOn(planState, 'savePlan').mockResolvedValue(undefined);
+      const mockResumePlan = mock().mockResolvedValue(undefined);
+      spyOn(orchestrator.Orchestrator.prototype, 'resumePlan').mockImplementation(mockResumePlan);
+      spyOn(orchestrator.Orchestrator.prototype, 'setPlanModelSnapshot').mockImplementation(() => {});
 
       const result = await mc_plan_approve.execute({}, mockContext);
 

@@ -6,7 +6,6 @@ import * as integrationMod from '../../src/lib/integration';
 import * as jobStateMod from '../../src/lib/job-state';
 import * as mergeTrainMod from '../../src/lib/merge-train';
 import { Orchestrator, hasCircularDependency, topologicalSort } from '../../src/lib/orchestrator';
-import * as mergeTrainMod from '../../src/lib/merge-train';
 import * as planStateMod from '../../src/lib/plan-state';
 import * as tmuxMod from '../../src/lib/tmux';
 import * as worktreeMod from '../../src/lib/worktree';

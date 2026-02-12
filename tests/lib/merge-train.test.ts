@@ -561,8 +561,6 @@ describe('checkMergeability', () => {
     const status = await mustExec(['git', 'status', '--porcelain'], testRepo.integrationWorktree);
     expect(status).toBe('');
 
-    const headBefore = await mustExec(['git', 'rev-parse', 'HEAD'], testRepo.integrationWorktree);
-
     writeFileSync(join(testRepo.repoDir, 'shared2.txt'), 'base\n');
     await mustExec(['git', 'add', 'shared2.txt'], testRepo.repoDir);
     await mustExec(['git', 'commit', '-m', 'add shared2'], testRepo.repoDir);
