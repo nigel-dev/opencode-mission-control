@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import * as planState from '../../src/lib/plan-state';
 import * as orchestrator from '../../src/lib/orchestrator';
 import * as config from '../../src/lib/config';
+import * as integration from '../../src/lib/integration';
 
 const { mc_plan_approve } = await import('../../src/tools/plan-approve');
 
@@ -210,6 +211,10 @@ describe('mc_plan_approve', () => {
       const mockResumePlan = mock().mockResolvedValue(undefined);
       spyOn(orchestrator.Orchestrator.prototype, 'resumePlan').mockImplementation(mockResumePlan);
       spyOn(orchestrator.Orchestrator.prototype, 'setPlanModelSnapshot').mockImplementation(() => {});
+      spyOn(integration, 'createIntegrationBranch').mockResolvedValue({
+        branch: 'mc/integration-plan-1',
+        worktreePath: '/tmp/mc-integration-plan-1',
+      });
 
       const result = await mc_plan_approve.execute({}, mockContext);
 
