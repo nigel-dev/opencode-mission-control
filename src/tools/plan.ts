@@ -111,7 +111,7 @@ export const mc_plan: ToolDefinition = tool({
       placement: args.placement,
       status: 'pending',
       jobs: jobSpecs,
-      integrationBranch: `mc/integration/${planId.slice(0, 8)}`,
+      integrationBranch: `mc/integration-${planId}`,
       baseCommit,
       createdAt: new Date().toISOString(),
     };
