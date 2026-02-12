@@ -166,6 +166,7 @@ export class Orchestrator {
   private toastCallback: ToastCallback | null = null;
   private notifyCallback: NotifyCallback | null = null;
   private jobsLaunchedCount = 0;
+  private approvedForMerge = new Set<string>();
   private firstJobCompleted = false;
 
   private getMergeTrainConfig(): {
@@ -280,10 +281,20 @@ export class Orchestrator {
         `Checkpoint mismatch: expected "${this.checkpoint}", got "${checkpoint}"`,
       );
     }
+    const wasPreMerge = this.checkpoint === 'pre_merge';
     this.checkpoint = null;
 
     const plan = await loadPlan();
     if (plan && plan.status === 'paused') {
+      // Track jobs approved for merge so reconciler doesn't re-checkpoint them
+      if (wasPreMerge) {
+        for (const job of plan.jobs) {
+          if (job.status === 'ready_to_merge') {
+            this.approvedForMerge.add(job.name);
+          }
+        }
+      }
+
       plan.status = 'running';
       plan.checkpoint = null;
       await savePlan(plan);
@@ -483,7 +494,7 @@ export class Orchestrator {
           continue;
         }
 
-        if (this.isSupervisor(plan)) {
+        if (this.isSupervisor(plan) && !this.approvedForMerge.has(job.name)) {
           await this.setCheckpoint('pre_merge', plan);
           return;
         }
@@ -492,6 +503,7 @@ export class Orchestrator {
         this.mergeTrain.enqueue(job);
         await updatePlanJob(plan.id, job.name, { status: 'merging' });
         job.status = 'merging';
+        this.approvedForMerge.delete(job.name);
       }
 
       if (this.mergeTrain && this.mergeTrain.getQueue().length > 0) {

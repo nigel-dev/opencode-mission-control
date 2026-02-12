@@ -388,6 +388,53 @@ describe('orchestrator modes', () => {
       expect(orchestrator.clearCheckpoint('pre_pr')).rejects.toThrow('Checkpoint mismatch');
     });
 
+    it('does not re-checkpoint after pre_merge approval', async () => {
+      planState = makePlan({
+        mode: 'supervisor',
+        status: 'running',
+        jobs: [
+          makeJob('merge-me', { status: 'completed', mergeOrder: 0, branch: 'mc/merge-me' }),
+        ],
+      });
+
+      const fakeTrain = {
+        queue: [] as JobSpec[],
+        enqueue(job: JobSpec) {
+          this.queue.push(job);
+        },
+        getQueue() {
+          return [...this.queue];
+        },
+        async processNext() {
+          this.queue.shift();
+          return { success: true, mergedAt: '2026-01-02T00:00:00.000Z' };
+        },
+      };
+
+      const orchestrator = new Orchestrator(monitor as any, DEFAULT_CONFIG as any, toastCallback);
+
+      // First reconcile: job transitions completed -> ready_to_merge, then supervisor checkpoints
+      await (orchestrator as any).reconcile();
+      expect(orchestrator.getCheckpoint()).toBe('pre_merge');
+      expect(planState?.status).toBe('paused');
+
+      // Inject fake merge train before clearing so the auto-reconcile uses it
+      (orchestrator as any).mergeTrain = fakeTrain;
+
+      // Simulate mc_plan_approve clearing the checkpoint
+      await orchestrator.clearCheckpoint('pre_merge');
+      expect(orchestrator.getCheckpoint()).toBeNull();
+      expect(planState?.status).toBe('running');
+
+      // Wait for the auto-reconcile triggered by clearCheckpoint/startReconciler
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      // Job should have moved to merging (enqueued in merge train) and then merged
+      expect(orchestrator.getCheckpoint()).not.toBe('pre_merge');
+      const mergeJob = planState?.jobs.find(j => j.name === 'merge-me');
+      expect(mergeJob?.status).toBe('merged');
+    });
+
     it('sends checkpoint toast notifications', async () => {
       planState = makePlan({
         mode: 'supervisor',
