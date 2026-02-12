@@ -163,7 +163,7 @@ AI: → mc_sync(name: "feature-checkout", strategy: "rebase")
 
 ```
 AI: → mc_plan(
-      name: "search-upgrade",
+      name: "feat: search upgrade",
       mode: "autopilot",
       jobs: [
         { name: "schema", prompt: "Add search index tables" },
@@ -212,7 +212,7 @@ mc_merge("add-pricing")   → into main
 
 **Typical plan workflow:**
 ```
-mc_plan("search-upgrade", mode: "autopilot", jobs: [
+mc_plan("feat: search upgrade", mode: "autopilot", jobs: [
   { name: "schema", prompt: "Add search tables..." },
   { name: "api", prompt: "Build search endpoints...", dependsOn: ["schema"] },
   { name: "ui", prompt: "Build search UI...", dependsOn: ["api"] }
@@ -407,8 +407,8 @@ Push the job's branch and create a GitHub Pull Request. Requires the `gh` CLI to
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `name` | `string` | Yes | — | Job name |
-| `title` | `string` | No | Job prompt | PR title |
-| `body` | `string` | No | — | PR description |
+| `title` | `string` | No | Job name | PR title — use [Conventional Commits](https://www.conventionalcommits.org/) format (e.g. `feat: add login`, `fix: resolve timeout`) |
+| `body` | `string` | No | PR template or auto-generated | PR body. If omitted, uses `.github/pull_request_template.md` if found, otherwise generates a summary. |
 | `draft` | `boolean` | No | `false` | Create as draft PR |
 
 #### `mc_sync`
@@ -443,7 +443,7 @@ Create and start a multi-job orchestrated plan.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `name` | `string` | Yes | — | Plan name |
+| `name` | `string` | Yes | — | Plan name — used as the PR title, so use [Conventional Commits](https://www.conventionalcommits.org/) format (e.g. `feat: add search`, `fix: resolve auth bugs`) |
 | `jobs` | `JobSpec[]` | Yes | — | Array of job definitions (see below) |
 | `mode` | `"autopilot"` \| `"copilot"` \| `"supervisor"` | No | `"autopilot"` | Execution mode |
 | `placement` | `"session"` \| `"window"` | No | Config default | tmux placement for all jobs in this plan |
@@ -474,7 +474,7 @@ Create and start a multi-job orchestrated plan.
 mc_plan
   │
   ├─ Validate (unique names, valid deps, no circular deps)
-  ├─ Create integration branch: mc/integration/{plan-id}
+   ├─ Create integration branch: mc/integration-{plan-id}
   │
   ├─ [copilot] ──→ Pause (pending) ──→ mc_plan_approve ──→ Continue
   │
@@ -534,7 +534,7 @@ This example uses `mc_plan` instead of four separate `mc_launch` calls because:
 AI: I'll create a plan for the dashboard feature with proper dependencies.
 
 → mc_plan(
-    name: "dashboard-feature",
+    name: "feat: analytics dashboard",
     mode: "autopilot",
     jobs: [
       {
@@ -571,7 +571,7 @@ Result:
 
 ### Merge Train
 
-The Merge Train is the engine behind plan integration. Each completed job's branch is merged into a dedicated **integration branch** (`mc/integration/{plan-id}`):
+The Merge Train is the engine behind plan integration. Each completed job's branch is merged into a dedicated **integration branch** (`mc/integration-{plan-id}`):
 
 1. **Merge** — `git merge --no-ff {job-branch}` into the integration worktree
 2. **Test** — If a `testCommand` is configured (or detected from `package.json`), it runs after each merge

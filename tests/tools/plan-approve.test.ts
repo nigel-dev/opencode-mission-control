@@ -3,6 +3,8 @@ import * as planState from '../../src/lib/plan-state';
 import * as orchestrator from '../../src/lib/orchestrator';
 import * as config from '../../src/lib/config';
 import * as monitor from '../../src/lib/monitor';
+import * as integration from '../../src/lib/integration';
+import * as worktreeSetup from '../../src/lib/worktree-setup';
 
 const { mc_plan_approve } = await import('../../src/tools/plan-approve');
 
@@ -78,7 +80,7 @@ describe('mc_plan_approve', () => {
           { id: 'j1', name: 'auth', prompt: 'do auth', status: 'queued' },
           { id: 'j2', name: 'api', prompt: 'do api', status: 'queued' },
         ],
-        integrationBranch: 'mc/integration/plan-1',
+        integrationBranch: 'mc/integration-plan-1',
         baseCommit: 'abc123',
         createdAt: new Date().toISOString(),
       });
@@ -92,6 +94,11 @@ describe('mc_plan_approve', () => {
             setPlanModelSnapshot: vi.fn(),
           }) as any,
       );
+      vi.spyOn(integration, 'createIntegrationBranch').mockResolvedValue({
+        branch: 'mc/integration-plan-1',
+        worktreePath: '/tmp/integration-plan-1',
+      });
+      vi.spyOn(worktreeSetup, 'resolvePostCreateHook').mockReturnValue(undefined as any);
 
       const result = await mc_plan_approve.execute({}, mockContext);
 
