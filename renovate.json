@@ -1,0 +1,39 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    "schedule:weekends",
+    ":semanticCommits",
+    ":automergeMinor",
+    ":automergePatch"
+  ],
+  "labels": ["dependencies"],
+  "prHourlyLimit": 3,
+  "prConcurrentLimit": 5,
+  "rebaseWhen": "behind-base-branch",
+  "packageRules": [
+    {
+      "description": "Group non-major npm dependency updates",
+      "matchManagers": ["bun"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "groupName": "npm non-major dependencies",
+      "commitMessagePrefix": "chore(deps):",
+      "labels": ["dependencies"]
+    },
+    {
+      "description": "Major npm dependency updates (separate PRs for review)",
+      "matchManagers": ["bun"],
+      "matchUpdateTypes": ["major"],
+      "commitMessagePrefix": "chore(deps):",
+      "labels": ["dependencies"],
+      "automerge": false
+    },
+    {
+      "description": "Group GitHub Actions updates",
+      "matchManagers": ["github-actions"],
+      "groupName": "github actions",
+      "commitMessagePrefix": "ci(deps):",
+      "labels": ["dependencies", "ci"]
+    }
+  ]
+}
