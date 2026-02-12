@@ -17,11 +17,11 @@
 <p align="center">
   <a href="#quick-start">Quick Start</a> &bull;
   <a href="#more-usage-examples">Examples</a> &bull;
+  <a href="#choosing-between-launch-and-plan">Launch vs Plan</a> &bull;
   <a href="#how-it-works">How It Works</a> &bull;
   <a href="#tools-reference">Tools Reference</a> &bull;
   <a href="#orchestrated-plans">Orchestrated Plans</a> &bull;
   <a href="#configuration">Configuration</a> &bull;
-  <a href="#release--npm-deploy">Release</a> &bull;
   <a href="#faq">FAQ</a>
 </p>
 
@@ -174,6 +174,111 @@ AI: → mc_plan(
 ```
 
 Because waiting is overrated.
+
+---
+
+## Choosing Between Launch and Plan
+
+The two main entry points — `mc_launch` and `mc_plan` — serve different workflows. Picking the right one saves you time and merge headaches.
+
+### Use `mc_launch` when...
+
+| Scenario | Why Launch |
+|----------|-----------|
+| **Independent tasks on different files** | No dependency management needed. Launch both, merge in any order. |
+| **Quick experiments or spikes** | Spin up a job, review the diff, keep it or kill it. Zero ceremony. |
+| **You want full manual control** | You decide what merges, when, and in what order. |
+| **More than 3 concurrent jobs** | Plans respect `maxParallel` (default 3). Standalone launches have no limit. |
+
+**Typical launch workflow:**
+```
+mc_launch("fix-auth", "Fix the JWT expiry bug in src/auth/")
+mc_launch("add-pricing", "Build pricing table in src/components/pricing/")
+  ↓ both complete
+mc_diff("fix-auth")       → review
+mc_merge("fix-auth")      → into main
+mc_diff("add-pricing")    → review
+mc_merge("add-pricing")   → into main
+```
+
+### Use `mc_plan` when...
+
+| Scenario | Why Plan |
+|----------|---------|
+| **Work has a dependency chain** | Job B needs job A to finish first. `dependsOn` handles ordering and code propagation automatically. |
+| **You want automated test gating** | The merge train runs your test suite after each merge and rolls back on failure. You don't get this with standalone launches. |
+| **You want a single PR for a feature** | Plan creates one integration branch and opens a single PR when everything merges. |
+| **You want hands-off execution** | Autopilot mode: launch, merge, test, PR — all automatic. Walk away. |
+
+**Typical plan workflow:**
+```
+mc_plan("search-upgrade", mode: "autopilot", jobs: [
+  { name: "schema", prompt: "Add search tables..." },
+  { name: "api", prompt: "Build search endpoints...", dependsOn: ["schema"] },
+  { name: "ui", prompt: "Build search UI...", dependsOn: ["api"] }
+])
+  ↓ automatic
+schema launches → completes → merges into integration branch
+api launches (sees schema's changes) → completes → merges → tests run
+ui launches (sees schema + api changes) → completes → merges → tests run
+  ↓
+PR created automatically
+```
+
+### Quick Decision Guide
+
+```
+Do the jobs touch completely different files?
+  YES → mc_launch both in parallel, merge independently.
+
+Does job B need code that job A creates?
+  YES → mc_plan with dependsOn. B launches from the integration
+        branch and sees A's changes.
+
+Do you want tests to run after each merge?
+  YES → mc_plan (merge train runs testCommand automatically).
+
+Do you want one PR for all the work?
+  YES → mc_plan.
+
+None of the above?
+  → mc_launch. Simpler, more flexible, less overhead.
+```
+
+### Working With Shared Files
+
+The trickiest scenario is when multiple jobs need to edit the **same files** — for example, two features on the same React view. Even if the work is conceptually separate ("left panel" vs "right panel"), git sees two branches editing the same lines of the same file.
+
+**The scaffold pattern** solves this by creating file boundaries first:
+
+```
+Step 1: Launch a quick scaffolding job
+  mc_launch("scaffold", "Split Dashboard.tsx into separate
+    LeftPanel and RightPanel component files. Keep them as
+    stubs with TODO comments. Update Dashboard.tsx to import
+    and render both.")
+
+Step 2: Merge the scaffold
+  mc_merge("scaffold")
+
+Step 3: Launch the real work in parallel — now they touch different files
+  mc_launch("left-panel", "Implement LeftPanel in src/components/LeftPanel.tsx...")
+  mc_launch("right-panel", "Implement RightPanel in src/components/RightPanel.tsx...")
+
+Step 4: Merge both — no conflicts
+  mc_merge("left-panel")
+  mc_merge("right-panel")
+```
+
+The scaffold job takes a couple of minutes and eliminates the merge conflict surface entirely.
+
+**If you can't separate the files** (heavy shared state, tightly coupled components), don't force parallelism. Use a plan with `dependsOn` so the second job builds on top of the first, or just run them sequentially with standalone launches.
+
+| Overlap Level | Strategy |
+|---------------|----------|
+| **No shared files** | Parallel `mc_launch` |
+| **1-2 shared files** (parent component, types) | Scaffold first, then parallel |
+| **Many shared files** (shared state, hooks, styles) | Sequential — `mc_plan` with `dependsOn` or manual launches |
 
 ---
 
@@ -419,6 +524,12 @@ Cancel the active plan. Stops all running jobs, deletes the integration branch, 
 
 ### Example: Orchestrated Plan
 
+This example uses `mc_plan` instead of four separate `mc_launch` calls because:
+- **The API needs the DB schema to exist** — `api-endpoints` imports from the schema tables that `db-schema` creates. With `dependsOn`, the API job launches from the integration branch and can see those tables.
+- **The UI needs the API types** — `dashboard-ui` imports the response types that `api-endpoints` defines.
+- **Docs and UI are independent of each other** — they both depend on `api-endpoints` but don't share files, so the plan runs them in parallel.
+- **One PR for the whole feature** — instead of four separate PRs, the merge train produces a single integration branch.
+
 ```
 AI: I'll create a plan for the dashboard feature with proper dependencies.
 
@@ -450,10 +561,13 @@ AI: I'll create a plan for the dashboard feature with proper dependencies.
 
 Result:
   • db-schema launches immediately
-  • api-endpoints waits for db-schema to merge
+  • api-endpoints waits for db-schema to merge — then launches with schema changes visible
   • dashboard-ui and docs wait for api-endpoints — then run in parallel
-  • Once all merge successfully, a PR is created automatically
+  • The merge train tests after each merge and rolls back on failure
+  • Once all merge successfully, a single PR is created automatically
 ```
+
+> **Why not `mc_launch`?** You *could* launch these sequentially, merging each into main before starting the next. But you'd lose the automated test gating, the single integration PR, and the parallel execution of `dashboard-ui` and `docs`. The plan handles the dependency graph, merge ordering, and PR creation — you just check `mc_plan_status` or wait for the completion notification.
 
 ### Merge Train
 
@@ -582,35 +696,83 @@ OMO detection is automatic — Mission Control checks your `opencode.json` for t
 
 ## FAQ
 
-**Q: Where are worktrees stored?**
-A: By default in `~/.local/share/opencode-mission-control/{project}/`. They are real git worktrees — fully functional working copies.
+<details>
+<summary><strong>Where are worktrees stored?</strong></summary>
 
-**Q: Can I use this without tmux?**
-A: No. tmux is the backbone of session isolation, monitoring, idle detection, and output capture. It's a hard requirement.
+By default in `~/.local/share/opencode-mission-control/{project}/`. They are real git worktrees — fully functional working copies.
+</details>
 
-**Q: Does it work with VS Code / Cursor?**
-A: Yes. You can open any job's worktree directory in your editor. The AI agents run in background tmux sessions independently.
+<details>
+<summary><strong>Can I use this without tmux?</strong></summary>
 
-**Q: What happens if my computer restarts?**
-A: Mission Control will detect dead tmux panes on the next poll and mark those jobs as failed. Use `mc_cleanup` to clean up.
+No. tmux is the backbone of session isolation, monitoring, idle detection, and output capture. It's a hard requirement.
+</details>
 
-**Q: How many jobs can I run at once?**
-A: As many as your machine can handle. Each job is a real OS process with its own file tree. The `maxParallel` setting only applies to orchestrated plans. Individual `mc_launch` calls have no built-in limit.
+<details>
+<summary><strong>Does it work with VS Code / Cursor?</strong></summary>
 
-**Q: What if two jobs edit the same file?**
-A: Since each job has its own worktree, there are no runtime conflicts. Conflicts surface at merge time — either via `mc_merge` or the plan's merge train.
+Yes. You can open any job's worktree directory in your editor. The AI agents run in background tmux sessions independently.
+</details>
 
-**Q: Can I attach to a job's terminal while it's running?**
-A: Yes. Use `mc_attach` to get the tmux command, then run it in your terminal. You'll see the live AI session.
+<details>
+<summary><strong>What happens if my computer restarts?</strong></summary>
 
-**Q: How does the plan merge train handle test failures?**
-A: If the configured `testCommand` fails after a merge, the merge is automatically rolled back. The job is marked as failed and the plan status updates accordingly (in supervisor mode, it pauses for your review).
+Mission Control will detect dead tmux panes on the next poll and mark those jobs as failed. Use `mc_cleanup` to clean up.
+</details>
 
-**Q: Is this built by the OpenCode team?**
-A: No. This is an independent community plugin — not affiliated with or endorsed by the OpenCode team.
+<details>
+<summary><strong>How many jobs can I run at once?</strong></summary>
 
-**Q: Do I need to manually install this with npm first?**
-A: Usually no. Put it in `opencode.json` and let OpenCode handle plugin installation. Manual npm install is mostly for local development or debugging.
+As many as your machine can handle. Each job is a real OS process with its own file tree. The `maxParallel` setting only applies to orchestrated plans. Individual `mc_launch` calls have no built-in limit.
+</details>
+
+<details>
+<summary><strong>What if two jobs edit the same file?</strong></summary>
+
+Each job has its own worktree, so there are no runtime conflicts — they can't step on each other while running. Conflicts surface at merge time when you bring the branches back together (via `mc_merge` or the plan's merge train).
+
+To avoid this, use the **scaffold pattern**: launch a quick job to split the shared file into separate components first, merge it, then launch the real work in parallel on the now-separate files. See [Working With Shared Files](#working-with-shared-files) for the full strategy.
+</details>
+
+<details>
+<summary><strong>Can I attach to a job's terminal while it's running?</strong></summary>
+
+Yes. Use `mc_attach` to get the tmux command, then run it in your terminal. You'll see the live AI session.
+</details>
+
+<details>
+<summary><strong>How does the plan merge train handle test failures?</strong></summary>
+
+If the configured `testCommand` fails after a merge, the merge is automatically rolled back. The job is marked as failed and the plan status updates accordingly (in supervisor mode, it pauses for your review).
+</details>
+
+<details>
+<summary><strong>Why not just tell my agents to run <code>git worktree add</code> themselves?</strong></summary>
+
+You absolutely can — worktrees are just git. What you'd be rebuilding manually is everything around them:
+
+- tmux session isolation with pane-death detection
+- Background monitoring that tracks idle/streaming/completed states
+- The merge train that tests after each integration and rolls back failures
+- Dependency-aware scheduling with `maxParallel` limits
+- The scaffold-and-sync workflow for shared files
+- Automatic PR creation from integration branches
+- The `mc_overview` dashboard that shows you what every agent is doing at a glance
+
+Mission Control is the orchestration layer on top of worktrees, not the worktrees themselves.
+</details>
+
+<details>
+<summary><strong>Is this built by the OpenCode team?</strong></summary>
+
+No. This is an independent community plugin — not affiliated with or endorsed by the OpenCode team.
+</details>
+
+<details>
+<summary><strong>Do I need to manually install this with npm first?</strong></summary>
+
+Usually no. Put it in `opencode.json` and let OpenCode handle plugin installation. Manual npm install is mostly for local development or debugging.
+</details>
 
 ---
 
