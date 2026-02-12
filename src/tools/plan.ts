@@ -12,7 +12,7 @@ export const mc_plan: ToolDefinition = tool({
   description:
     'Create and start a multi-job orchestrated plan with dependency management',
   args: {
-    name: tool.schema.string().describe('Plan name'),
+    name: tool.schema.string().describe('Plan name — used as the PR title. Use Conventional Commits format (e.g. "feat: add search", "fix: resolve auth bugs").'),
     jobs: tool.schema
       .array(
         tool.schema.object({

@@ -907,7 +907,7 @@ If your work needs human review before it can proceed: mc_report(status: "needs_
     }
 
     const defaultBranch = await getDefaultBranch();
-    const title = `feat: ${plan.name}`;
+    const title = plan.name;
     const jobLines = plan.jobs.map((j) => {
       const status = j.status === 'merged' ? '✅' : j.status === 'failed' ? '❌' : '⏳';
       const mergedAt = j.mergedAt ? new Date(j.mergedAt).toISOString().slice(0, 19).replace('T', ' ') : '—';

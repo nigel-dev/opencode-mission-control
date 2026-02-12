@@ -67,7 +67,7 @@ export const mc_pr: ToolDefinition = tool({
     title: tool.schema
       .string()
       .optional()
-      .describe('PR title (defaults to conventional commit format using job name)'),
+      .describe('PR title — use Conventional Commits format (e.g. "feat: add login", "fix: resolve timeout"). Defaults to job name.'),
     body: tool.schema
       .string()
       .optional()
@@ -97,7 +97,7 @@ export const mc_pr: ToolDefinition = tool({
     }
 
     // 3. Determine PR title (conventional commit format)
-    const prTitle = args.title || `feat: ${job.name}`;
+    const prTitle = args.title || job.name;
 
     // 4. Build gh pr create arguments
     const defaultBranch = await getDefaultBranch(job.worktreePath);
