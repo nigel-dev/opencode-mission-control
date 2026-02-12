@@ -48,7 +48,7 @@ If tests fail, identify whether failures are pre-existing vs introduced by your 
 - **Conventional Commits** (`.github/workflows/conventional-commits.yml`) — Validates PR titles follow the convention.
 - **CodeQL** (`.github/workflows/codeql.yml`) — Static analysis for TypeScript; runs on PRs, pushes to `main`, and weekly.
 - **Publish** (`.github/workflows/publish.yml`) — semantic-release to npm on `main`.
-- **Dependabot** (`.github/dependabot.yml`) — Opens weekly PRs for npm and GitHub Actions dependency updates. These use `chore(deps):` and `ci(deps):` commit prefixes.
+- **Renovate** (`renovate.json`) — Automated dependency updates via the Renovate GitHub App. Groups non-major npm updates, creates separate PRs for majors, and auto-merges minor/patch. Uses `chore(deps):` and `ci(deps):` commit prefixes.
 
 ## Branch & Merge Rules
 
