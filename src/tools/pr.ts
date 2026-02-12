@@ -1,6 +1,6 @@
 import { tool, type ToolDefinition } from '@opencode-ai/plugin';
 import { getDefaultBranch } from '../lib/git';
-import { getJobByName } from '../lib/job-state';
+import { getJobByName, type Job } from '../lib/job-state';
 
 export async function executeGhCommand(args: string[]): Promise<string> {
   const proc = Bun.spawn(['gh', 'pr', 'create', ...args], {
@@ -19,6 +19,45 @@ export async function executeGhCommand(args: string[]): Promise<string> {
   return stdout.trim();
 }
 
+async function loadPrTemplate(cwd?: string): Promise<string | null> {
+  const candidates = [
+    '.github/pull_request_template.md',
+    '.github/PULL_REQUEST_TEMPLATE.md',
+    'pull_request_template.md',
+    'PULL_REQUEST_TEMPLATE.md',
+    '.github/PULL_REQUEST_TEMPLATE/pull_request_template.md',
+  ];
+
+  for (const candidate of candidates) {
+    try {
+      const fullPath = cwd ? `${cwd}/${candidate}` : candidate;
+      const file = Bun.file(fullPath);
+      if (await file.exists()) {
+        return await file.text();
+      }
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+
+function buildDefaultBody(job: Job): string {
+  return [
+    '## Summary',
+    '',
+    job.prompt,
+    '',
+    '## Changes',
+    '',
+    `Branch: \`${job.branch}\``,
+    '',
+    '---',
+    '',
+    '🚀 *Created by [Mission Control](https://github.com/nigel-dev/opencode-mission-control)*',
+  ].join('\n');
+}
+
 export const mc_pr: ToolDefinition = tool({
   description: 'Create a pull request from a job\'s branch',
   args: {
@@ -28,11 +67,11 @@ export const mc_pr: ToolDefinition = tool({
     title: tool.schema
       .string()
       .optional()
-      .describe('PR title (defaults to job prompt)'),
+      .describe('PR title (defaults to conventional commit format using job name)'),
     body: tool.schema
       .string()
       .optional()
-      .describe('PR body'),
+      .describe('PR body (defaults to PR template or generated summary)'),
     draft: tool.schema
       .boolean()
       .optional()
@@ -57,8 +96,8 @@ export const mc_pr: ToolDefinition = tool({
       throw new Error(`Failed to push branch "${job.branch}": ${pushStderr}`);
     }
 
-    // 3. Determine PR title (default to job prompt)
-    const prTitle = args.title || job.prompt;
+    // 3. Determine PR title (conventional commit format)
+    const prTitle = args.title || `feat: ${job.name}`;
 
     // 4. Build gh pr create arguments
     const defaultBranch = await getDefaultBranch(job.worktreePath);
@@ -68,9 +107,17 @@ export const mc_pr: ToolDefinition = tool({
       '--base', defaultBranch,
     ];
 
-    // 5. Add optional body
+    // 5. Build PR body — use explicit body, or fall back to default
+    const mcAttribution = '\n\n---\n\n🚀 *Created by [Mission Control](https://github.com/nigel-dev/opencode-mission-control)*';
     if (args.body) {
-      ghArgs.push('--body', args.body);
+      ghArgs.push('--body', args.body + mcAttribution);
+    } else {
+      const template = await loadPrTemplate(job.worktreePath);
+      if (template) {
+        ghArgs.push('--body', template + mcAttribution);
+      } else {
+        ghArgs.push('--body', buildDefaultBody(job));
+      }
     }
 
     // 6. Add draft flag if specified

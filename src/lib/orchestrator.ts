@@ -507,6 +507,8 @@ export class Orchestrator {
       }
 
       if (this.mergeTrain && this.mergeTrain.getQueue().length > 0) {
+        plan.status = 'merging';
+
         const nextJob = this.mergeTrain.getQueue()[0];
         this.showToast('Mission Control', `Merging job "${nextJob.name}"...`, 'info');
         this.notify(`⇄ Merging job "${nextJob.name}" into integration branch...`);
@@ -564,6 +566,10 @@ export class Orchestrator {
           this.showToast('Mission Control', `Job "${nextJob.name}" failed during merge.`, 'error');
           this.notify(`❌ Job "${nextJob.name}" failed merge tests. Plan failed.`);
         }
+      }
+
+      if (plan.status === 'merging' && (!this.mergeTrain || this.mergeTrain.getQueue().length === 0)) {
+        plan.status = 'running';
       }
 
       const latestPlan = await loadPlan();
@@ -901,8 +907,50 @@ If your work needs human review before it can proceed: mc_report(status: "needs_
     }
 
     const defaultBranch = await getDefaultBranch();
-    const title = plan.name.replace(/"/g, '\\"');
-    const body = `Automated PR from Mission Control plan: ${plan.name}\n\nJobs:\n${plan.jobs.map((j) => `- ${j.name}`).join('\n')}`;
+    const title = `feat: ${plan.name}`;
+    const jobLines = plan.jobs.map((j) => {
+      const status = j.status === 'merged' ? '✅' : j.status === 'failed' ? '❌' : '⏳';
+      const mergedAt = j.mergedAt ? new Date(j.mergedAt).toISOString().slice(0, 19).replace('T', ' ') : '—';
+      return `| ${j.name} | ${status} ${j.status} | ${mergedAt} |`;
+    }).join('\n');
+
+    const mergeTrainConfig = this.getMergeTrainConfig();
+    const testingLines: string[] = [];
+    if (mergeTrainConfig.testCommand) {
+      testingLines.push(`- [x] \`${mergeTrainConfig.testCommand}\` passed after each merge`);
+    }
+    if (mergeTrainConfig.setupCommands?.length) {
+      testingLines.push(`- [x] Setup: \`${mergeTrainConfig.setupCommands.join(' && ')}\``);
+    }
+    if (testingLines.length === 0) {
+      testingLines.push('- No test command configured');
+    }
+
+    const body = [
+      '## Summary',
+      '',
+      `Orchestrated plan **${plan.name}** with ${plan.jobs.length} job(s).`,
+      '',
+      '## Jobs',
+      '',
+      '| Job | Status | Merged At |',
+      '|-----|--------|-----------|',
+      jobLines,
+      '',
+      '## Testing',
+      '',
+      ...testingLines,
+      '',
+      '## Notes',
+      '',
+      `- Integration branch: \`${plan.integrationBranch}\``,
+      `- Base commit: \`${plan.baseCommit.slice(0, 8)}\``,
+      `- Mode: ${plan.mode}`,
+      '',
+      '---',
+      '',
+      '🚀 *Automated PR from [Mission Control](https://github.com/nigel-dev/opencode-mission-control)*',
+    ].join('\n');
     const prResult = await this.runCommand([
       'gh',
       'pr',

@@ -63,7 +63,7 @@ export const VALID_PLAN_TRANSITIONS: Record<PlanStatus, PlanStatus[]> = {
   pending: ['running', 'failed', 'canceled'],
   running: ['paused', 'merging', 'failed', 'canceled'],
   paused: ['running', 'failed', 'canceled'],
-  merging: ['creating_pr', 'failed', 'canceled'],
+  merging: ['running', 'paused', 'creating_pr', 'failed', 'canceled'],
   creating_pr: ['completed', 'failed', 'canceled'],
   completed: [],
   failed: [],

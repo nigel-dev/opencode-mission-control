@@ -85,7 +85,7 @@ describe('mc_pr', () => {
   });
 
   describe('argument handling', () => {
-    it('should use job prompt as default title', async () => {
+    it('should use conventional commit format as default title', async () => {
       const job: Job = {
         id: 'job-1',
         name: 'feature-auth',
