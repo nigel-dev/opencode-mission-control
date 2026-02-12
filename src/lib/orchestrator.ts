@@ -4,7 +4,7 @@ import type { PlanSpec, JobSpec, PlanStatus, CheckpointType } from './plan-types
 import { loadPlan, savePlan, updatePlanJob, clearPlan, validateGhAuth } from './plan-state';
 import { getDefaultBranch } from './git';
 import { createIntegrationBranch, deleteIntegrationBranch } from './integration';
-import { MergeTrain, type MergeTestReport } from './merge-train';
+import { MergeTrain, type MergeTestReport, validateTouchSet } from './merge-train';
 import { addJob, getRunningJobs, updateJob, loadJobState, removeJob, type Job } from './job-state';
 import { JobMonitor } from './monitor';
 import { removeReport } from './reports';
@@ -473,6 +473,22 @@ export class Orchestrator {
 
       for (const job of mergeOrder) {
         if (job.status === 'completed') {
+          if (job.touchSet && job.touchSet.length > 0 && job.branch && plan.integrationBranch) {
+            const validation = await validateTouchSet(job.branch, plan.integrationBranch, job.touchSet);
+            if (!validation.valid && validation.violations) {
+              await updatePlanJob(plan.id, job.name, {
+                status: 'failed',
+                error: `Modified files outside touchSet: ${validation.violations.join(', ')}. Expected only: ${job.touchSet.join(', ')}`,
+              });
+              job.status = 'failed';
+
+              this.showToast('Mission Control', `Job "${job.name}" touched files outside its touchSet. Plan paused.`, 'error');
+              this.notify(`❌ Job "${job.name}" modified files outside its touchSet:\n  Violations: ${validation.violations.join(', ')}\n  Allowed: ${job.touchSet.join(', ')}\nFix the branch and retry with mc_plan_approve(checkpoint: "on_error", retry: "${job.name}").`);
+              await this.setCheckpoint('on_error', plan);
+              return;
+            }
+          }
+
           await updatePlanJob(plan.id, job.name, { status: 'ready_to_merge' });
           job.status = 'ready_to_merge';
         }

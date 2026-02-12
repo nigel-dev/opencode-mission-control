@@ -50,6 +50,44 @@ const INSTALL_COMMAND_BY_LOCKFILE = [
 
 
 
+export async function validateTouchSet(
+  jobBranch: string,
+  baseBranch: string,
+  touchSet: string[],
+  opts?: { cwd?: string },
+): Promise<{ valid: boolean; violations?: string[]; changedFiles?: string[] }> {
+  if (touchSet.length === 0) {
+    return { valid: true };
+  }
+
+  const diffResult = await gitCommand(['diff', '--name-only', `${baseBranch}...${jobBranch}`], opts);
+  if (diffResult.exitCode !== 0) {
+    return { valid: false, violations: [`Failed to diff: ${diffResult.stderr}`] };
+  }
+
+  const changedFiles = diffResult.stdout.split('\n').map(f => f.trim()).filter(Boolean);
+  if (changedFiles.length === 0) {
+    return { valid: true, changedFiles: [] };
+  }
+
+  const violations: string[] = [];
+  for (const file of changedFiles) {
+    const matchesAny = touchSet.some(pattern => {
+      const glob = new Bun.Glob(pattern);
+      return glob.match(file);
+    });
+    if (!matchesAny) {
+      violations.push(file);
+    }
+  }
+
+  return {
+    valid: violations.length === 0,
+    violations: violations.length > 0 ? violations : undefined,
+    changedFiles,
+  };
+}
+
 async function rollbackMerge(worktreePath: string): Promise<void> {
   // Try merge --abort first
   await gitCommand(['-C', worktreePath, 'merge', '--abort']).catch(() => {});

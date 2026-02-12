@@ -4,6 +4,7 @@ import type { Job, JobState } from '../../src/lib/job-state';
 import type { JobSpec, PlanSpec } from '../../src/lib/plan-types';
 import * as integrationMod from '../../src/lib/integration';
 import * as jobStateMod from '../../src/lib/job-state';
+import * as mergeTrainMod from '../../src/lib/merge-train';
 import { Orchestrator, hasCircularDependency, topologicalSort } from '../../src/lib/orchestrator';
 import * as planStateMod from '../../src/lib/plan-state';
 import * as tmuxMod from '../../src/lib/tmux';
@@ -515,6 +516,114 @@ describe('orchestrator', () => {
     );
     expect(planState?.status).toBe('failed');
     expect(startSpy).not.toHaveBeenCalled();
+  });
+
+  it('should fail job and pause plan when touchSet is violated', async () => {
+    planState = makePlan({
+      status: 'running',
+      jobs: [
+        makeJob('touch-violator', {
+          status: 'completed',
+          mergeOrder: 0,
+          branch: 'mc/touch-violator',
+          touchSet: ['src/**'],
+        }),
+      ],
+    });
+
+    spyOn(mergeTrainMod, 'validateTouchSet').mockResolvedValue({
+      valid: false,
+      violations: ['README.md'],
+      changedFiles: ['src/app.ts', 'README.md'],
+    });
+
+    const orchestrator = new Orchestrator(monitor as any, {
+      defaultPlacement: 'session',
+      pollInterval: 10000,
+      idleThreshold: 300000,
+      worktreeBasePath: '/tmp',
+      omo: { enabled: false, defaultMode: 'vanilla' },
+    } as any);
+
+    await (orchestrator as any).reconcile();
+
+    expect(planStateMod.updatePlanJob).toHaveBeenCalledWith(
+      'plan-1',
+      'touch-violator',
+      expect.objectContaining({
+        status: 'failed',
+        error: expect.stringContaining('Modified files outside touchSet'),
+      }),
+    );
+    expect(planState?.status).toBe('paused');
+    expect(planState?.checkpoint).toBe('on_error');
+  });
+
+  it('should allow transition to ready_to_merge when touchSet is satisfied', async () => {
+    planState = makePlan({
+      status: 'running',
+      jobs: [
+        makeJob('touch-ok', {
+          status: 'completed',
+          mergeOrder: 0,
+          branch: 'mc/touch-ok',
+          touchSet: ['src/**'],
+        }),
+      ],
+    });
+
+    spyOn(mergeTrainMod, 'validateTouchSet').mockResolvedValue({
+      valid: true,
+      changedFiles: ['src/app.ts'],
+    });
+
+    const orchestrator = new Orchestrator(monitor as any, {
+      defaultPlacement: 'session',
+      pollInterval: 10000,
+      idleThreshold: 300000,
+      worktreeBasePath: '/tmp',
+      omo: { enabled: false, defaultMode: 'vanilla' },
+    } as any);
+
+    await (orchestrator as any).reconcile();
+
+    expect(planStateMod.updatePlanJob).toHaveBeenCalledWith(
+      'plan-1',
+      'touch-ok',
+      { status: 'ready_to_merge' },
+    );
+  });
+
+  it('should skip touchSet validation when touchSet is not defined', async () => {
+    planState = makePlan({
+      status: 'running',
+      jobs: [
+        makeJob('no-touchset', {
+          status: 'completed',
+          mergeOrder: 0,
+          branch: 'mc/no-touchset',
+        }),
+      ],
+    });
+
+    const validateSpy = spyOn(mergeTrainMod, 'validateTouchSet');
+
+    const orchestrator = new Orchestrator(monitor as any, {
+      defaultPlacement: 'session',
+      pollInterval: 10000,
+      idleThreshold: 300000,
+      worktreeBasePath: '/tmp',
+      omo: { enabled: false, defaultMode: 'vanilla' },
+    } as any);
+
+    await (orchestrator as any).reconcile();
+
+    expect(validateSpy).not.toHaveBeenCalled();
+    expect(planStateMod.updatePlanJob).toHaveBeenCalledWith(
+      'plan-1',
+      'no-touchset',
+      { status: 'ready_to_merge' },
+    );
   });
 });
 

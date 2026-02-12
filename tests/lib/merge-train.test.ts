@@ -3,7 +3,7 @@ import { join } from 'path';
 import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import type { JobSpec } from '../../src/lib/plan-types';
-import { MergeTrain, detectInstallCommand, detectTestCommand } from '../../src/lib/merge-train';
+import { MergeTrain, detectInstallCommand, detectTestCommand, validateTouchSet } from '../../src/lib/merge-train';
 
 type TestRepo = {
   rootDir: string;
@@ -410,5 +410,99 @@ describe('MergeTrain', () => {
     queue.length = 0;
 
     expect(train.getQueue().length).toBe(1);
+  });
+});
+
+describe('validateTouchSet', () => {
+  let testRepo: TestRepo;
+
+  beforeEach(async () => {
+    testRepo = await setupRepo();
+  });
+
+  afterEach(() => {
+    rmSync(testRepo.rootDir, { recursive: true, force: true });
+  });
+
+  it('should return valid when touchSet is empty', async () => {
+    await createBranchCommit(testRepo.repoDir, 'feature-empty-ts', 'foo.txt', 'foo\n');
+
+    const result = await validateTouchSet('feature-empty-ts', 'main', [], { cwd: testRepo.repoDir });
+    expect(result.valid).toBe(true);
+  });
+
+  it('should return valid when all changed files match touchSet globs', async () => {
+    await mustExec(['git', 'checkout', '-b', 'feature-match', 'main'], testRepo.repoDir);
+    mkdirSync(join(testRepo.repoDir, 'src'), { recursive: true });
+    writeFileSync(join(testRepo.repoDir, 'src/auth.ts'), 'auth\n');
+    await mustExec(['git', 'add', '.'], testRepo.repoDir);
+    await mustExec(['git', 'commit', '-m', 'add auth'], testRepo.repoDir);
+    await mustExec(['git', 'checkout', 'main'], testRepo.repoDir);
+
+    const result = await validateTouchSet('feature-match', 'main', ['src/**'], { cwd: testRepo.repoDir });
+    expect(result.valid).toBe(true);
+    expect(result.violations).toBeUndefined();
+    expect(result.changedFiles).toContain('src/auth.ts');
+  });
+
+  it('should return violations for files outside touchSet', async () => {
+    await mustExec(['git', 'checkout', '-b', 'feature-violation', 'main'], testRepo.repoDir);
+    mkdirSync(join(testRepo.repoDir, 'src'), { recursive: true });
+    writeFileSync(join(testRepo.repoDir, 'src/ok.ts'), 'ok\n');
+    writeFileSync(join(testRepo.repoDir, 'README.md'), 'readme\n');
+    await mustExec(['git', 'add', '.'], testRepo.repoDir);
+    await mustExec(['git', 'commit', '-m', 'add files'], testRepo.repoDir);
+    await mustExec(['git', 'checkout', 'main'], testRepo.repoDir);
+
+    const result = await validateTouchSet('feature-violation', 'main', ['src/**'], { cwd: testRepo.repoDir });
+    expect(result.valid).toBe(false);
+    expect(result.violations).toContain('README.md');
+    expect(result.violations).not.toContain('src/ok.ts');
+  });
+
+  it('should handle multiple touchSet patterns', async () => {
+    await mustExec(['git', 'checkout', '-b', 'feature-multi', 'main'], testRepo.repoDir);
+    mkdirSync(join(testRepo.repoDir, 'src'), { recursive: true });
+    mkdirSync(join(testRepo.repoDir, 'tests'), { recursive: true });
+    writeFileSync(join(testRepo.repoDir, 'src/app.ts'), 'app\n');
+    writeFileSync(join(testRepo.repoDir, 'tests/app.test.ts'), 'test\n');
+    await mustExec(['git', 'add', '.'], testRepo.repoDir);
+    await mustExec(['git', 'commit', '-m', 'add files'], testRepo.repoDir);
+    await mustExec(['git', 'checkout', 'main'], testRepo.repoDir);
+
+    const result = await validateTouchSet('feature-multi', 'main', ['src/**', 'tests/**'], { cwd: testRepo.repoDir });
+    expect(result.valid).toBe(true);
+    expect(result.changedFiles).toContain('src/app.ts');
+    expect(result.changedFiles).toContain('tests/app.test.ts');
+  });
+
+  it('should handle ** glob wildcards', async () => {
+    await mustExec(['git', 'checkout', '-b', 'feature-glob', 'main'], testRepo.repoDir);
+    mkdirSync(join(testRepo.repoDir, 'src/lib/deep'), { recursive: true });
+    writeFileSync(join(testRepo.repoDir, 'src/lib/deep/nested.ts'), 'nested\n');
+    await mustExec(['git', 'add', '.'], testRepo.repoDir);
+    await mustExec(['git', 'commit', '-m', 'add deep file'], testRepo.repoDir);
+    await mustExec(['git', 'checkout', 'main'], testRepo.repoDir);
+
+    const result = await validateTouchSet('feature-glob', 'main', ['src/**/*.ts'], { cwd: testRepo.repoDir });
+    expect(result.valid).toBe(true);
+    expect(result.changedFiles).toContain('src/lib/deep/nested.ts');
+  });
+
+  it('should return valid when job has no changes', async () => {
+    await mustExec(['git', 'checkout', '-b', 'feature-no-changes', 'main'], testRepo.repoDir);
+    await mustExec(['git', 'commit', '--allow-empty', '-m', 'empty'], testRepo.repoDir);
+    await mustExec(['git', 'checkout', 'main'], testRepo.repoDir);
+
+    const result = await validateTouchSet('feature-no-changes', 'main', ['src/**'], { cwd: testRepo.repoDir });
+    expect(result.valid).toBe(true);
+    expect(result.changedFiles).toEqual([]);
+  });
+
+  it('should return invalid when git diff fails', async () => {
+    const result = await validateTouchSet('nonexistent-branch', 'main', ['src/**'], { cwd: testRepo.repoDir });
+    expect(result.valid).toBe(false);
+    expect(result.violations).toBeDefined();
+    expect(result.violations![0]).toContain('Failed to diff');
   });
 });
