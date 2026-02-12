@@ -5,6 +5,7 @@ import type { JobSpec, PlanSpec } from '../../src/lib/plan-types';
 import * as integrationMod from '../../src/lib/integration';
 import * as jobStateMod from '../../src/lib/job-state';
 import { Orchestrator, type ToastCallback } from '../../src/lib/orchestrator';
+import * as mergeTrainMod from '../../src/lib/merge-train';
 import * as planStateMod from '../../src/lib/plan-state';
 import * as tmuxMod from '../../src/lib/tmux';
 import * as worktreeMod from '../../src/lib/worktree';
@@ -114,6 +115,8 @@ describe('orchestrator modes', () => {
     spyOn(tmuxMod, 'killWindow').mockResolvedValue();
     spyOn(tmuxMod, 'sendKeys').mockResolvedValue();
     spyOn(tmuxMod, 'setPaneDiedHook').mockResolvedValue();
+
+    spyOn(mergeTrainMod, 'checkMergeability').mockResolvedValue({ canMerge: true });
   });
 
   afterEach(() => {

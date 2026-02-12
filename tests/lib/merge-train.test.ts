@@ -3,7 +3,7 @@ import { join } from 'path';
 import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import type { JobSpec } from '../../src/lib/plan-types';
-import { MergeTrain, detectInstallCommand, detectTestCommand, validateTouchSet } from '../../src/lib/merge-train';
+import { MergeTrain, checkMergeability, detectInstallCommand, detectTestCommand, validateTouchSet } from '../../src/lib/merge-train';
 
 type TestRepo = {
   rootDir: string;
@@ -504,5 +504,79 @@ describe('validateTouchSet', () => {
     expect(result.valid).toBe(false);
     expect(result.violations).toBeDefined();
     expect(result.violations![0]).toContain('Failed to diff');
+  });
+});
+
+describe('checkMergeability', () => {
+  let testRepo: TestRepo;
+
+  beforeEach(async () => {
+    testRepo = await setupRepo();
+  });
+
+  afterEach(() => {
+    rmSync(testRepo.rootDir, { recursive: true, force: true });
+  });
+
+  it('should return canMerge true when merge would succeed', async () => {
+    await createBranchCommit(testRepo.repoDir, 'clean-feature', 'clean.txt', 'clean\n');
+
+    const result = await checkMergeability(testRepo.integrationWorktree, 'clean-feature');
+
+    expect(result.canMerge).toBe(true);
+    expect(result.conflicts).toBeUndefined();
+  });
+
+  it('should return canMerge false with conflicts when merge would fail', async () => {
+    writeFileSync(join(testRepo.repoDir, 'shared.txt'), 'base\n');
+    await mustExec(['git', 'add', 'shared.txt'], testRepo.repoDir);
+    await mustExec(['git', 'commit', '-m', 'add shared'], testRepo.repoDir);
+
+    await mustExec(['git', 'checkout', '-b', 'int-change', 'main'], testRepo.repoDir);
+    writeFileSync(join(testRepo.repoDir, 'shared.txt'), 'integration side\n');
+    await mustExec(['git', 'add', 'shared.txt'], testRepo.repoDir);
+    await mustExec(['git', 'commit', '-m', 'int change'], testRepo.repoDir);
+    await mustExec(['git', 'checkout', 'main'], testRepo.repoDir);
+
+    await mustExec(['git', '-C', testRepo.integrationWorktree, 'merge', 'int-change'], testRepo.integrationWorktree);
+
+    await mustExec(['git', 'checkout', '-b', 'conflict-branch', 'main'], testRepo.repoDir);
+    writeFileSync(join(testRepo.repoDir, 'shared.txt'), 'conflicting side\n');
+    await mustExec(['git', 'add', 'shared.txt'], testRepo.repoDir);
+    await mustExec(['git', 'commit', '-m', 'conflict change'], testRepo.repoDir);
+    await mustExec(['git', 'checkout', 'main'], testRepo.repoDir);
+
+    const result = await checkMergeability(testRepo.integrationWorktree, 'conflict-branch');
+
+    expect(result.canMerge).toBe(false);
+    expect(result.conflicts).toBeDefined();
+    expect(result.conflicts!.length).toBeGreaterThan(0);
+  });
+
+  it('should always clean up worktree state after check', async () => {
+    await createBranchCommit(testRepo.repoDir, 'cleanup-test', 'cleanup.txt', 'cleanup\n');
+
+    await checkMergeability(testRepo.integrationWorktree, 'cleanup-test');
+
+    const status = await mustExec(['git', 'status', '--porcelain'], testRepo.integrationWorktree);
+    expect(status).toBe('');
+
+    const headBefore = await mustExec(['git', 'rev-parse', 'HEAD'], testRepo.integrationWorktree);
+
+    writeFileSync(join(testRepo.repoDir, 'shared2.txt'), 'base\n');
+    await mustExec(['git', 'add', 'shared2.txt'], testRepo.repoDir);
+    await mustExec(['git', 'commit', '-m', 'add shared2'], testRepo.repoDir);
+    await mustExec(['git', '-C', testRepo.integrationWorktree, 'merge', 'main'], testRepo.integrationWorktree);
+
+    await mustExec(['git', 'checkout', '-b', 'conflict2', 'main'], testRepo.repoDir);
+    writeFileSync(join(testRepo.repoDir, 'shared2.txt'), 'conflict\n');
+    await mustExec(['git', 'add', 'shared2.txt'], testRepo.repoDir);
+    await mustExec(['git', 'commit', '-m', 'conflict2'], testRepo.repoDir);
+    await mustExec(['git', 'checkout', 'main'], testRepo.repoDir);
+
+    await checkMergeability(testRepo.integrationWorktree, 'conflict2');
+
+    const statusAfter = await mustExec(['git', 'status', '--porcelain'], testRepo.integrationWorktree);
+    expect(statusAfter).toBe('');
   });
 });

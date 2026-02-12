@@ -19,12 +19,22 @@ export const mc_plan_approve: ToolDefinition = tool({
     retry: tool.schema
       .string()
       .optional()
-      .describe('Job name to retry — resets a failed/conflict job to ready_to_merge before resuming'),
+      .describe('Name of a failed, conflict, or needs_rebase job to retry'),
   },
   async execute(args) {
     const plan = await loadPlan();
     if (!plan) {
       throw new Error('No active plan to approve');
+    }
+
+    if (args.retry) {
+      const job = plan.jobs.find((j) => j.name === args.retry);
+      if (!job) {
+        throw new Error(`Job "${args.retry}" not found in plan`);
+      }
+      if (job.status !== 'failed' && job.status !== 'conflict' && job.status !== 'needs_rebase') {
+        throw new Error(`Job "${args.retry}" is not in a retryable state (current: ${job.status}). Only failed, conflict, or needs_rebase jobs can be retried.`);
+      }
     }
 
     if (plan.status === 'paused' && plan.checkpoint) {
@@ -35,8 +45,8 @@ export const mc_plan_approve: ToolDefinition = tool({
         if (!job) {
           throw new Error(`Job "${args.retry}" not found in plan`);
         }
-        if (job.status !== 'failed' && job.status !== 'conflict') {
-          throw new Error(`Job "${args.retry}" is not in a retryable state (current: ${job.status}). Only failed or conflict jobs can be retried.`);
+        if (job.status !== 'failed' && job.status !== 'conflict' && job.status !== 'needs_rebase') {
+          throw new Error(`Job "${args.retry}" is not in a retryable state (current: ${job.status}). Only failed, conflict, or needs_rebase jobs can be retried.`);
         }
         await updatePlanJob(plan.id, args.retry, { status: 'ready_to_merge', error: undefined });
       }

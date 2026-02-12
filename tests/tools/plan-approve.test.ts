@@ -69,7 +69,7 @@ describe('mc_plan_approve', () => {
     });
   });
 
-  describe('retry failed job', () => {
+  describe('retry validation', () => {
     it('should reset a failed job to ready_to_merge when retry is provided', async () => {
       vi.spyOn(planState, 'loadPlan').mockResolvedValue({
         id: 'plan-1',
@@ -107,6 +107,41 @@ describe('mc_plan_approve', () => {
       expect(mockResumePlan).toHaveBeenCalled();
     });
 
+    it('should allow retry of needs_rebase jobs', async () => {
+      vi.spyOn(planState, 'loadPlan').mockResolvedValue({
+        id: 'plan-1',
+        name: 'Test Plan',
+        mode: 'supervisor',
+        status: 'paused',
+        checkpoint: 'on_error',
+        jobs: [
+          { id: 'j1', name: 'conflicting-job', prompt: 'do stuff', status: 'needs_rebase', error: 'merge conflict detected' },
+        ],
+        integrationBranch: 'mc/integration/plan-1',
+        baseCommit: 'abc',
+        createdAt: new Date().toISOString(),
+      });
+
+      const mockUpdatePlanJob = vi.spyOn(planState, 'updatePlanJob').mockResolvedValue(undefined);
+      const mockSavePlan = vi.spyOn(planState, 'savePlan').mockResolvedValue(undefined);
+      const mockResumePlan = vi.fn().mockResolvedValue(undefined);
+      vi.spyOn(orchestrator, 'Orchestrator').mockImplementation(
+        () =>
+          ({
+            resumePlan: mockResumePlan,
+            setPlanModelSnapshot: vi.fn(),
+          }) as any,
+      );
+
+      const result = await mc_plan_approve.execute({ checkpoint: 'on_error', retry: 'conflicting-job' }, mockContext);
+
+      expect(mockUpdatePlanJob).toHaveBeenCalledWith('plan-1', 'conflicting-job', { status: 'ready_to_merge', error: undefined });
+      expect(result).toContain('Checkpoint');
+      expect(result).toContain('resuming');
+      expect(mockSavePlan).toHaveBeenCalled();
+      expect(mockResumePlan).toHaveBeenCalled();
+    });
+
     it('should throw if retry job name is not found in plan', async () => {
       vi.spyOn(planState, 'loadPlan').mockResolvedValue({
         id: 'plan-1',
@@ -114,9 +149,7 @@ describe('mc_plan_approve', () => {
         mode: 'autopilot',
         status: 'paused',
         checkpoint: 'on_error',
-        jobs: [
-          { id: 'j1', name: 'existing-job', prompt: 'do stuff', status: 'failed' },
-        ],
+        jobs: [{ id: 'j1', name: 'existing-job', prompt: 'do stuff', status: 'failed' }],
         integrationBranch: 'mc/integration/plan-1',
         baseCommit: 'abc123',
         createdAt: new Date().toISOString(),
@@ -127,23 +160,21 @@ describe('mc_plan_approve', () => {
       ).rejects.toThrow('Job "nonexistent" not found in plan');
     });
 
-    it('should throw if retry job is not in a retryable state', async () => {
+    it('should reject retry of non-retryable jobs', async () => {
       vi.spyOn(planState, 'loadPlan').mockResolvedValue({
         id: 'plan-1',
-        name: 'Retry Plan',
-        mode: 'autopilot',
+        name: 'Test Plan',
+        mode: 'supervisor',
         status: 'paused',
         checkpoint: 'on_error',
-        jobs: [
-          { id: 'j1', name: 'running-job', prompt: 'do stuff', status: 'running' },
-        ],
+        jobs: [{ id: 'j1', name: 'running-job', prompt: 'do stuff', status: 'running' }],
         integrationBranch: 'mc/integration/plan-1',
-        baseCommit: 'abc123',
+        baseCommit: 'abc',
         createdAt: new Date().toISOString(),
       });
 
       await expect(
-        mc_plan_approve.execute({ checkpoint: 'on_error', retry: 'running-job' }, mockContext),
+        mc_plan_approve.execute({ retry: 'running-job' }, mockContext),
       ).rejects.toThrow('not in a retryable state');
     });
 
@@ -154,9 +185,7 @@ describe('mc_plan_approve', () => {
         mode: 'supervisor',
         status: 'paused',
         checkpoint: 'pre_merge',
-        jobs: [
-          { id: 'j1', name: 'merge-job', prompt: 'do merge', status: 'ready_to_merge' },
-        ],
+        jobs: [{ id: 'j1', name: 'merge-job', prompt: 'do merge', status: 'ready_to_merge' }],
         integrationBranch: 'mc/integration/plan-1',
         baseCommit: 'abc123',
         createdAt: new Date().toISOString(),

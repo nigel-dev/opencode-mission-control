@@ -88,6 +88,33 @@ export async function validateTouchSet(
   };
 }
 
+export async function checkMergeability(
+  integrationWorktree: string,
+  jobBranch: string,
+): Promise<{ canMerge: boolean; conflicts?: string[] }> {
+  const testMerge = await gitCommand([
+    '-C', integrationWorktree,
+    'merge', '--no-commit', '--no-ff', jobBranch,
+  ]);
+
+  // Always clean up — leave worktree pristine
+  await gitCommand(['-C', integrationWorktree, 'merge', '--abort']).catch(() => {});
+  await gitCommand(['-C', integrationWorktree, 'reset', '--hard', 'HEAD']).catch(() => {});
+  await gitCommand(['-C', integrationWorktree, 'clean', '-fd']).catch(() => {});
+
+  if (testMerge.exitCode !== 0) {
+    const conflicts = extractConflicts(
+      [testMerge.stdout, testMerge.stderr].filter(Boolean).join('\n'),
+    );
+    return {
+      canMerge: false,
+      conflicts: conflicts.length > 0 ? conflicts : undefined,
+    };
+  }
+
+  return { canMerge: true };
+}
+
 async function rollbackMerge(worktreePath: string): Promise<void> {
   // Try merge --abort first
   await gitCommand(['-C', worktreePath, 'merge', '--abort']).catch(() => {});

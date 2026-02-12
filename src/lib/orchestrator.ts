@@ -4,7 +4,7 @@ import type { PlanSpec, JobSpec, PlanStatus, CheckpointType } from './plan-types
 import { loadPlan, savePlan, updatePlanJob, clearPlan, validateGhAuth } from './plan-state';
 import { getDefaultBranch } from './git';
 import { createIntegrationBranch, deleteIntegrationBranch } from './integration';
-import { MergeTrain, type MergeTestReport, validateTouchSet } from './merge-train';
+import { MergeTrain, checkMergeability, type MergeTestReport, validateTouchSet } from './merge-train';
 import { addJob, getRunningJobs, updateJob, loadJobState, removeJob, type Job } from './job-state';
 import { JobMonitor } from './monitor';
 import { removeReport } from './reports';
@@ -508,6 +508,22 @@ export class Orchestrator {
         });
         if (!canMergeNow) {
           continue;
+        }
+
+        if (job.branch && plan.integrationWorktree) {
+          const mergeCheck = await checkMergeability(plan.integrationWorktree, job.branch);
+          if (!mergeCheck.canMerge) {
+            await updatePlanJob(plan.id, job.name, {
+              status: 'needs_rebase',
+              error: mergeCheck.conflicts?.join(', ') ?? 'merge conflict detected in trial merge',
+            });
+            job.status = 'needs_rebase';
+
+            this.showToast('Mission Control', `Job "${job.name}" has merge conflicts. Plan paused.`, 'error');
+            this.notify(`❌ Job "${job.name}" would conflict with the integration branch.\n  Files: ${mergeCheck.conflicts?.join(', ') ?? 'unknown'}\nRebase the job branch and retry with mc_plan_approve(checkpoint: "on_error", retry: "${job.name}").`);
+            await this.setCheckpoint('on_error', plan);
+            return;
+          }
         }
 
         if (this.isSupervisor(plan) && !this.approvedForMerge.has(job.name)) {

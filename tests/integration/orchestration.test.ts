@@ -496,12 +496,14 @@ describe('orchestration integration', () => {
     await simulateJobCompletion('job-2', monitor, orchestrator);
     await waitForCondition(async () => {
       const currentPlan = await loadPlan();
-      return currentPlan?.status === 'paused' && currentPlan?.checkpoint === 'on_error';
+      const second = currentPlan?.jobs.find((job) => job.id === 'job-2');
+      return currentPlan?.status === 'paused' && second?.status === 'needs_rebase';
     }, 8000);
 
     const pausedPlan = await loadPlan();
     expect(pausedPlan?.status).toBe('paused');
     expect(pausedPlan?.checkpoint).toBe('on_error');
+    expect(pausedPlan?.jobs.find((job) => job.id === 'job-2')?.status).toBe('needs_rebase');
 
     const status = await mustExec(
       ['git', 'status', '--porcelain'],
