@@ -787,22 +787,24 @@ If your work needs human review before it can proceed: mc_report(status: "needs_
   }
 
   private handleJobComplete = (job: Job): void => {
-    if (job.planId && this.activePlanId && job.planId === this.activePlanId) {
-      if (!this.firstJobCompleted) {
-        this.firstJobCompleted = true;
-        this.showToast('Mission Control', `First job completed: "${job.name}".`, 'success');
-      }
-
-      updatePlanJob(job.planId, job.name, {
-        status: 'completed',
-      }).catch((error) => {
-        console.error('Failed to update completed job state:', error);
-      });
-
-      this.reconcile().catch((error) => {
-        console.error('Reconcile after completion failed:', error);
-      });
+    if (!job.planId || !this.activePlanId || job.planId !== this.activePlanId) {
+      return;
     }
+
+    if (!this.firstJobCompleted) {
+      this.firstJobCompleted = true;
+      this.showToast('Mission Control', `First job completed: "${job.name}".`, 'success');
+    }
+
+    const planId = job.planId;
+    (async () => {
+      await updatePlanJob(planId, job.name, {
+        status: 'completed',
+      });
+      await this.reconcile();
+    })().catch((error) => {
+      console.error('Failed to reconcile completed job state:', error);
+    });
   }
 
   private handleJobFailed = (job: Job): void => {
