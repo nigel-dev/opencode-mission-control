@@ -137,6 +137,7 @@ function mockTmux(): MockTmuxResult {
   spyOn(tmuxMod, 'createWindow').mockResolvedValue(undefined);
   spyOn(tmuxMod, 'getCurrentSession').mockReturnValue('main');
   spyOn(tmuxMod, 'isInsideTmux').mockReturnValue(true);
+  spyOn(tmuxMod, 'isTmuxHealthy').mockResolvedValue(true);
   const sendKeys = spyOn(tmuxMod, 'sendKeys').mockResolvedValue(undefined);
   const killSession = spyOn(tmuxMod, 'killSession').mockResolvedValue(undefined);
   spyOn(tmuxMod, 'killWindow').mockResolvedValue(undefined);
