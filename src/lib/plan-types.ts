@@ -58,6 +58,7 @@ export interface JobSpec {
   copyFiles?: string[];
   symlinkDirs?: string[];
   commands?: string[];
+  mode?: 'vanilla' | 'plan' | 'ralph' | 'ulw';
 }
 
 export const VALID_PLAN_TRANSITIONS: Record<PlanStatus, PlanStatus[]> = {

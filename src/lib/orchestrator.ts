@@ -12,6 +12,8 @@ import { createWorktree, removeWorktree } from './worktree';
 import { resolvePostCreateHook } from './worktree-setup';
 import { writePromptFile, cleanupPromptFile, writeLauncherScript, cleanupLauncherScript } from './prompt-file';
 import { getCurrentModel } from './model-tracker';
+import { detectOMO } from './omo';
+import { copyPlansToWorktree } from './plan-copier';
 import {
   createSession,
   createWindow,
@@ -21,6 +23,7 @@ import {
   isTmuxHealthy,
   killSession,
   killWindow,
+  sendKeys,
   setPaneDiedHook,
 } from './tmux';
 
@@ -675,6 +678,7 @@ export class Orchestrator {
     const placement = this.planPlacement ?? this.config.defaultPlacement ?? 'session';
     const shortPlanId = planId ? planId.slice(0, 8) : '';
     const branch = job.branch ?? `mc/plan/${shortPlanId}/${job.name}`;
+    const mode = job.mode ?? this.config.omo?.defaultMode ?? 'vanilla';
     const sanitizedName = job.name.replace(/[^a-zA-Z0-9_-]/g, '-');
     const tmuxSessionName = `mc-${sanitizedName}`;
     const tmuxTarget =
@@ -711,6 +715,25 @@ export class Orchestrator {
 
       worktreePath = await createWorktree({ branch, startPoint, postCreate });
 
+      if (mode !== 'vanilla') {
+        const omoStatus = await detectOMO();
+        if (!omoStatus.detected) {
+          throw new Error(
+            `OMO mode "${mode}" requires Oh-My-OpenCode to be installed and detected`,
+          );
+        }
+
+        if (mode === 'plan' || mode === 'ralph' || mode === 'ulw') {
+          try {
+            const sourcePlansPath = './.sisyphus/plans';
+            const targetPlansPath = `${worktreePath}/.sisyphus/plans`;
+            await copyPlansToWorktree(sourcePlansPath, targetPlansPath);
+          } catch {
+            // Non-fatal: plans might not exist
+          }
+        }
+      }
+
       const mcReportSuffix = `\n\nCRITICAL — STATUS REPORTING REQUIRED:
 You MUST call the mc_report tool at these points — this is NOT optional:
 
@@ -725,7 +748,12 @@ If your work needs human review before it can proceed: mc_report(status: "needs_
       const autoCommitSuffix = (this.config.autoCommit !== false)
         ? `\n\nIMPORTANT: When you have completed ALL of your work, you MUST commit your changes before finishing. Stage all modified and new files, then create a commit with a conventional commit message (e.g. "feat: ...", "fix: ...", "docs: ...", "refactor: ...", "chore: ..."). Do NOT skip this step.`
         : '';
-      const jobPrompt = job.prompt + mcReportSuffix + autoCommitSuffix;
+      let jobPrompt = job.prompt + mcReportSuffix + autoCommitSuffix;
+      if (mode === 'ralph') {
+        jobPrompt = `/ralph-loop ${jobPrompt}`;
+      } else if (mode === 'ulw') {
+        jobPrompt = `/ulw-loop ${jobPrompt}`;
+      }
       promptFilePath = await writePromptFile(worktreePath, jobPrompt);
       const model = this.planModelSnapshot ?? getCurrentModel();
       const launcherPath = await writeLauncherScript(worktreePath, promptFilePath, model);
@@ -750,6 +778,28 @@ If your work needs human review before it can proceed: mc_report(status: "needs_
       cleanupPromptFile(promptFilePath);
       cleanupLauncherScript(worktreePath);
 
+      if (mode !== 'vanilla') {
+        try {
+          await new Promise((resolve) => setTimeout(resolve, 2000));
+          switch (mode) {
+            case 'plan':
+              await sendKeys(tmuxTarget, '/start-work');
+              await sendKeys(tmuxTarget, 'Enter');
+              break;
+            case 'ralph':
+              await sendKeys(tmuxTarget, '/ralph-loop');
+              await sendKeys(tmuxTarget, 'Enter');
+              break;
+            case 'ulw':
+              await sendKeys(tmuxTarget, '/ulw-loop');
+              await sendKeys(tmuxTarget, 'Enter');
+              break;
+          }
+        } catch {
+          // Non-fatal: OMO command delivery is best-effort
+        }
+      }
+
       const existingState = await loadJobState();
       const staleJobs = existingState.jobs.filter(
         (j) => j.name === job.name && j.status !== 'running',
@@ -769,7 +819,7 @@ If your work needs human review before it can proceed: mc_report(status: "needs_
         placement,
         status: 'running',
         prompt: job.prompt,
-        mode: 'vanilla',
+        mode,
         createdAt: new Date().toISOString(),
         planId,
       });

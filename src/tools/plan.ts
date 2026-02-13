@@ -38,6 +38,10 @@ export const mc_plan: ToolDefinition = tool({
             .array(tool.schema.string())
             .optional()
             .describe('Shell commands to run in worktree after creation'),
+          mode: tool.schema
+            .enum(['vanilla', 'plan', 'ralph', 'ulw'])
+            .optional()
+            .describe('Execution mode override for this job (defaults to omo.defaultMode config)'),
         }),
       )
       .describe('Array of jobs to execute'),
@@ -85,6 +89,7 @@ export const mc_plan: ToolDefinition = tool({
       copyFiles: j.copyFiles,
       symlinkDirs: j.symlinkDirs,
       commands: j.commands,
+      mode: j.mode,
       status: 'queued' as const,
     }));
 
