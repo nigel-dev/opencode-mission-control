@@ -69,6 +69,7 @@ export const JobSpecSchema = z.object({
   copyFiles: z.array(z.string()).optional(),
   symlinkDirs: z.array(z.string()).optional(),
   commands: z.array(z.string()).optional(),
+  mode: z.enum(['vanilla', 'plan', 'ralph', 'ulw']).optional(),
 });
 
 export const PlanSpecSchema = z.object({
