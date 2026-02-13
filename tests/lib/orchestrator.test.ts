@@ -785,6 +785,167 @@ describe('orchestrator', () => {
   });
 });
 
+describe('orchestrator reconcile pending (dirty re-reconcile)', () => {
+  let planState: PlanSpec | null;
+  let runningJobs: Job[];
+  let monitor: FakeMonitor;
+
+  beforeEach(() => {
+    planState = null;
+    runningJobs = [];
+    monitor = new FakeMonitor();
+
+    spyOn(planStateMod, 'loadPlan').mockImplementation(async () => clone(planState));
+    spyOn(planStateMod, 'savePlan').mockImplementation(async (plan: PlanSpec) => {
+      planState = clone(plan);
+    });
+    spyOn(planStateMod, 'updatePlanJob').mockImplementation(
+      async (planId: string, jobName: string, updates: Partial<JobSpec>) => {
+        if (!planState || planState.id !== planId) {
+          return;
+        }
+        planState.jobs = planState.jobs.map((job) =>
+          job.name === jobName ? { ...job, ...updates } : job,
+        );
+      },
+    );
+    spyOn(planStateMod, 'clearPlan').mockImplementation(async () => {
+      planState = null;
+    });
+    spyOn(planStateMod, 'validateGhAuth').mockResolvedValue(true);
+
+    spyOn(integrationMod, 'createIntegrationBranch').mockResolvedValue({
+      branch: 'mc/integration-plan-1',
+      worktreePath: '/tmp/integration-plan-1',
+    });
+    spyOn(integrationMod, 'deleteIntegrationBranch').mockResolvedValue();
+
+    spyOn(jobStateMod, 'getRunningJobs').mockImplementation(async () => clone(runningJobs));
+    spyOn(jobStateMod, 'addJob').mockResolvedValue();
+    spyOn(jobStateMod, 'updateJob').mockResolvedValue();
+    spyOn(jobStateMod, 'loadJobState').mockImplementation(async () => {
+      const state: JobState = {
+        version: 2,
+        jobs: runningJobs,
+        updatedAt: new Date().toISOString(),
+      };
+      return state;
+    });
+
+    spyOn(worktreeMod, 'createWorktree').mockResolvedValue('/tmp/wt/job-a');
+    spyOn(worktreeMod, 'removeWorktree').mockResolvedValue();
+
+    spyOn(tmuxMod, 'createSession').mockResolvedValue();
+    spyOn(tmuxMod, 'createWindow').mockResolvedValue();
+    spyOn(tmuxMod, 'getCurrentSession').mockReturnValue('main');
+    spyOn(tmuxMod, 'isInsideTmux').mockReturnValue(true);
+    spyOn(tmuxMod, 'isPaneRunning').mockResolvedValue(true);
+    spyOn(tmuxMod, 'killSession').mockResolvedValue();
+    spyOn(tmuxMod, 'killWindow').mockResolvedValue();
+    spyOn(tmuxMod, 'sendKeys').mockResolvedValue();
+    spyOn(tmuxMod, 'setPaneDiedHook').mockResolvedValue();
+
+    spyOn(mergeTrainMod, 'checkMergeability').mockResolvedValue({ canMerge: true });
+  });
+
+  afterEach(() => {
+    mock.restore();
+  });
+
+  it('reconcile runs normally when not already reconciling', async () => {
+    planState = makePlan({
+      status: 'running',
+      jobs: [makeJob('job-a', { status: 'queued' })],
+    });
+
+    const orchestrator = new Orchestrator(monitor as any, {
+      defaultPlacement: 'session',
+      pollInterval: 10000,
+      idleThreshold: 300000,
+      worktreeBasePath: '/tmp',
+      omo: { enabled: false, defaultMode: 'vanilla' },
+      maxParallel: 3,
+    } as any);
+    const launchSpy = spyOn(orchestrator as any, 'launchJob').mockResolvedValue(undefined);
+
+    await (orchestrator as any).reconcile();
+
+    expect(launchSpy).toHaveBeenCalledTimes(1);
+    expect((orchestrator as any).isReconciling).toBe(false);
+  });
+
+  it('concurrent reconcile call sets pending flag instead of dropping', async () => {
+    const orchestrator = new Orchestrator(monitor as any, {
+      defaultPlacement: 'session',
+      pollInterval: 10000,
+      idleThreshold: 300000,
+      worktreeBasePath: '/tmp',
+      omo: { enabled: false, defaultMode: 'vanilla' },
+    } as any);
+
+    (orchestrator as any).isReconciling = true;
+
+    await (orchestrator as any).reconcile();
+
+    expect((orchestrator as any).reconcilePending).toBe(true);
+  });
+
+  it('reconciler re-runs when pending flag is set during execution', async () => {
+    let doReconcileCallCount = 0;
+
+    planState = makePlan({
+      status: 'running',
+      jobs: [makeJob('job-a', { status: 'queued' })],
+    });
+
+    const orchestrator = new Orchestrator(monitor as any, {
+      defaultPlacement: 'session',
+      pollInterval: 10000,
+      idleThreshold: 300000,
+      worktreeBasePath: '/tmp',
+      omo: { enabled: false, defaultMode: 'vanilla' },
+      maxParallel: 3,
+    } as any);
+
+    spyOn(orchestrator as any, '_doReconcile').mockImplementation(async () => {
+      doReconcileCallCount++;
+      if (doReconcileCallCount === 1) {
+        (orchestrator as any).reconcilePending = true;
+      }
+    });
+
+    await (orchestrator as any).reconcile();
+
+    expect(doReconcileCallCount).toBe(2);
+    expect((orchestrator as any).isReconciling).toBe(false);
+  });
+
+  it('pending flag is cleared before each re-run cycle', async () => {
+    const pendingValues: boolean[] = [];
+
+    const orchestrator = new Orchestrator(monitor as any, {
+      defaultPlacement: 'session',
+      pollInterval: 10000,
+      idleThreshold: 300000,
+      worktreeBasePath: '/tmp',
+      omo: { enabled: false, defaultMode: 'vanilla' },
+    } as any);
+
+    let callCount = 0;
+    spyOn(orchestrator as any, '_doReconcile').mockImplementation(async () => {
+      pendingValues.push((orchestrator as any).reconcilePending);
+      callCount++;
+      if (callCount === 1) {
+        (orchestrator as any).reconcilePending = true;
+      }
+    });
+
+    await (orchestrator as any).reconcile();
+
+    expect(pendingValues).toEqual([false, false]);
+  });
+});
+
 describe('orchestrator DAG helpers', () => {
   it('detects circular dependencies', () => {
     const jobs = [

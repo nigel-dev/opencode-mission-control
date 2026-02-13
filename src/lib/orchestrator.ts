@@ -159,6 +159,7 @@ export class Orchestrator {
   private reconcilerInterval: Timer | null = null;
   private isRunning = false;
   private isReconciling = false;
+  private reconcilePending = false;
   private activePlanId: string | null = null;
   private planModelSnapshot: string | undefined;
   private planPlacement: 'session' | 'window' | null = null;
@@ -403,11 +404,22 @@ export class Orchestrator {
 
   private async reconcile(): Promise<void> {
     if (this.isReconciling) {
+      this.reconcilePending = true;
       return;
     }
 
     this.isReconciling = true;
     try {
+      do {
+        this.reconcilePending = false;
+        await this._doReconcile();
+      } while (this.reconcilePending);
+    } finally {
+      this.isReconciling = false;
+    }
+  }
+
+  private async _doReconcile(): Promise<void> {
       const plan = await loadPlan();
 
       if (!plan || isTerminalPlanStatus(plan.status)) {
@@ -652,9 +664,6 @@ export class Orchestrator {
         }
         await savePlan(latestPlan);
       }
-    } finally {
-      this.isReconciling = false;
-    }
   }
 
   private async launchJob(job: JobSpec): Promise<void> {
