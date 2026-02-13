@@ -700,6 +700,86 @@ describe('orchestrator', () => {
       { status: 'ready_to_merge' },
     );
   });
+
+  it('root plan jobs branch from baseCommit', async () => {
+    planState = makePlan({
+      status: 'running',
+      baseCommit: 'abc123',
+      integrationBranch: 'mc/integration-plan-1',
+      jobs: [makeJob('root-job', { status: 'queued' })],
+    });
+
+    const orchestrator = new Orchestrator(monitor as any, {
+      defaultPlacement: 'session',
+      pollInterval: 10000,
+      idleThreshold: 300000,
+      worktreeBasePath: '/tmp',
+      omo: { enabled: false, defaultMode: 'vanilla' },
+    } as any);
+
+    await (orchestrator as any).reconcile();
+
+    expect(worktreeMod.createWorktree).toHaveBeenCalledWith(
+      expect.objectContaining({ startPoint: 'abc123' }),
+    );
+  });
+
+  it('dependent plan jobs branch from integration branch HEAD', async () => {
+    planState = makePlan({
+      status: 'running',
+      baseCommit: 'abc123',
+      integrationBranch: 'mc/integration-plan-1',
+      jobs: [
+        makeJob('upstream', { status: 'merged', mergeOrder: 0 }),
+        makeJob('downstream', { status: 'queued', dependsOn: ['upstream'], mergeOrder: 1 }),
+      ],
+    });
+
+    const orchestrator = new Orchestrator(monitor as any, {
+      defaultPlacement: 'session',
+      pollInterval: 10000,
+      idleThreshold: 300000,
+      worktreeBasePath: '/tmp',
+      omo: { enabled: false, defaultMode: 'vanilla' },
+    } as any);
+
+    await (orchestrator as any).reconcile();
+
+    expect(worktreeMod.createWorktree).toHaveBeenCalledWith(
+      expect.objectContaining({ startPoint: 'mc/integration-plan-1' }),
+    );
+  });
+
+  it('startPoint is passed through to createWorktree for plan jobs', async () => {
+    planState = makePlan({
+      status: 'running',
+      baseCommit: 'def456',
+      integrationBranch: 'mc/integration-plan-1',
+      jobs: [
+        makeJob('no-deps', { status: 'queued', mergeOrder: 0 }),
+        makeJob('has-deps', { status: 'merged', mergeOrder: 1 }),
+        makeJob('with-deps', { status: 'queued', dependsOn: ['has-deps'], mergeOrder: 2 }),
+      ],
+    });
+
+    const orchestrator = new Orchestrator(monitor as any, {
+      defaultPlacement: 'session',
+      pollInterval: 10000,
+      idleThreshold: 300000,
+      worktreeBasePath: '/tmp',
+      omo: { enabled: false, defaultMode: 'vanilla' },
+      maxParallel: 3,
+    } as any);
+
+    await (orchestrator as any).reconcile();
+
+    const calls = (worktreeMod.createWorktree as any).mock.calls;
+    const noDepCall = calls.find((c: any) => c[0].branch === 'mc/no-deps');
+    const withDepCall = calls.find((c: any) => c[0].branch === 'mc/with-deps');
+
+    expect(noDepCall[0].startPoint).toBe('def456');
+    expect(withDepCall[0].startPoint).toBe('mc/integration-plan-1');
+  });
 });
 
 describe('orchestrator DAG helpers', () => {
