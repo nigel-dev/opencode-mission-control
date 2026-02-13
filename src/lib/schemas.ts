@@ -110,6 +110,7 @@ export const MCConfigSchema = z.object({
   testTimeout: z.number().optional(),
   mergeStrategy: z.enum(['squash', 'ff-only', 'merge']).optional(),
   worktreeSetup: WorktreeSetupSchema.optional(),
+  allowUnsafeCommands: z.boolean().optional(),
   omo: OmoConfigSchema,
 });
 
