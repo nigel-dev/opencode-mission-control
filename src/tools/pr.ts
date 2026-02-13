@@ -76,6 +76,10 @@ export const mc_pr: ToolDefinition = tool({
       .boolean()
       .optional()
       .describe('Create as draft PR'),
+    baseBranch: tool.schema
+      .string()
+      .optional()
+      .describe('Target branch for the PR (defaults to the job\'s base branch, or the repo default branch)'),
   },
   async execute(args) {
     // 1. Get job by name
@@ -100,11 +104,11 @@ export const mc_pr: ToolDefinition = tool({
     const prTitle = args.title || job.name;
 
     // 4. Build gh pr create arguments
-    const defaultBranch = await getDefaultBranch(job.worktreePath);
+    const baseBranch = args.baseBranch ?? job.baseBranch ?? await getDefaultBranch(job.worktreePath);
     const ghArgs: string[] = [
       '--title', prTitle,
       '--head', job.branch,
-      '--base', defaultBranch,
+      '--base', baseBranch,
     ];
 
     // 5. Build PR body — use explicit body, or fall back to default

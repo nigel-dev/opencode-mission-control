@@ -53,7 +53,7 @@ export const mc_merge: ToolDefinition = tool({
     const mainWorktreePath = await getMainWorktree();
 
     // 3. Get the base branch
-    const baseBranch = await getBaseBranch(mainWorktreePath);
+    const baseBranch = job.baseBranch ?? await getBaseBranch(mainWorktreePath);
 
     // 4. Load config and resolve merge strategy
     const config = await loadConfig();

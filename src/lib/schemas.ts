@@ -5,6 +5,7 @@ export const JobSchema = z.object({
   name: z.string(),
   worktreePath: z.string(),
   branch: z.string(),
+  baseBranch: z.string().optional(),
   tmuxTarget: z.string(),
   placement: z.enum(['session', 'window']),
   status: z.enum(['running', 'completed', 'failed', 'stopped']),

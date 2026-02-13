@@ -81,7 +81,9 @@ export const mc_plan_approve: ToolDefinition = tool({
     // Create integration infrastructure that copilot mode skipped
     const config = await loadConfig();
     const integrationPostCreate = resolvePostCreateHook(config.worktreeSetup);
-    const integration = await createIntegrationBranch(plan.id, integrationPostCreate);
+    const integration = plan.baseBranch
+      ? await createIntegrationBranch(plan.id, integrationPostCreate, plan.baseBranch)
+      : await createIntegrationBranch(plan.id, integrationPostCreate);
     plan.integrationBranch = integration.branch;
     plan.integrationWorktree = integration.worktreePath;
     plan.status = 'running';

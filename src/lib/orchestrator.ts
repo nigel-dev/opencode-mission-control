@@ -327,7 +327,9 @@ export class Orchestrator {
     };
 
     const integrationPostCreate = resolvePostCreateHook(this.config.worktreeSetup);
-    const integration = await createIntegrationBranch(spec.id, integrationPostCreate);
+    const integration = spec.baseBranch
+      ? await createIntegrationBranch(spec.id, integrationPostCreate, spec.baseBranch)
+      : await createIntegrationBranch(spec.id, integrationPostCreate);
     plan.integrationBranch = integration.branch;
     plan.integrationWorktree = integration.worktreePath;
 
@@ -925,7 +927,7 @@ If your work needs human review before it can proceed: mc_report(status: "needs_
       throw new Error(`Failed to push integration branch: ${pushResult.stderr || pushResult.stdout}`);
     }
 
-    const defaultBranch = await getDefaultBranch();
+    const baseBranch = plan.baseBranch ?? await getDefaultBranch();
     const title = plan.name;
     const jobLines = plan.jobs.map((j) => {
       const status = j.status === 'merged' ? '✅' : j.status === 'failed' ? '❌' : '⏳';
@@ -977,7 +979,7 @@ If your work needs human review before it can proceed: mc_report(status: "needs_
       '--head',
       plan.integrationBranch,
       '--base',
-      defaultBranch,
+      baseBranch,
       '--title',
       title,
       '--body',

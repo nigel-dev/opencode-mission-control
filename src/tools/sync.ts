@@ -22,7 +22,9 @@ export const mc_sync: ToolDefinition = tool({
     const syncStrategy = args.strategy || 'rebase';
 
     // 3. Sync the worktree
-    const result = await syncWorktree(job.worktreePath, syncStrategy);
+    const result = job.baseBranch
+      ? await syncWorktree(job.worktreePath, syncStrategy, job.baseBranch)
+      : await syncWorktree(job.worktreePath, syncStrategy);
 
     // 4. Format output
     if (result.success) {
