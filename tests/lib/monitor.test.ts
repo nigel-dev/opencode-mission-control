@@ -395,7 +395,7 @@ describe('JobMonitor', () => {
        monitor.stop();
      });
 
-    it('should handle errors gracefully during poll', async () => {
+    it('should handle isPaneRunning errors gracefully during poll', async () => {
       const mockJob: Job = {
         id: 'job-1',
         name: 'Test Job',
@@ -412,18 +412,18 @@ describe('JobMonitor', () => {
       mockGetRunningJobs.mockResolvedValue([mockJob]);
       mockIsPaneRunning.mockRejectedValue(new Error('Tmux error'));
 
-      const consoleErrorSpy = spyOn(console, 'error').mockImplementation(() => {});
+      const consoleWarnSpy = spyOn(console, 'warn').mockImplementation(() => {});
 
       const monitor = new JobMonitor();
       monitor.start();
 
       await new Promise(resolve => setTimeout(resolve, 50));
 
-      expect(consoleErrorSpy).toHaveBeenCalled();
+      expect(consoleWarnSpy).toHaveBeenCalled();
       expect(mockUpdateJob).not.toHaveBeenCalled();
 
       monitor.stop();
-      consoleErrorSpy.mockRestore();
+      consoleWarnSpy.mockRestore();
     });
   });
 

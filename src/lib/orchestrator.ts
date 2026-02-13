@@ -18,6 +18,7 @@ import {
   getCurrentSession,
   isInsideTmux,
   isPaneRunning,
+  isTmuxHealthy,
   killSession,
   killWindow,
   setPaneDiedHook,
@@ -887,18 +888,30 @@ If your work needs human review before it can proceed: mc_report(status: "needs_
     const runningJobs = (await getRunningJobs()).filter((job) => job.planId === plan.id);
     let hasDeadRunningJob = false;
 
-    for (const runningJob of runningJobs) {
-      const paneAlive = await isPaneRunning(runningJob.tmuxTarget);
-      if (!paneAlive) {
-        hasDeadRunningJob = true;
-        await updateJob(runningJob.id, {
-          status: 'failed',
-          completedAt: new Date().toISOString(),
-        });
-        await updatePlanJob(plan.id, runningJob.name, {
-          status: 'failed',
-          error: 'tmux pane is not running',
-        });
+    const tmuxHealthy = await isTmuxHealthy();
+    if (!tmuxHealthy) {
+      console.warn('tmux server is not responsive, skipping pane checks during resumePlan');
+    } else {
+      for (const runningJob of runningJobs) {
+        try {
+          const paneAlive = await isPaneRunning(runningJob.tmuxTarget);
+          if (!paneAlive) {
+            hasDeadRunningJob = true;
+            await updateJob(runningJob.id, {
+              status: 'failed',
+              completedAt: new Date().toISOString(),
+            });
+            await updatePlanJob(plan.id, runningJob.name, {
+              status: 'failed',
+              error: 'tmux pane is not running',
+            });
+          }
+        } catch (error) {
+          console.warn(
+            `tmux error checking job ${runningJob.name} during resumePlan, skipping:`,
+            error instanceof Error ? error.message : error,
+          );
+        }
       }
     }
 

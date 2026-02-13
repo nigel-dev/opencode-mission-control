@@ -157,7 +157,16 @@ export class JobMonitor extends EventEmitter {
 
      for (const job of jobs) {
        try {
-         const isRunning = await isPaneRunning(job.tmuxTarget);
+         let isRunning: boolean;
+         try {
+           isRunning = await isPaneRunning(job.tmuxTarget);
+         } catch (paneError) {
+           console.warn(
+             `tmux error checking job ${job.id}, skipping this poll cycle:`,
+             paneError instanceof Error ? paneError.message : paneError,
+           );
+           continue;
+         }
 
         if (!isRunning) {
             this.idleTrackers.delete(job.id);
