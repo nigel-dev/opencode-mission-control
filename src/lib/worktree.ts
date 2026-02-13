@@ -1,7 +1,7 @@
 import { spawn } from 'bun';
 import { join, resolve } from 'path';
 import { getProjectId, getXdgDataDir } from './paths';
-import { gitCommand } from './git';
+import { gitCommand, getDefaultBranch } from './git';
 import type {
   WorktreeInfo,
   SyncResult,
@@ -222,30 +222,23 @@ export async function syncWorktree(
   path: string,
   strategy: 'rebase' | 'merge',
   baseBranch?: string,
+  source?: 'local' | 'origin',
 ): Promise<SyncResult> {
   let targetBranch: string;
   if (baseBranch) {
-    targetBranch = `origin/${baseBranch}`;
+    const useOrigin = source === 'origin' || (!source);
+    targetBranch = useOrigin ? `origin/${baseBranch}` : baseBranch;
   } else {
-    const upstreamResult = await gitCommand(
-      ['-C', path, 'rev-parse', '--abbrev-ref', 'HEAD@{upstream}'],
-    );
-
-    if (upstreamResult.exitCode !== 0) {
-      const defaultBranchResult = await gitCommand([
-        'symbolic-ref',
-        '--short',
-        'refs/remotes/origin/HEAD',
-      ]);
-      targetBranch = defaultBranchResult.stdout || 'main';
-    } else {
-      targetBranch = upstreamResult.stdout;
-    }
+    const defaultBranch = await getDefaultBranch();
+    const useOrigin = source === 'origin';
+    targetBranch = useOrigin ? `origin/${defaultBranch}` : defaultBranch;
   }
 
-  const fetchResult = await gitCommand(['-C', path, 'fetch', 'origin']);
-  if (fetchResult.exitCode !== 0) {
-    return { success: false, conflicts: ['Failed to fetch from origin'] };
+  if (source === 'origin' || (baseBranch && !source)) {
+    const fetchResult = await gitCommand(['-C', path, 'fetch', 'origin']);
+    if (fetchResult.exitCode !== 0) {
+      return { success: false, conflicts: ['Failed to fetch from origin'] };
+    }
   }
 
   const syncResult = await gitCommand(['-C', path, strategy, targetBranch]);
@@ -285,7 +278,7 @@ export class GitWorktreeProvider implements WorktreeProvider {
     return listWorktrees();
   }
 
-  async sync(path: string, strategy: 'rebase' | 'merge', baseBranch?: string): Promise<SyncResult> {
-    return syncWorktree(path, strategy, baseBranch);
+  async sync(path: string, strategy: 'rebase' | 'merge', baseBranch?: string, source?: 'local' | 'origin'): Promise<SyncResult> {
+    return syncWorktree(path, strategy, baseBranch, source);
   }
 }

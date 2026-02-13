@@ -10,6 +10,10 @@ export const mc_sync: ToolDefinition = tool({
       .enum(['rebase', 'merge'])
       .optional()
       .describe('Sync strategy (default: rebase)'),
+    source: tool.schema
+      .enum(['local', 'origin'])
+      .optional()
+      .describe('Sync source: local base branch (default) or origin'),
   },
   async execute(args) {
     // 1. Find job by name
@@ -22,9 +26,12 @@ export const mc_sync: ToolDefinition = tool({
     const syncStrategy = args.strategy || 'rebase';
 
     // 3. Sync the worktree
-    const result = job.baseBranch
-      ? await syncWorktree(job.worktreePath, syncStrategy, job.baseBranch)
-      : await syncWorktree(job.worktreePath, syncStrategy);
+    const result = await syncWorktree(
+      job.worktreePath,
+      syncStrategy,
+      job.baseBranch,
+      args.source,
+    );
 
     // 4. Format output
     if (result.success) {
