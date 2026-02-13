@@ -17,6 +17,9 @@ import {
   isTmuxHealthy,
 } from '../../src/lib/tmux';
 
+const hasTmux = await isTmuxHealthy();
+const tmuxIt = hasTmux ? it : it.skip;
+
 describe('tmux utilities', () => {
   describe('isTmuxAvailable', () => {
     it('should return a boolean', async () => {
@@ -97,7 +100,7 @@ describe('tmux utilities', () => {
   });
 
   describe('createSession', () => {
-    it('should accept valid options', async () => {
+    tmuxIt('should accept valid options', async () => {
       const result = await createSession({
         name: 'test-session-valid-xyz',
         workdir: '/tmp',
@@ -109,7 +112,7 @@ describe('tmux utilities', () => {
   });
 
   describe('createWindow', () => {
-    it('should throw error when session does not exist', async () => {
+    tmuxIt('should throw error when session does not exist', async () => {
       await expect(
         createWindow({
           session: 'nonexistent-session-xyz',
@@ -121,14 +124,14 @@ describe('tmux utilities', () => {
   });
 
   describe('sessionExists', () => {
-    it('should return false for nonexistent session', async () => {
+    tmuxIt('should return false for nonexistent session', async () => {
       const result = await sessionExists('nonexistent-session-xyz-123');
       expect(result).toBe(false);
     });
   });
 
   describe('windowExists', () => {
-    it('should return false for nonexistent window', async () => {
+    tmuxIt('should return false for nonexistent window', async () => {
       const result = await windowExists(
         'nonexistent-session-xyz',
         'nonexistent-window'
@@ -138,7 +141,7 @@ describe('tmux utilities', () => {
   });
 
   describe('killSession', () => {
-    it('should throw error when session does not exist', async () => {
+    tmuxIt('should throw error when session does not exist', async () => {
       await expect(
         killSession('nonexistent-session-xyz-123')
       ).rejects.toThrow();
@@ -146,7 +149,7 @@ describe('tmux utilities', () => {
   });
 
   describe('killWindow', () => {
-    it('should throw error when window does not exist', async () => {
+    tmuxIt('should throw error when window does not exist', async () => {
       await expect(
         killWindow('nonexistent-session-xyz', 'nonexistent-window')
       ).rejects.toThrow();
@@ -154,7 +157,7 @@ describe('tmux utilities', () => {
   });
 
   describe('capturePane', () => {
-    it('should throw error for invalid target', async () => {
+    tmuxIt('should throw error for invalid target', async () => {
       await expect(
         capturePane('nonexistent-session-xyz:0')
       ).rejects.toThrow();
@@ -162,7 +165,7 @@ describe('tmux utilities', () => {
   });
 
   describe('sendKeys', () => {
-    it('should throw error for invalid target', async () => {
+    tmuxIt('should throw error for invalid target', async () => {
       await expect(
         sendKeys('nonexistent-session-xyz:0', 'echo test')
       ).rejects.toThrow();
@@ -170,7 +173,7 @@ describe('tmux utilities', () => {
   });
 
   describe('setPaneDiedHook', () => {
-    it('should throw error for invalid target', async () => {
+    tmuxIt('should throw error for invalid target', async () => {
       await expect(
         setPaneDiedHook('nonexistent-session-xyz:0', 'echo done')
       ).rejects.toThrow();
@@ -178,14 +181,14 @@ describe('tmux utilities', () => {
   });
 
   describe('getPanePid', () => {
-    it('should return undefined for invalid target', async () => {
+    tmuxIt('should return undefined for invalid target', async () => {
       const result = await getPanePid('nonexistent-session-xyz:0');
       expect(result).toBeUndefined();
     });
   });
 
   describe('isPaneRunning', () => {
-    it('should return false when tmux reports pane not found', async () => {
+    tmuxIt('should return false when tmux reports pane not found', async () => {
       const result = await isPaneRunning('nonexistent-session-xyz:0');
       expect(result).toBe(false);
     });
