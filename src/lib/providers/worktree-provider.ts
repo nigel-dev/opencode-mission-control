@@ -57,5 +57,5 @@ export interface WorktreeProvider {
    * Sync a worktree with the base branch using the specified strategy.
    * Returns success status and any conflicts.
    */
-  sync(path: string, strategy: 'rebase' | 'merge', baseBranch?: string): Promise<SyncResult>;
+  sync(path: string, strategy: 'rebase' | 'merge', baseBranch?: string, source?: 'local' | 'origin'): Promise<SyncResult>;
 }

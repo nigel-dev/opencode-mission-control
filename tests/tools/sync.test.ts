@@ -85,7 +85,9 @@ describe('mc_sync', () => {
 
       await mc_sync.execute({ name: 'test-job' }, mockContext);
 
-      expect(mockSyncWorktree).toHaveBeenCalledWith('/tmp/mc-worktrees/test-job', 'rebase');
+      expect(mockSyncWorktree).toHaveBeenCalledWith(
+        '/tmp/mc-worktrees/test-job', 'rebase', undefined, undefined,
+      );
     });
 
     it('should use specified rebase strategy', async () => {
@@ -93,7 +95,9 @@ describe('mc_sync', () => {
 
       await mc_sync.execute({ name: 'test-job', strategy: 'rebase' }, mockContext);
 
-      expect(mockSyncWorktree).toHaveBeenCalledWith('/tmp/mc-worktrees/test-job', 'rebase');
+      expect(mockSyncWorktree).toHaveBeenCalledWith(
+        '/tmp/mc-worktrees/test-job', 'rebase', undefined, undefined,
+      );
     });
 
     it('should use specified merge strategy', async () => {
@@ -101,7 +105,9 @@ describe('mc_sync', () => {
 
       await mc_sync.execute({ name: 'test-job', strategy: 'merge' }, mockContext);
 
-      expect(mockSyncWorktree).toHaveBeenCalledWith('/tmp/mc-worktrees/test-job', 'merge');
+      expect(mockSyncWorktree).toHaveBeenCalledWith(
+        '/tmp/mc-worktrees/test-job', 'merge', undefined, undefined,
+      );
     });
   });
 
@@ -187,6 +193,53 @@ describe('mc_sync', () => {
     });
   });
 
+  describe('source parameter', () => {
+    beforeEach(() => {
+      mockGetJobByName.mockResolvedValue(createMockJob());
+      mockSyncWorktree.mockResolvedValue({ success: true });
+    });
+
+    it('should have optional arg: source', () => {
+      expect(mc_sync.args.source).toBeDefined();
+    });
+
+    it('should pass source=local to syncWorktree', async () => {
+      await mc_sync.execute({ name: 'test-job', source: 'local' }, mockContext);
+
+      expect(mockSyncWorktree).toHaveBeenCalledWith(
+        '/tmp/mc-worktrees/test-job', 'rebase', undefined, 'local',
+      );
+    });
+
+    it('should pass source=origin to syncWorktree', async () => {
+      await mc_sync.execute({ name: 'test-job', source: 'origin' }, mockContext);
+
+      expect(mockSyncWorktree).toHaveBeenCalledWith(
+        '/tmp/mc-worktrees/test-job', 'rebase', undefined, 'origin',
+      );
+    });
+
+    it('should pass baseBranch from job along with source', async () => {
+      mockGetJobByName.mockResolvedValue(createMockJob({ baseBranch: 'develop' }));
+
+      await mc_sync.execute({ name: 'test-job', source: 'local' }, mockContext);
+
+      expect(mockSyncWorktree).toHaveBeenCalledWith(
+        '/tmp/mc-worktrees/test-job', 'rebase', 'develop', 'local',
+      );
+    });
+
+    it('should pass baseBranch without source', async () => {
+      mockGetJobByName.mockResolvedValue(createMockJob({ baseBranch: 'develop' }));
+
+      await mc_sync.execute({ name: 'test-job' }, mockContext);
+
+      expect(mockSyncWorktree).toHaveBeenCalledWith(
+        '/tmp/mc-worktrees/test-job', 'rebase', 'develop', undefined,
+      );
+    });
+  });
+
   describe('different job names', () => {
     it('should work with different job names', async () => {
       mockGetJobByName.mockResolvedValue(createMockJob({ name: 'feature-branch' }));
@@ -217,7 +270,7 @@ describe('mc_sync', () => {
 
       await mc_sync.execute({ name: 'test-job' }, mockContext);
 
-      expect(mockSyncWorktree).toHaveBeenCalledWith(worktreePath, 'rebase');
+      expect(mockSyncWorktree).toHaveBeenCalledWith(worktreePath, 'rebase', undefined, undefined);
     });
   });
 });
