@@ -175,6 +175,50 @@ AI: → mc_plan(
 
 Because waiting is overrated.
 
+#### 6) Target a non-default branch
+
+```
+You: "Fix these bugs on the develop branch, not main."
+
+AI: → mc_launch(name: "fix-auth", prompt: "Fix the JWT bug", baseBranch: "develop")
+    → mc_launch(name: "fix-timeout", prompt: "Fix the timeout issue", baseBranch: "develop")
+
+You: "Auth fix looks good. Create a PR targeting develop."
+
+AI: → mc_pr(name: "fix-auth", title: "fix: JWT token validation")
+    PR created targeting 'develop': https://github.com/you/repo/pull/43
+```
+
+#### 7) Orchestrate a plan on a feature branch
+
+```
+AI: → mc_plan(
+      name: "feat: search upgrade",
+      baseBranch: "develop",
+      mode: "autopilot",
+      jobs: [
+        { name: "schema", prompt: "Add search tables" },
+        { name: "api", prompt: "Build search API", dependsOn: ["schema"] }
+      ]
+    )
+
+Result:
+  • Integration branch created from 'develop'
+  • schema launches from 'develop', api launches from integration HEAD
+  • PR targets 'develop' when all jobs merge
+```
+
+#### 8) Sync a job with its base branch
+
+```
+You: "The develop branch has new changes. Update my job."
+
+AI: → mc_sync(name: "fix-auth", source: "origin")
+    Successfully synced job "fix-auth" using rebase strategy.
+```
+
+By default, `mc_sync` syncs against the local base branch. Use `source: "origin"` to fetch the latest from the remote first.
+
 ---
 
 ## Choosing Between Launch and Plan
@@ -295,12 +339,13 @@ Launch a new parallel AI coding session in an isolated worktree.
 | `name` | `string` | Yes | — | Job name (used for branch name and tmux target) |
 | `prompt` | `string` | Yes | — | Task prompt for the spawned AI agent |
 | `branch` | `string` | No | `mc/{name}` | Git branch name |
+| `baseBranch` | `string` | No | Default branch | Branch or ref to start from (e.g. `"develop"`) |
 | `placement` | `"session"` \| `"window"` | No | Config default | `session` creates a new tmux session; `window` adds a window to the current session |
 | `mode` | `"vanilla"` \| `"plan"` \| `"ralph"` \| `"ulw"` | No | Config default | Execution mode (see [OMO Integration](#omo-integration)) |
 | `planFile` | `string` | No | — | Plan file path (for `plan` mode) |
 | `copyFiles` | `string[]` | No | — | Files to copy from main worktree (e.g. `[".env", ".env.local"]`) |
 | `symlinkDirs` | `string[]` | No | — | Directories to symlink (e.g. `["node_modules"]`). `.opencode` is always included. |
-| `commands` | `string[]` | No | — | Shell commands to run after worktree creation (e.g. `["bun install"]`) |
+| `commands` | `string[]` | No | — | Shell commands to run after worktree creation (e.g. `["bun install"]`). Validated against injection patterns — use `allowUnsafeCommands` in config to bypass. |
 
 **What happens on launch:**
 1. Creates a new git worktree on a dedicated branch
@@ -399,6 +444,7 @@ Compare a job's branch against the base branch.
 |-----------|------|----------|---------|-------------|
 | `name` | `string` | Yes | — | Job name |
 | `stat` | `boolean` | No | `false` | Show diffstat summary only |
+| `baseBranch` | `string` | No | Job's base branch | Override base branch for diff comparison |
 
 #### `mc_pr`
 
@@ -409,6 +455,7 @@ Push the job's branch and create a GitHub Pull Request. Requires the `gh` CLI to
 | `name` | `string` | Yes | — | Job name |
 | `title` | `string` | No | Job name | PR title — use [Conventional Commits](https://www.conventionalcommits.org/) format (e.g. `feat: add login`, `fix: resolve timeout`) |
 | `body` | `string` | No | PR template or auto-generated | PR body. If omitted, uses `.github/pull_request_template.md` if found, otherwise generates a summary. |
+| `baseBranch` | `string` | No | Job's base branch or default | Target branch for the PR (falls back to job's `baseBranch`, then default branch) |
 | `draft` | `boolean` | No | `false` | Create as draft PR |
 
 #### `mc_sync`
@@ -419,6 +466,7 @@ Pull the latest changes from the base branch into a job's worktree.
 |-----------|------|----------|---------|-------------|
 | `name` | `string` | Yes | — | Job name |
 | `strategy` | `"rebase"` \| `"merge"` | No | `"rebase"` | Sync strategy. Aborts on conflict and reports affected files. |
+| `source` | `"local"` \| `"origin"` | No | `"local"` | Sync against the local base branch (default) or fetch from origin first |
 
 #### `mc_merge`
 
@@ -447,6 +495,7 @@ Create and start a multi-job orchestrated plan.
 | `jobs` | `JobSpec[]` | Yes | — | Array of job definitions (see below) |
 | `mode` | `"autopilot"` \| `"copilot"` \| `"supervisor"` | No | `"autopilot"` | Execution mode |
 | `placement` | `"session"` \| `"window"` | No | Config default | tmux placement for all jobs in this plan |
+| `baseBranch` | `string` | No | Default branch | Base branch for the integration branch and PR target |
 
 **JobSpec fields:**
 
@@ -456,6 +505,7 @@ Create and start a multi-job orchestrated plan.
 | `prompt` | `string` | Yes | Task prompt for the AI agent |
 | `dependsOn` | `string[]` | No | Job names this job depends on (must complete and merge first) |
 | `touchSet` | `string[]` | No | File globs this job expects to modify |
+| `mode` | `"vanilla"` \| `"plan"` \| `"ralph"` \| `"ulw"` | No | Execution mode override (defaults to `omo.defaultMode` config) |
 | `copyFiles` | `string[]` | No | Files to copy into the worktree |
 | `symlinkDirs` | `string[]` | No | Directories to symlink into the worktree |
 | `commands` | `string[]` | No | Post-creation shell commands |
@@ -480,6 +530,9 @@ mc_plan
   │
   ├─ Topological sort jobs by dependencies
   ├─ Launch jobs (respects maxParallel limit)
+  │   • Root jobs branch from baseCommit
+  │   • Dependent jobs branch from integration HEAD (sees merged code)
+  │   • Branches use plan-scoped naming: mc/plan/{planId}/{jobName}
   │
   │   ┌──────── Reconciler Loop (5s) ────────┐
   │   │                                       │
@@ -593,6 +646,10 @@ These commands run directly in the OpenCode chat — instant execution without a
 | `/mc-launch <prompt>` | Launch a new parallel agent (delegates to AI) |
 | `/mc-status <name>` | Detailed status of a specific job |
 | `/mc-attach <name>` | Get the tmux attach command |
+| `/mc-capture <name>` | Capture terminal output from a job |
+| `/mc-diff <name>` | Show changes in a job's branch |
+| `/mc-plan` | Show plan status (runs `mc_plan_status`) |
+| `/mc-approve` | Approve a pending plan or checkpoint |
 | `/mc-cleanup [name]` | Clean up finished jobs (all if no name given) |
 
 ---
@@ -673,7 +730,7 @@ Every job creates a fresh git worktree. The `worktreeSetup` config (and per-job 
 
 - **`copyFiles`** — Copies files from the main worktree (great for `.env`, config files)
 - **`symlinkDirs`** — Creates symlinks to avoid re-downloading (great for `node_modules`, `.cache`)
-- **`commands`** — Runs shell commands after setup (great for `bun install`, `pip install -e .`)
+- **`commands`** — Runs shell commands after setup (great for `bun install`, `pip install -e .`). Commands are validated against shell injection patterns (`;`, `&&`, `||`, `|`, backticks, `$()`). Set `allowUnsafeCommands: true` in config to bypass validation for advanced use cases.
 
 Per-job parameters are **merged** with the global `worktreeSetup` config.
 
