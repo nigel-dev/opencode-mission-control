@@ -40,6 +40,7 @@ export interface WorktreeProvider {
   create(opts: {
     branch: string;
     basePath?: string;
+    startPoint?: string;
     postCreate?: PostCreateHook;
   }): Promise<string>;
 
@@ -56,5 +57,5 @@ export interface WorktreeProvider {
    * Sync a worktree with the base branch using the specified strategy.
    * Returns success status and any conflicts.
    */
-  sync(path: string, strategy: 'rebase' | 'merge'): Promise<SyncResult>;
+  sync(path: string, strategy: 'rebase' | 'merge', baseBranch?: string): Promise<SyncResult>;
 }

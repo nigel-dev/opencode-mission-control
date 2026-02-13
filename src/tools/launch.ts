@@ -82,6 +82,10 @@ export const mc_launch: ToolDefinition = tool({
       .string()
       .optional()
       .describe('Branch name (defaults to mc/{name})'),
+    baseBranch: tool.schema
+      .string()
+      .optional()
+      .describe('Branch or ref to start from (defaults to default branch)'),
     placement: tool.schema
       .enum(['session', 'window'])
       .optional()
@@ -161,7 +165,11 @@ export const mc_launch: ToolDefinition = tool({
 
     let worktreePath: string;
     try {
-      worktreePath = await createWorktree({ branch, postCreate });
+      worktreePath = await createWorktree({
+        branch,
+        postCreate,
+        startPoint: args.baseBranch,
+      });
     } catch (error) {
       throw new Error(
         `Failed to create worktree for branch "${branch}": ${error instanceof Error ? error.message : String(error)}`,
@@ -291,6 +299,7 @@ export const mc_launch: ToolDefinition = tool({
       name: args.name,
       worktreePath,
       branch,
+      baseBranch: args.baseBranch,
       tmuxTarget,
       placement,
       status: 'running',
@@ -308,6 +317,7 @@ export const mc_launch: ToolDefinition = tool({
       '',
       `  ID:        ${jobId}`,
       `  Branch:    ${branch}`,
+      ...(args.baseBranch ? [`  Base:      ${args.baseBranch}`] : []),
       `  Worktree:  ${worktreePath}`,
       `  tmux:      ${tmuxTarget}`,
       `  Placement: ${placement}`,

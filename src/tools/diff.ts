@@ -6,17 +6,22 @@ async function executeGitDiff(
   worktreePath: string,
   branch: string,
   stat: boolean = false,
+  baseBranch?: string,
 ): Promise<string> {
-  const baseResult = await gitCommand(
-    ['rev-parse', '--abbrev-ref', 'origin/HEAD'],
-    { cwd: worktreePath },
-  );
-
-  let baseBranch = 'main';
-  if (baseResult.exitCode === 0) {
-    const match = baseResult.stdout.match(/origin\/(.+)/);
-    if (match) {
-      baseBranch = match[1];
+  let base: string;
+  if (baseBranch) {
+    base = baseBranch;
+  } else {
+    const baseResult = await gitCommand(
+      ['rev-parse', '--abbrev-ref', 'origin/HEAD'],
+      { cwd: worktreePath },
+    );
+    base = 'main';
+    if (baseResult.exitCode === 0) {
+      const match = baseResult.stdout.match(/origin\/(.+)/);
+      if (match) {
+        base = match[1];
+      }
     }
   }
 
@@ -24,7 +29,7 @@ async function executeGitDiff(
   if (stat) {
     args.push('--stat');
   }
-  args.push(`origin/${baseBranch}..${branch}`);
+  args.push(`origin/${base}..${branch}`);
 
   const diffResult = await gitCommand(args, { cwd: worktreePath });
 
@@ -54,7 +59,7 @@ export const mc_diff: ToolDefinition = tool({
     }
 
     // 2. Execute git diff
-    const diff = await executeGitDiff(job.worktreePath, job.branch, args.stat);
+    const diff = await executeGitDiff(job.worktreePath, job.branch, args.stat, job.baseBranch);
 
     // 3. Return diff output
     return diff || '(no changes)';

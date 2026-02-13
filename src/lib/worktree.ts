@@ -69,6 +69,7 @@ export async function listWorktrees(): Promise<WorktreeInfo[]> {
 export async function createWorktree(opts: {
   branch: string;
   basePath?: string;
+  startPoint?: string;
   postCreate?: PostCreateHook;
 }): Promise<string> {
   const projectId = await getProjectId();
@@ -86,13 +87,9 @@ export async function createWorktree(opts: {
   if (branchExists) {
     createResult = await gitCommand(['worktree', 'add', worktreePath, opts.branch]);
   } else {
-    createResult = await gitCommand([
-      'worktree',
-      'add',
-      '-b',
-      opts.branch,
-      worktreePath,
-    ]);
+    const args = ['worktree', 'add', '-b', opts.branch, worktreePath];
+    if (opts.startPoint) args.push(opts.startPoint);
+    createResult = await gitCommand(args);
   }
 
   if (createResult.exitCode !== 0) {
@@ -209,21 +206,26 @@ export async function getWorktreeForBranch(
 export async function syncWorktree(
   path: string,
   strategy: 'rebase' | 'merge',
+  baseBranch?: string,
 ): Promise<SyncResult> {
-  const upstreamResult = await gitCommand(
-    ['-C', path, 'rev-parse', '--abbrev-ref', 'HEAD@{upstream}'],
-  );
-
   let targetBranch: string;
-  if (upstreamResult.exitCode !== 0) {
-    const defaultBranchResult = await gitCommand([
-      'symbolic-ref',
-      '--short',
-      'refs/remotes/origin/HEAD',
-    ]);
-    targetBranch = defaultBranchResult.stdout || 'main';
+  if (baseBranch) {
+    targetBranch = `origin/${baseBranch}`;
   } else {
-    targetBranch = upstreamResult.stdout;
+    const upstreamResult = await gitCommand(
+      ['-C', path, 'rev-parse', '--abbrev-ref', 'HEAD@{upstream}'],
+    );
+
+    if (upstreamResult.exitCode !== 0) {
+      const defaultBranchResult = await gitCommand([
+        'symbolic-ref',
+        '--short',
+        'refs/remotes/origin/HEAD',
+      ]);
+      targetBranch = defaultBranchResult.stdout || 'main';
+    } else {
+      targetBranch = upstreamResult.stdout;
+    }
   }
 
   const fetchResult = await gitCommand(['-C', path, 'fetch', 'origin']);
@@ -254,6 +256,7 @@ export class GitWorktreeProvider implements WorktreeProvider {
   async create(opts: {
     branch: string;
     basePath?: string;
+    startPoint?: string;
     postCreate?: PostCreateHook;
   }): Promise<string> {
     return createWorktree(opts);
@@ -267,7 +270,7 @@ export class GitWorktreeProvider implements WorktreeProvider {
     return listWorktrees();
   }
 
-  async sync(path: string, strategy: 'rebase' | 'merge'): Promise<SyncResult> {
-    return syncWorktree(path, strategy);
+  async sync(path: string, strategy: 'rebase' | 'merge', baseBranch?: string): Promise<SyncResult> {
+    return syncWorktree(path, strategy, baseBranch);
   }
 }

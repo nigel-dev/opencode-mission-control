@@ -24,6 +24,7 @@ const XDG_DATA_DIR = getXdgDataDir();
 export async function createIntegrationBranch(
   planId: string,
   postCreate?: PostCreateHook,
+  baseRef?: string,
 ): Promise<{ branch: string; worktreePath: string }> {
   const projectId = await getProjectId();
   const branchName = `mc/integration-${planId}`;
@@ -43,17 +44,17 @@ export async function createIntegrationBranch(
   }
 
   // Get the current main HEAD to create branch from
-  const defaultBranch = await getDefaultBranch();
-  const mainHeadResult = await gitCommand(['rev-parse', defaultBranch]);
-  if (mainHeadResult.exitCode !== 0) {
-    throw new Error(`Failed to get ${defaultBranch} HEAD: ` + mainHeadResult.stderr);
+  const baseBranch = baseRef ?? await getDefaultBranch();
+  const baseHeadResult = await gitCommand(['rev-parse', baseBranch]);
+  if (baseHeadResult.exitCode !== 0) {
+    throw new Error(`Failed to get ${baseBranch} HEAD: ` + baseHeadResult.stderr);
   }
 
   // Create the branch from main HEAD
   const createBranchResult = await gitCommand([
     'branch',
     branchName,
-    mainHeadResult.stdout,
+    baseHeadResult.stdout,
   ]);
   if (createBranchResult.exitCode !== 0) {
     throw new Error(`Failed to create integration branch: ${createBranchResult.stderr}`);
@@ -160,5 +161,4 @@ export async function refreshIntegrationFromMain(
 
   return { success: true };
 }
-
 
