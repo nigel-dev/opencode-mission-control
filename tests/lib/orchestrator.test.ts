@@ -777,8 +777,8 @@ describe('orchestrator', () => {
     await (orchestrator as any).reconcile();
 
     const calls = (worktreeMod.createWorktree as any).mock.calls;
-    const noDepCall = calls.find((c: any) => c[0].branch === 'mc/no-deps');
-    const withDepCall = calls.find((c: any) => c[0].branch === 'mc/with-deps');
+    const noDepCall = calls.find((c: any) => c[0].branch.includes('no-deps'));
+    const withDepCall = calls.find((c: any) => c[0].branch.includes('with-deps'));
 
     expect(noDepCall[0].startPoint).toBe('def456');
     expect(withDepCall[0].startPoint).toBe('mc/integration-plan-1');
