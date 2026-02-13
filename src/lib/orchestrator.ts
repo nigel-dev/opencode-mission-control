@@ -691,7 +691,15 @@ export class Orchestrator {
           commands: job.commands,
         },
       );
-      worktreePath = await createWorktree({ branch, postCreate });
+
+      // Plan jobs branch from a deterministic start point:
+      // - Jobs WITH dependencies → integration branch HEAD (sees upstream changes)
+      // - Root jobs (no deps) → baseCommit (consistent starting state)
+      const plan = await loadPlan();
+      const hasDeps = job.dependsOn && job.dependsOn.length > 0;
+      const startPoint = plan ? (hasDeps ? plan.integrationBranch : plan.baseCommit) : undefined;
+
+      worktreePath = await createWorktree({ branch, startPoint, postCreate });
 
       const mcReportSuffix = `\n\nCRITICAL — STATUS REPORTING REQUIRED:
 You MUST call the mc_report tool at these points — this is NOT optional:
