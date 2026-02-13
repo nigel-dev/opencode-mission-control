@@ -1,9 +1,9 @@
 # OpenCode Mission Control: Master Technical Audit & Ecosystem Strategy Report
 
-**Date:** February 7, 2026 (Cross-referenced: February 10, 2026; Updated: February 11, 2026)  
-**Version:** 0.1.0 Audit + Ecosystem Analysis (Updated: Phase 0 Complete, Phase 1 Largely Complete)  
+**Date:** February 7, 2026 (Cross-referenced: February 10, 2026; Updated: February 11, 2026; Updated: February 13, 2026)  
+**Version:** 0.1.0 Audit + Ecosystem Analysis (Updated: Phase 0 Complete, Phase 1 Complete, GitHub Issues Sprint Complete)  
 **Method:** 3 codebase analysis agents + 21 ecosystem research agents (24 parallel jobs total)  
-**Scope:** All 45 source files, 40 test files, and 21 OpenCode plugins from the ecosystem  
+**Scope:** All 46 source files, 41 test files, and 21 OpenCode plugins from the ecosystem  
 
 ---
 
@@ -18,6 +18,8 @@ Yet MC suffered from **"Disconnected Brain Syndrome"**: powerful infrastructure,
 **Update (Feb 10):** Full codebase cross-reference of all 45 source files against this audit. Phase 0 items re-verified ✅. Phase 1 items status-checked — 3 done, 2 partially done, 6 still pending. Phase 2 and technical debt sections updated with current line numbers and accurate status. Auto-resume on startup was found to be already implemented.
 
 **Update (Feb 11):** Phase 1 implementation sprint. 7 of 8 actionable items completed. Remaining item (git root commit SHA as project ID) deferred — requires state directory migration strategy. Zod validation was already done in a prior commit. `awareness.ts` was found to be actively imported by `compaction.ts` (audit was wrong about it being dead code).
+
+**Update (Feb 13):** GitHub issues sprint — 8 issues resolved across security, reliability, and plan system improvements. All merged into `development` branch, PR #44 created targeting `main` with all CI checks passing (600/600 tests). Key wins: command injection blocked (#24), `isPaneRunning` hardened (#12), reconciler race condition eliminated (#15), custom base branch support (#40), plan-scoped branch naming (#34), and `omo.defaultMode` respected (#13). Orchestrator has grown to 1137 lines (from 891) — decomposition is increasingly urgent.
 
 **Phase 0 fixes delivered:**
 - ✅ **C1: Shell injection patched** — prompts now pass through temp files (`prompt-file.ts`), never shell-interpolated
@@ -35,7 +37,7 @@ Yet MC suffered from **"Disconnected Brain Syndrome"**: powerful infrastructure,
 - ✅ **`mc_overview` dashboard** — `/mc` slash command for single pane of glass
 - ✅ **`mc_report` scaffolded** — both launch paths inject status reporting instructions
 
-**The bottom line:** MC's critical attack surface and reliability issues are resolved. The engine and communication layer are both production-grade. Phase 1 is largely complete — only the git root SHA project ID remains (deferred). Phase 2 intelligence features are next.
+**The bottom line:** MC's critical attack surface and reliability issues are resolved. The engine and communication layer are both production-grade. Phase 1 is complete (git root SHA project ID deferred). The Feb 13 sprint resolved 8 GitHub issues covering security hardening, reliability fixes, and plan system improvements — all shipped in PR #44. The orchestrator god object is now 1137 lines and the top-priority refactoring target. Phase 2 intelligence features and the orchestrator decomposition are next.
 
 ---
 
@@ -261,24 +263,25 @@ MC's notification hooks (`notifications.ts`, `awareness.ts`) were dead code. The
 - ~~JSON state files parsed with `as Type` — no runtime validation (Zod available but unused)~~ ✅ Fixed — `job-state.ts`, `plan-state.ts`, and `config.ts` now use Zod schemas (`JobStateSchema.parse()`, `PlanSpecSchema.parse()`, `MCConfigSchema.parse()`) for runtime validation
 
 ### Architecture
-- `orchestrator.ts` is 891 lines (was 829 at original audit) — god object handling scheduling, merging, PR creation, notifications, checkpoints. Has grown, not shrunk.
+- `orchestrator.ts` is **1137 lines** (was 829 at original audit, 891 at Feb 10 cross-reference) — god object handling scheduling, merging, PR creation, notifications, checkpoints. Growth driven by #40 (baseBranch), #33 (integration branching), #34 (plan-scoped naming), #15 (reconcile pending), #13 (omo mode). **Decomposition is the #1 refactoring priority** (tracked in GitHub issue #17).
 - No dependency injection for `gitCommand`, `tmux`, `Bun.spawn`
 - ~~Plan tools create orphaned instances (C3)~~ ✅ Fixed — singleton pattern via `orchestrator-singleton.ts`
 - No plugin API abstraction layer
 
 ### Robustness
 - ~~Hardcoded `main` branch~~ ✅ **Fully fixed** (Feb 11) — `getDefaultBranch()` added to `src/lib/git.ts`. All hardcoded references in `integration.ts`, `orchestrator.ts`, and `pr.ts` now use it. `merge.ts` and `diff.ts` already detected main/master.
-- Fixed `sleep(2000)` for OMO mode detection — still present at `launch.ts:268`
-- `isPaneRunning` returns `false` for ALL errors (could mark all jobs dead) — still present at `tmux.ts:315` (catch block returns false)
-- Reconciler race: concurrent triggers silently dropped — still present at `orchestrator.ts:316-318` (`isReconciling` boolean flag)
-- Plan jobs ignore `omo.defaultMode` (hardcoded `vanilla`) — still present at `orchestrator.ts:626`
-- Integration branch format mismatch — `plan.ts:113` vs `integration.ts:26`
-- Window-placement jobs: `cleanup.ts:57-58` checks `job.placement === 'session'` before calling `killSession`, but window-placement jobs may not be fully cleaned from tmux
+- Fixed `sleep(2000)` for OMO mode detection — still present at `launch.ts:268` (tracked in GitHub issue #21)
+- ~~`isPaneRunning` returns `false` for ALL errors (could mark all jobs dead)~~ ✅ **Fixed (Feb 13, #12)** — `isPaneRunning` now retries up to 2 times on transient failures and distinguishes connection errors from "pane not found". `isTmuxHealthy()` pre-check added to `resumePlan()` to skip pane checks entirely when tmux server is unavailable (CI safety).
+- ~~Reconciler race: concurrent triggers silently dropped~~ ✅ **Fixed (Feb 13, #15)** — Reconciler now uses a "dirty re-reconcile" pattern. When a reconcile is requested while one is in-flight, it sets a pending flag instead of dropping. The running reconciler re-runs after completing if the flag is set. 4 dedicated tests.
+- ~~Plan jobs ignore `omo.defaultMode` (hardcoded `vanilla`)~~ ✅ **Fixed (Feb 13, #13)** — `launchPlanJob()` reads `config.omo.defaultMode` when no explicit mode is set. Falls back to `'vanilla'` only if omo config is missing.
+- ~~Integration branch format mismatch~~ ✅ **Fixed (Feb 13, #34)** — Plan job branches now use scoped naming format `mc/plan/{shortPlanId}/{jobName}` consistently across `plan.ts` and `orchestrator.ts`.
+- Window-placement jobs: `cleanup.ts:57-58` checks `job.placement === 'session'` before calling `killSession`, but window-placement jobs may not be fully cleaned from tmux (tracked in GitHub issue #14)
 
 ### Test Coverage Gaps
-- **Untested:** `commands.ts`, `index.ts`, `paths.ts`
+- **Untested:** `commands.ts`, `index.ts`, `paths.ts` *(tracked in GitHub issue #25)*
 - ~~**Tests for dead code:** `test-runner.ts`~~ ✅ Deleted (Feb 11). `awareness.ts` is NOT dead code — it's imported by `compaction.ts`.
-- **Undertested critical paths:** reconciler skip guard, plan cancel with running jobs, network errors in integration refresh
+- ~~**Undertested critical paths:** reconciler skip guard~~ ✅ **Fixed (Feb 13)** — 4 new tests for reconcile pending/dirty re-reconcile pattern. Plan cancel with running jobs and network errors in integration refresh remain undertested.
+- **New test coverage (Feb 13):** 600 tests (up from 470). New test files: `tmux-isPaneRunning.test.ts` (5 tests), `worktree-setup.test.ts` (25+ command validation tests). Expanded: `orchestrator.test.ts` (reconcile pending, integration branching, plan-scoped naming, omo mode), `sync.test.ts` (source parameter), `monitor.test.ts` (error handling). All tmux-dependent tests auto-skip in CI.
 
 ---
 
@@ -341,8 +344,8 @@ MC's notification hooks (`notifications.ts`, `awareness.ts`) were dead code. The
 - [x] **C8:** Agent prompt emphasis — `MC_REPORT_SUFFIX` rewritten with CRITICAL/MANDATORY language
 - [x] **CONFIG:** Merge strategy config — `mergeStrategy: 'squash' | 'ff-only' | 'merge'` (default: `squash`)
 
-### Phase 1: Quick Wins ✅ LARGELY COMPLETE
-> Ecosystem alignment + command center UX. 7 of 8 actionable items done (Feb 11).
+### Phase 1: Quick Wins ✅ COMPLETE
+> Ecosystem alignment + command center UX. All actionable items done (Feb 11). Git root SHA deferred.
 
 - [x] Create `mc_overview` tool + `/mc` slash command *(Done Feb 7)*
 - [x] Scaffold `mc_report` in spawned agent prompts *(Done Feb 7)*
@@ -356,18 +359,31 @@ MC's notification hooks (`notifications.ts`, `awareness.ts`) were dead code. The
 - [ ] Adopt git root commit SHA as stable project identifier *(Deferred — changing project ID computation breaks all existing state directories under `~/.local/share/opencode-mission-control/{project}/`. Requires migration strategy, not a quick win.)*
 - [x] Auto-resume plan on plugin startup *(Already done — `index.ts:172-179` calls `loadPlan()` on startup; if plan is running/paused, creates Orchestrator and calls `orchestrator.resumePlan()`)*
 
+### Phase 1.5: GitHub Issues Sprint ✅ COMPLETE
+> Security hardening, reliability fixes, plan system improvements. 8 issues resolved (Feb 13). All merged into `development`, PR #44 targeting `main` — CI green (600/600 tests).
+
+- [x] **#40: Custom base branch support** — All `mc_*` tools (`launch`, `plan`, `pr`, `diff`, `sync`, `merge`) accept `baseBranch` parameter. Plan and job schemas extended. *(New: `src/lib/schemas.ts`, all tool files updated)*
+- [x] **#24: Command sanitization** — `worktreeSetup.commands` now validated against injection patterns (`;`, `&&`, `||`, `|`, backticks, `$()`). `validateCommand()`/`validateCommands()` functions added to `src/lib/worktree-setup.ts`. `allowUnsafeCommands` escape hatch for power users. 25+ tests.
+- [x] **#12: isPaneRunning hardening** — Retry logic (up to 2 retries), transient error detection, `isTmuxHealthy()` pre-check in `resumePlan()`. Tests skip automatically in CI via `isTmuxHealthy` probe. *(Changed: `src/lib/tmux.ts`, `src/lib/orchestrator.ts`, `src/lib/monitor.ts`)*
+- [x] **#33: Plan jobs branch from integration HEAD** — Dependent plan jobs now start from the integration branch HEAD (seeing all previously merged code), not the base commit. Root jobs still branch from `baseCommit`. `createIntegrationBranch()` accepts `baseRef` parameter.
+- [x] **#34: Plan-scoped branch naming** — Plan job branches use `mc/plan/{shortPlanId}/{jobName}` format instead of flat `mc/{jobName}`. Prevents collisions across concurrent plans.
+- [x] **#15: Reconciler dirty re-reconcile** — Concurrent reconcile triggers no longer silently dropped. Pending flag set when reconcile requested during in-flight execution; reconciler re-runs after completing. 4 dedicated tests.
+- [x] **#32: Sync against local base branch** — `mc_sync` defaults to syncing against the local base branch instead of fetching from upstream. New `source` parameter (`local`/`origin`) for explicit control.
+- [x] **#13: Respect omo.defaultMode** — Plan jobs now read `config.omo.defaultMode` instead of hardcoding `'vanilla'`. Falls back to `'vanilla'` only if omo config is missing.
+- [x] **CI test fixes** — Mocked `isTmuxHealthy` in integration and unit test `resumePlan` tests. Tmux-dependent tests in `tmux.test.ts` and `tmux-isPaneRunning.test.ts` auto-skip when no tmux server available.
+
 ### Phase 2: Intelligence (1-2 weeks)
 > Activate latent capabilities + reliability.
 
-- [ ] Implement `touchSet` conflict prediction + blast radius scoring *(No implementation found)*
+- [ ] Implement `touchSet` conflict prediction + blast radius scoring *(No implementation found — tracked in backlog)*
 - [ ] Auto-infer `touchSet` from `git diff --name-only` *(No implementation found)*
-- [ ] PR narrative synthesis (from job prompts, diffs, reports, timing) *(No implementation found)*
-- [ ] Failure artifact capture (terminal output, diff, commits, env metadata) *(No implementation found)*
-- [ ] Persistent run ledger (`.mc/history/*.jsonl`) *(No implementation found)*
+- [ ] PR narrative synthesis (from job prompts, diffs, reports, timing) *(No implementation found — GitHub issue #22)*
+- [ ] Failure artifact capture (terminal output, diff, commits, env metadata) *(No implementation found — GitHub issue #23)*
+- [ ] Persistent run ledger (`.mc/history/*.jsonl`) *(No implementation found — GitHub issue #18)*
 - [ ] Job completed → guided next action flow *(overview.ts has suggested actions, but no guided flow beyond that)*
-- [ ] Fix reconciler race condition *(Still present — `orchestrator.ts:316-318` uses `isReconciling` boolean flag; concurrent triggers silently return)*
-- [ ] Fix plan jobs ignoring `omo.defaultMode` *(Still present — `orchestrator.ts:626` hardcodes `mode: 'vanilla'`)*
-- [ ] Decompose Orchestrator into focused modules *(Still a god object — `orchestrator.ts` has grown from 829 to 891 lines)*
+- [x] ~~Fix reconciler race condition~~ ✅ **Fixed (Feb 13, #15)** — dirty re-reconcile pattern replaces boolean flag
+- [x] ~~Fix plan jobs ignoring `omo.defaultMode`~~ ✅ **Fixed (Feb 13, #13)** — reads `config.omo.defaultMode`
+- [ ] Decompose Orchestrator into focused modules *(Now **1137 lines** — has grown from 829→891→1137. Top refactoring priority. GitHub issue #17)*
 
 ### Phase 3: Ecosystem Features (ongoing)
 > Multiplexer abstraction, lightweight tiers, team features.
@@ -436,5 +452,5 @@ MC's notification hooks (`notifications.ts`, `awareness.ts`) were dead code. The
 | OMO plan mode "runs `/start-work`" | Implemented but relies on `sleep(2000)` at `launch.ts:268` — may fail on slow systems. |
 | "Session state detection: idle, streaming, unknown" | Implemented in monitor but never exposed to users. |
 | `mc_report` "Auto-detects which job is calling" | Only works for worktrees in the default `basePath`. Custom paths break detection. *(Note: spawned agents now receive `mc_report` instructions via prompt injection. `completed` status now wired to mark jobs done via `monitor.ts:115-124`.)* |
-| `worktreeSetup.commands` | Commands are NOT sanitized — arbitrary shell execution via config. |
+| `worktreeSetup.commands` | ✅ **Fixed (Feb 13, #24).** Commands are now validated against injection patterns. `allowUnsafeCommands` escape hatch available. |
 | Slash commands listed in README | ✅ **Fixed (Feb 11).** README lists `/mc-jobs`, `/mc-launch`, `/mc-status`, `/mc-attach`, `/mc-cleanup`. `commands.ts` now also registers `/mc-capture`, `/mc-diff`, `/mc-approve`, `/mc-plan`. |
