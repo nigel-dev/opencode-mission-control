@@ -9,6 +9,9 @@ import { Orchestrator, hasCircularDependency, topologicalSort } from '../../src/
 import * as planStateMod from '../../src/lib/plan-state';
 import * as tmuxMod from '../../src/lib/tmux';
 import * as worktreeMod from '../../src/lib/worktree';
+import * as promptFileMod from '../../src/lib/prompt-file';
+import * as reportsMod from '../../src/lib/reports';
+import * as modelTrackerMod from '../../src/lib/model-tracker';
 
 function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
@@ -802,5 +805,178 @@ describe('orchestrator DAG helpers', () => {
 
     const sorted = topologicalSort(jobs);
     expect(sorted.map((job) => job.name)).toEqual(['a', 'b', 'c']);
+  });
+});
+
+describe('plan-scoped branch naming', () => {
+  let planState: PlanSpec | null;
+  let runningJobs: Job[];
+  let monitor: FakeMonitor;
+
+  beforeEach(() => {
+    planState = null;
+    runningJobs = [];
+    monitor = new FakeMonitor();
+
+    spyOn(planStateMod, 'loadPlan').mockImplementation(async () => clone(planState));
+    spyOn(planStateMod, 'savePlan').mockImplementation(async (plan: PlanSpec) => {
+      planState = clone(plan);
+    });
+    spyOn(planStateMod, 'updatePlanJob').mockImplementation(
+      async (planId: string, jobName: string, updates: Partial<JobSpec>) => {
+        if (!planState || planState.id !== planId) {
+          return;
+        }
+        planState.jobs = planState.jobs.map((job) =>
+          job.name === jobName ? { ...job, ...updates } : job,
+        );
+      },
+    );
+    spyOn(planStateMod, 'clearPlan').mockImplementation(async () => {
+      planState = null;
+    });
+    spyOn(planStateMod, 'validateGhAuth').mockResolvedValue(true);
+
+    spyOn(integrationMod, 'createIntegrationBranch').mockResolvedValue({
+      branch: 'mc/integration-plan-1',
+      worktreePath: '/tmp/integration-plan-1',
+    });
+    spyOn(integrationMod, 'deleteIntegrationBranch').mockResolvedValue();
+
+    spyOn(jobStateMod, 'getRunningJobs').mockImplementation(async () => clone(runningJobs));
+    spyOn(jobStateMod, 'addJob').mockResolvedValue();
+    spyOn(jobStateMod, 'updateJob').mockResolvedValue();
+    spyOn(jobStateMod, 'removeJob').mockResolvedValue();
+    spyOn(jobStateMod, 'loadJobState').mockImplementation(async () => {
+      const state: JobState = {
+        version: 2,
+        jobs: runningJobs,
+        updatedAt: new Date().toISOString(),
+      };
+      return state;
+    });
+
+    spyOn(worktreeMod, 'createWorktree').mockResolvedValue('/tmp/wt/job-a');
+    spyOn(worktreeMod, 'removeWorktree').mockResolvedValue();
+
+    spyOn(tmuxMod, 'createSession').mockResolvedValue();
+    spyOn(tmuxMod, 'createWindow').mockResolvedValue();
+    spyOn(tmuxMod, 'getCurrentSession').mockReturnValue('main');
+    spyOn(tmuxMod, 'isInsideTmux').mockReturnValue(true);
+    spyOn(tmuxMod, 'isPaneRunning').mockResolvedValue(true);
+    spyOn(tmuxMod, 'killSession').mockResolvedValue();
+    spyOn(tmuxMod, 'killWindow').mockResolvedValue();
+    spyOn(tmuxMod, 'sendKeys').mockResolvedValue();
+    spyOn(tmuxMod, 'setPaneDiedHook').mockResolvedValue();
+
+    spyOn(mergeTrainMod, 'checkMergeability').mockResolvedValue({ canMerge: true });
+
+    spyOn(promptFileMod, 'writePromptFile').mockResolvedValue('/tmp/wt/job-a/.mc-prompt');
+    spyOn(promptFileMod, 'cleanupPromptFile').mockImplementation(() => {});
+    spyOn(promptFileMod, 'writeLauncherScript').mockResolvedValue('/tmp/wt/job-a/.mc-launcher.sh');
+    spyOn(promptFileMod, 'cleanupLauncherScript').mockImplementation(() => {});
+
+    spyOn(reportsMod, 'removeReport').mockResolvedValue();
+    spyOn(modelTrackerMod, 'getCurrentModel').mockReturnValue('test-model');
+  });
+
+  afterEach(() => {
+    mock.restore();
+  });
+
+  it('plan job branches use scoped naming format mc/plan/{shortPlanId}/{jobName}', async () => {
+    planState = makePlan({
+      id: 'a1b2c3d4-e5f6-7890-abcd-ef1234567890',
+      status: 'running',
+      jobs: [makeJob('api-endpoints', { status: 'queued' })],
+    });
+
+    const orchestrator = new Orchestrator(monitor as any, {
+      defaultPlacement: 'session',
+      pollInterval: 10000,
+      idleThreshold: 300000,
+      worktreeBasePath: '/tmp',
+      omo: { enabled: false, defaultMode: 'vanilla' },
+    } as any);
+
+    await (orchestrator as any).reconcile();
+
+    expect(worktreeMod.createWorktree).toHaveBeenCalledWith(
+      expect.objectContaining({
+        branch: 'mc/plan/a1b2c3d4/api-endpoints',
+      }),
+    );
+  });
+
+  it('short plan ID is correctly extracted (first 8 characters)', async () => {
+    planState = makePlan({
+      id: 'deadbeef-1234-5678-9abc-def012345678',
+      status: 'running',
+      jobs: [makeJob('schema', { status: 'queued' })],
+    });
+
+    const orchestrator = new Orchestrator(monitor as any, {
+      defaultPlacement: 'session',
+      pollInterval: 10000,
+      idleThreshold: 300000,
+      worktreeBasePath: '/tmp',
+      omo: { enabled: false, defaultMode: 'vanilla' },
+    } as any);
+
+    await (orchestrator as any).reconcile();
+
+    expect(worktreeMod.createWorktree).toHaveBeenCalledWith(
+      expect.objectContaining({
+        branch: 'mc/plan/deadbeef/schema',
+      }),
+    );
+  });
+
+  it('explicit job.branch overrides plan-scoped default', async () => {
+    planState = makePlan({
+      id: 'a1b2c3d4-e5f6-7890-abcd-ef1234567890',
+      status: 'running',
+      jobs: [makeJob('custom', { status: 'queued', branch: 'my-custom-branch' })],
+    });
+
+    const orchestrator = new Orchestrator(monitor as any, {
+      defaultPlacement: 'session',
+      pollInterval: 10000,
+      idleThreshold: 300000,
+      worktreeBasePath: '/tmp',
+      omo: { enabled: false, defaultMode: 'vanilla' },
+    } as any);
+
+    await (orchestrator as any).reconcile();
+
+    expect(worktreeMod.createWorktree).toHaveBeenCalledWith(
+      expect.objectContaining({
+        branch: 'my-custom-branch',
+      }),
+    );
+  });
+
+  it('tmux session name stays based on job name, not branch', async () => {
+    planState = makePlan({
+      id: 'a1b2c3d4-e5f6-7890-abcd-ef1234567890',
+      status: 'running',
+      jobs: [makeJob('api-endpoints', { status: 'queued' })],
+    });
+
+    const orchestrator = new Orchestrator(monitor as any, {
+      defaultPlacement: 'session',
+      pollInterval: 10000,
+      idleThreshold: 300000,
+      worktreeBasePath: '/tmp',
+      omo: { enabled: false, defaultMode: 'vanilla' },
+    } as any);
+
+    await (orchestrator as any).reconcile();
+
+    expect(tmuxMod.createSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'mc-api-endpoints',
+      }),
+    );
   });
 });

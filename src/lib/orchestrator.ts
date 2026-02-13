@@ -664,7 +664,8 @@ export class Orchestrator {
     }
 
     const placement = this.planPlacement ?? this.config.defaultPlacement ?? 'session';
-    const branch = job.branch ?? `mc/${job.name}`;
+    const shortPlanId = planId ? planId.slice(0, 8) : '';
+    const branch = job.branch ?? `mc/plan/${shortPlanId}/${job.name}`;
     const sanitizedName = job.name.replace(/[^a-zA-Z0-9_-]/g, '-');
     const tmuxSessionName = `mc-${sanitizedName}`;
     const tmuxTarget =
