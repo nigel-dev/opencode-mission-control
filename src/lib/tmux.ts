@@ -283,34 +283,90 @@ export async function getPanePid(
   }
 }
 
+/** Stderr patterns that indicate the pane/session genuinely does not exist */
+const PANE_NOT_FOUND_PATTERNS = [
+  "can't find pane",
+  "no such session",
+  "session not found",
+  "window not found",
+  "can't find window",
+  "no current target",
+  "no server running",
+];
+
+function isPaneNotFoundError(stderr: string): boolean {
+  const lower = stderr.toLowerCase();
+  return PANE_NOT_FOUND_PATTERNS.some((pattern) => lower.includes(pattern));
+}
+
 /**
- * Check if a tmux pane is running
+ * Check if a tmux pane is running.
+ * Returns false when pane genuinely doesn't exist. Throws on tmux infrastructure failures.
+ * Retries once (500ms delay) to handle transient errors.
  */
 export async function isPaneRunning(target: string): Promise<boolean> {
+  let lastError: Error | undefined;
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (attempt > 0) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+
+    try {
+      const proc = spawn([
+        "tmux",
+        "display-message",
+        "-t",
+        target,
+        "-p",
+        "#{pane_dead}",
+      ], { stderr: "pipe" });
+      const [output, stderrBuf] = await Promise.all([
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+      ]);
+      const exitCode = await proc.exited;
+
+      if (exitCode !== 0) {
+        const stderr = stderrBuf.trim();
+        if (isPaneNotFoundError(stderr)) {
+          return false;
+        }
+        // Unknown tmux error — store and retry
+        lastError = new Error(
+          `tmux display-message failed (exit ${exitCode}): ${stderr || "(no stderr)"}`,
+        );
+        continue;
+      }
+
+      const outputStr = output.trim();
+      if (!outputStr || outputStr === "") {
+        return false;
+      }
+
+      // pane_dead returns 1 if dead, 0 if running
+      const isDead = outputStr === "1";
+      return !isDead;
+    } catch (error) {
+      lastError = error instanceof Error
+        ? error
+        : new Error(String(error));
+      continue;
+    }
+  }
+
+  // Both attempts failed with a non-"pane not found" error — propagate
+  throw lastError ?? new Error("isPaneRunning failed after retries");
+}
+
+/**
+ * Check if the tmux server is responsive
+ */
+export async function isTmuxHealthy(): Promise<boolean> {
   try {
-    const proc = spawn([
-      "tmux",
-      "display-message",
-      "-t",
-      target,
-      "-p",
-      "#{pane_dead}",
-    ], { stderr: "pipe" });
-    const output = await new Response(proc.stdout).text();
+    const proc = spawn(["tmux", "list-sessions"], { stderr: "pipe", stdout: "pipe" });
     const exitCode = await proc.exited;
-
-    if (exitCode !== 0) {
-      return false;
-    }
-
-    const outputStr = output.trim();
-    if (!outputStr || outputStr === "") {
-      return false;
-    }
-
-    // pane_dead returns 1 if dead, 0 if running
-    const isDead = outputStr === "1";
-    return !isDead;
+    return exitCode === 0;
   } catch {
     return false;
   }

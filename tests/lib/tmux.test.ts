@@ -14,6 +14,7 @@ import {
   setPaneDiedHook,
   getPanePid,
   isPaneRunning,
+  isTmuxHealthy,
 } from '../../src/lib/tmux';
 
 describe('tmux utilities', () => {
@@ -184,9 +185,16 @@ describe('tmux utilities', () => {
   });
 
   describe('isPaneRunning', () => {
-    it('should return false for invalid target', async () => {
+    it('should return false when tmux reports pane not found', async () => {
       const result = await isPaneRunning('nonexistent-session-xyz:0');
       expect(result).toBe(false);
+    });
+  });
+
+  describe('isTmuxHealthy', () => {
+    it('should return a boolean', async () => {
+      const result = await isTmuxHealthy();
+      expect(typeof result).toBe('boolean');
     });
   });
 });
