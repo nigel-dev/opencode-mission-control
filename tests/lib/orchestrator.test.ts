@@ -575,6 +575,7 @@ describe('orchestrator', () => {
         planId: 'plan-1',
       },
     ];
+    spyOn(tmuxMod, 'isTmuxHealthy').mockResolvedValue(true);
     spyOn(tmuxMod, 'isPaneRunning').mockResolvedValue(false);
 
     const orchestrator = new Orchestrator(monitor as any, {
