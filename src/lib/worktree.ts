@@ -9,6 +9,8 @@ import type {
   WorktreeProvider,
 } from './providers/worktree-provider';
 import { extractConflicts } from './utils';
+import { validateCommand } from './worktree-setup';
+import { loadConfig } from './config';
 
 export type { WorktreeInfo, SyncResult, PostCreateHook };
 
@@ -133,7 +135,20 @@ async function runPostCreateHooks(
   }
 
   if (hooks.commands) {
+    const config = await loadConfig();
+    const suppressWarnings = config.allowUnsafeCommands === true;
+
     for (const cmd of hooks.commands) {
+      if (!suppressWarnings) {
+        const validation = validateCommand(cmd);
+        if (!validation.safe) {
+          const warnings = validation.warnings.join(', ');
+          console.error(
+            `[mc] Warning: potentially unsafe worktree command: "${cmd}" (${warnings})`,
+          );
+        }
+      }
+
       const proc = spawn(['sh', '-c', cmd], {
         cwd: worktreePath,
         stdout: 'pipe',
