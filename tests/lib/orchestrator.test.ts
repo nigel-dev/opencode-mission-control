@@ -68,6 +68,18 @@ describe('orchestrator', () => {
         );
       },
     );
+    spyOn(planStateMod, 'updatePlanFields').mockImplementation(
+      async (planId: string, updates: Partial<PlanSpec>) => {
+        if (!planState || planState.id !== planId) {
+          return;
+        }
+        if (updates.status !== undefined) planState.status = updates.status;
+        if (updates.checkpoint !== undefined) planState.checkpoint = updates.checkpoint;
+        if (updates.checkpointContext !== undefined) planState.checkpointContext = updates.checkpointContext;
+        if (updates.completedAt !== undefined) planState.completedAt = updates.completedAt;
+        if (updates.prUrl !== undefined) planState.prUrl = updates.prUrl;
+      },
+    );
     spyOn(planStateMod, 'clearPlan').mockImplementation(async () => {
       planState = null;
     });
@@ -792,6 +804,108 @@ describe('orchestrator', () => {
     expect(noDepCall[0].startPoint).toBe('def456');
     expect(withDepCall[0].startPoint).toBe('mc/integration-plan-1');
   });
+
+  it('failed job event preserves sibling completed job states (race condition fix)', async () => {
+    // Simulate: 3-job plan where job-b and job-c complete, then job-a fails.
+    // handleJobFailed calls loadPlan() then setCheckpoint().
+    // Before the fix, setCheckpoint would savePlan(staleSnapshot), overwriting
+    // the completed statuses of job-b and job-c. After the fix, setCheckpoint
+    // uses updatePlanFields which only updates plan-level fields.
+    const orchestrator = new Orchestrator(monitor as any, {
+      defaultPlacement: 'session',
+      pollInterval: 10000,
+      idleThreshold: 300000,
+      worktreeBasePath: '/tmp',
+      omo: { enabled: false, defaultMode: 'vanilla' },
+    } as any);
+    spyOn(orchestrator as any, 'startReconciler').mockImplementation(() => {});
+
+    await orchestrator.startPlan(
+      makePlan({
+        status: 'pending',
+        jobs: [
+          makeJob('job-a', { status: 'queued' }),
+          makeJob('job-b', { status: 'queued' }),
+          makeJob('job-c', { status: 'queued' }),
+        ],
+      }),
+    );
+
+    // Simulate job-b and job-c completing via updatePlanJob (as handleJobComplete does)
+    await planStateMod.updatePlanJob('plan-1', 'job-b', { status: 'completed' });
+    await planStateMod.updatePlanJob('plan-1', 'job-c', { status: 'completed' });
+
+    // Verify they are completed before the failed event
+    expect(planState?.jobs.find((j) => j.name === 'job-b')?.status).toBe('completed');
+    expect(planState?.jobs.find((j) => j.name === 'job-c')?.status).toBe('completed');
+
+    // Now job-a fails — this triggers handleJobFailed which calls loadPlan() then setCheckpoint()
+    monitor.emit('failed', {
+      id: 'j1',
+      name: 'job-a',
+      planId: 'plan-1',
+    } as Job);
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // Plan should be paused with on_error checkpoint
+    expect(planState?.status).toBe('paused');
+    expect(planState?.checkpoint).toBe('on_error');
+
+    // CRITICAL: sibling job states must NOT be overwritten back to 'queued'
+    expect(planState?.jobs.find((j) => j.name === 'job-b')?.status).toBe('completed');
+    expect(planState?.jobs.find((j) => j.name === 'job-c')?.status).toBe('completed');
+    expect(planState?.jobs.find((j) => j.name === 'job-a')?.status).toBe('failed');
+  });
+
+  it('reconciliation safety net detects stuck running jobs from jobs.json', async () => {
+    // Simulate: plan has a job marked 'running' but jobs.json shows it as 'completed'.
+    // This can happen if a prior race condition overwrote the plan job status.
+    planState = makePlan({
+      status: 'running',
+      jobs: [
+        makeJob('stuck-job', { status: 'running', mergeOrder: 0 }),
+        makeJob('other-job', { status: 'queued', mergeOrder: 1 }),
+      ],
+    });
+
+    // jobs.json has no running jobs for this plan (stuck-job already completed)
+    runningJobs = [];
+
+    // loadJobState returns the job as completed
+    spyOn(jobStateMod, 'loadJobState').mockImplementation(async () => ({
+      version: 2,
+      jobs: [
+        {
+          id: 'stuck-job-id',
+          name: 'stuck-job',
+          planId: 'plan-1',
+          status: 'completed',
+          worktreePath: '/tmp/w1',
+          branch: 'mc/stuck-job',
+          tmuxTarget: 'mc-stuck-job',
+          placement: 'session' as const,
+          prompt: 'do stuck-job',
+          mode: 'vanilla' as const,
+          createdAt: '2026-01-01T00:00:00.000Z',
+        },
+      ],
+      updatedAt: new Date().toISOString(),
+    }));
+
+    const orchestrator = new Orchestrator(monitor as any, {
+      defaultPlacement: 'session',
+      pollInterval: 10000,
+      idleThreshold: 300000,
+      worktreeBasePath: '/tmp',
+      omo: { enabled: false, defaultMode: 'vanilla' },
+    } as any);
+
+    await (orchestrator as any).reconcile();
+
+    // Safety net should have corrected the stuck job status
+    expect(planStateMod.updatePlanJob).toHaveBeenCalledWith('plan-1', 'stuck-job', { status: 'completed' });
+  });
 });
 
 describe('orchestrator reconcile pending (dirty re-reconcile)', () => {
@@ -816,6 +930,18 @@ describe('orchestrator reconcile pending (dirty re-reconcile)', () => {
         planState.jobs = planState.jobs.map((job) =>
           job.name === jobName ? { ...job, ...updates } : job,
         );
+      },
+    );
+    spyOn(planStateMod, 'updatePlanFields').mockImplementation(
+      async (planId: string, updates: Partial<PlanSpec>) => {
+        if (!planState || planState.id !== planId) {
+          return;
+        }
+        if (updates.status !== undefined) planState.status = updates.status;
+        if (updates.checkpoint !== undefined) planState.checkpoint = updates.checkpoint;
+        if (updates.checkpointContext !== undefined) planState.checkpointContext = updates.checkpointContext;
+        if (updates.completedAt !== undefined) planState.completedAt = updates.completedAt;
+        if (updates.prUrl !== undefined) planState.prUrl = updates.prUrl;
       },
     );
     spyOn(planStateMod, 'clearPlan').mockImplementation(async () => {
@@ -1000,6 +1126,18 @@ describe('plan-scoped branch naming', () => {
         planState.jobs = planState.jobs.map((job) =>
           job.name === jobName ? { ...job, ...updates } : job,
         );
+      },
+    );
+    spyOn(planStateMod, 'updatePlanFields').mockImplementation(
+      async (planId: string, updates: Partial<PlanSpec>) => {
+        if (!planState || planState.id !== planId) {
+          return;
+        }
+        if (updates.status !== undefined) planState.status = updates.status;
+        if (updates.checkpoint !== undefined) planState.checkpoint = updates.checkpoint;
+        if (updates.checkpointContext !== undefined) planState.checkpointContext = updates.checkpointContext;
+        if (updates.completedAt !== undefined) planState.completedAt = updates.completedAt;
+        if (updates.prUrl !== undefined) planState.prUrl = updates.prUrl;
       },
     );
     spyOn(planStateMod, 'clearPlan').mockImplementation(async () => {

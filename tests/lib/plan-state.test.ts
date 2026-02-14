@@ -13,6 +13,7 @@ const {
   savePlan,
   getActivePlan,
   updatePlanJob,
+  updatePlanFields,
   clearPlan,
   validateGhAuth,
 } = await import('../../src/lib/plan-state');
@@ -224,6 +225,101 @@ describe('plan-state', () => {
       await expect(
         updatePlanJob('plan-1', 'fix-login', { status: 'running' }),
       ).rejects.toThrow('No active plan exists');
+    });
+  });
+
+  describe('updatePlanFields', () => {
+    it('updates plan-level fields without overwriting job states', async () => {
+      vi.spyOn(
+        await import('../../src/lib/plan-state'),
+        'validateGhAuth',
+      ).mockResolvedValue(true);
+
+      const plan = makePlan({
+        status: 'running',
+        jobs: [
+          makeJob({ name: 'job-a', status: 'completed' }),
+          makeJob({ id: 'job-2', name: 'job-b', status: 'completed' }),
+        ],
+      });
+      await savePlan(plan);
+
+      await updatePlanFields('plan-1', { status: 'paused', checkpoint: 'on_error' });
+
+      const loaded = await loadPlan();
+      expect(loaded!.status).toBe('paused');
+      expect(loaded!.checkpoint).toBe('on_error');
+      expect(loaded!.jobs[0].status).toBe('completed');
+      expect(loaded!.jobs[1].status).toBe('completed');
+    });
+
+    it('preserves job updates made concurrently', async () => {
+      vi.spyOn(
+        await import('../../src/lib/plan-state'),
+        'validateGhAuth',
+      ).mockResolvedValue(true);
+
+      const plan = makePlan({
+        status: 'running',
+        jobs: [
+          makeJob({ name: 'job-a', status: 'running' }),
+          makeJob({ id: 'job-2', name: 'job-b', status: 'running' }),
+          makeJob({ id: 'job-3', name: 'job-c', status: 'running' }),
+        ],
+      });
+      await savePlan(plan);
+
+      await Promise.all([
+        updatePlanJob('plan-1', 'job-b', { status: 'completed' }),
+        updatePlanJob('plan-1', 'job-c', { status: 'completed' }),
+        updatePlanFields('plan-1', { status: 'paused', checkpoint: 'on_error' }),
+      ]);
+
+      const loaded = await loadPlan();
+      expect(loaded!.status).toBe('paused');
+      expect(loaded!.jobs[0].status).toBe('running');
+      expect(loaded!.jobs[1].status).toBe('completed');
+      expect(loaded!.jobs[2].status).toBe('completed');
+    });
+
+    it('throws when plan ID does not match', async () => {
+      vi.spyOn(
+        await import('../../src/lib/plan-state'),
+        'validateGhAuth',
+      ).mockResolvedValue(true);
+
+      await savePlan(makePlan({ id: 'plan-1' }));
+
+      await expect(
+        updatePlanFields('plan-wrong', { status: 'paused' }),
+      ).rejects.toThrow('Plan ID mismatch');
+    });
+
+    it('throws when no active plan exists', async () => {
+      await expect(
+        updatePlanFields('plan-1', { status: 'paused' }),
+      ).rejects.toThrow('No active plan exists');
+    });
+
+    it('updates checkpointContext field', async () => {
+      vi.spyOn(
+        await import('../../src/lib/plan-state'),
+        'validateGhAuth',
+      ).mockResolvedValue(true);
+
+      await savePlan(makePlan({ status: 'running' }));
+
+      await updatePlanFields('plan-1', {
+        status: 'paused',
+        checkpoint: 'on_error',
+        checkpointContext: { jobName: 'bad-job', failureKind: 'job_failed' },
+      });
+
+      const loaded = await loadPlan();
+      expect(loaded!.checkpointContext).toEqual({
+        jobName: 'bad-job',
+        failureKind: 'job_failed',
+      });
     });
   });
 

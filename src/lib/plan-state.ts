@@ -2,7 +2,7 @@ import { join } from 'path';
 import { z } from 'zod';
 import { getDataDir } from './paths';
 import { GitMutex } from './git-mutex';
-import type { PlanSpec, JobSpec } from './plan-types';
+import type { PlanSpec, JobSpec, CheckpointContext } from './plan-types';
 import { isValidPlanTransition, isValidJobTransition } from './plan-types';
 import { PlanSpecSchema } from './schemas';
 import { atomicWrite } from './utils';
@@ -107,6 +107,71 @@ export async function updatePlanJob(
     const filePath = await getPlanFilePath();
     try {
       const data = JSON.stringify(plan, null, 2);
+      await atomicWrite(filePath, data);
+    } catch (error) {
+      throw new Error(`Failed to save plan state to ${filePath}: ${error}`);
+    }
+  });
+}
+
+export interface PlanFieldUpdates {
+  status?: PlanSpec['status'];
+  checkpoint?: PlanSpec['checkpoint'];
+  checkpointContext?: CheckpointContext | null;
+  completedAt?: string;
+  prUrl?: string;
+}
+
+/**
+ * Atomically update plan-level fields without overwriting job states.
+ *
+ * Unlike savePlan(), this reads the current plan inside the mutex and merges
+ * only the specified fields. This prevents a stale plan snapshot from clobbering
+ * concurrent updatePlanJob() writes — the root cause of completed jobs appearing
+ * as "running" after a sibling job failed (see #63).
+ */
+export async function updatePlanFields(
+  planId: string,
+  updates: PlanFieldUpdates,
+): Promise<void> {
+  await planMutex.withLock(async () => {
+    const plan = await loadPlan();
+
+    if (!plan) {
+      throw new Error('No active plan exists');
+    }
+
+    if (plan.id !== planId) {
+      throw new Error(
+        `Plan ID mismatch: expected ${planId}, got ${plan.id}`,
+      );
+    }
+
+    if (updates.status !== undefined && updates.status !== plan.status) {
+      if (!isValidPlanTransition(plan.status, updates.status)) {
+        console.warn(`[MC] Invalid plan transition: ${plan.status} → ${updates.status} (plan: ${plan.name})`);
+      }
+      plan.status = updates.status;
+    }
+    if (updates.checkpoint !== undefined) {
+      plan.checkpoint = updates.checkpoint;
+    }
+    if (updates.checkpointContext !== undefined) {
+      plan.checkpointContext = updates.checkpointContext;
+    }
+    if (updates.completedAt !== undefined) {
+      plan.completedAt = updates.completedAt;
+    }
+    if (updates.prUrl !== undefined) {
+      plan.prUrl = updates.prUrl;
+    }
+
+    const ghAuthenticated = await validateGhAuth();
+    const planToSave = { ...plan, ghAuthenticated };
+
+    const filePath = await getPlanFilePath();
+    try {
+      const data = JSON.stringify(planToSave, null, 2);
       await atomicWrite(filePath, data);
     } catch (error) {
       throw new Error(`Failed to save plan state to ${filePath}: ${error}`);

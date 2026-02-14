@@ -80,6 +80,16 @@ describe('orchestrator modes', () => {
         );
       },
     );
+    spyOn(planStateMod, 'updatePlanFields').mockImplementation(
+      async (planId: string, updates: Partial<PlanSpec>) => {
+        if (!planState || planState.id !== planId) return;
+        if (updates.status !== undefined) planState.status = updates.status;
+        if (updates.checkpoint !== undefined) planState.checkpoint = updates.checkpoint;
+        if (updates.checkpointContext !== undefined) planState.checkpointContext = updates.checkpointContext;
+        if (updates.completedAt !== undefined) planState.completedAt = updates.completedAt;
+        if (updates.prUrl !== undefined) planState.prUrl = updates.prUrl;
+      },
+    );
     spyOn(planStateMod, 'clearPlan').mockImplementation(async () => {
       planState = null;
     });
