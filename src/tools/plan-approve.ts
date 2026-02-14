@@ -1,5 +1,5 @@
 import { tool, type ToolDefinition } from '@opencode-ai/plugin';
-import { loadPlan, savePlan, updatePlanJob } from '../lib/plan-state';
+import { loadPlan, savePlan } from '../lib/plan-state';
 import { Orchestrator } from '../lib/orchestrator';
 import { getSharedMonitor, getSharedNotifyCallback, setSharedOrchestrator } from '../lib/orchestrator-singleton';
 import type { CheckpointType } from '../lib/plan-types';
@@ -105,7 +105,9 @@ export const mc_plan_approve: ToolDefinition = tool({
           }
         }
 
-        await updatePlanJob(plan.id, args.retry, { status: 'ready_to_merge', error: undefined });
+        const retryJob = plan.jobs.find(j => j.name === args.retry)!;
+        retryJob.status = 'ready_to_merge';
+        retryJob.error = undefined;
 
         plan.status = 'running';
         plan.checkpoint = null;
@@ -131,7 +133,8 @@ export const mc_plan_approve: ToolDefinition = tool({
       if (ctx?.failureKind === 'touchset') {
         const job = plan.jobs.find(j => j.name === ctx.jobName);
         if (job && job.status === 'failed') {
-          await updatePlanJob(plan.id, ctx.jobName, { status: 'ready_to_merge', error: undefined });
+          job.status = 'ready_to_merge';
+          job.error = undefined;
         }
       }
 

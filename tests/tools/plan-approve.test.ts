@@ -3,6 +3,7 @@ import * as planState from '../../src/lib/plan-state';
 import * as orchestrator from '../../src/lib/orchestrator';
 import * as config from '../../src/lib/config';
 import * as integration from '../../src/lib/integration';
+import * as mergeTrain from '../../src/lib/merge-train';
 
 const { mc_plan_approve } = await import('../../src/tools/plan-approve');
 
@@ -65,6 +66,12 @@ describe('mc_plan_approve', () => {
   });
 
   describe('retry validation', () => {
+    it('should reject when both retry and relaunch are provided', async () => {
+      expect(
+        mc_plan_approve.execute({ checkpoint: 'on_error', retry: 'bad-job', relaunch: 'bad-job' }, mockContext),
+      ).rejects.toThrow('Cannot specify both "retry" and "relaunch"');
+    });
+
     it('should reset a failed job to ready_to_merge when retry is provided', async () => {
       spyOn(planState, 'loadPlan').mockResolvedValue({
         id: 'plan-1',
@@ -82,18 +89,222 @@ describe('mc_plan_approve', () => {
       });
 
       const mockSavePlan = spyOn(planState, 'savePlan').mockResolvedValue(undefined);
-      const mockUpdatePlanJob = spyOn(planState, 'updatePlanJob').mockResolvedValue(undefined);
       const mockResumePlan = mock().mockResolvedValue(undefined);
       spyOn(orchestrator.Orchestrator.prototype, 'resumePlan').mockImplementation(mockResumePlan);
       spyOn(orchestrator.Orchestrator.prototype, 'setPlanModelSnapshot').mockImplementation(() => {});
 
       const result = await mc_plan_approve.execute({ checkpoint: 'on_error', retry: 'bad-job' }, mockContext);
 
-      expect(mockUpdatePlanJob).toHaveBeenCalledWith('plan-1', 'bad-job', { status: 'ready_to_merge', error: undefined });
+      expect(mockSavePlan).toHaveBeenCalledWith(expect.objectContaining({
+        status: 'running',
+        jobs: expect.arrayContaining([
+          expect.objectContaining({ name: 'bad-job', status: 'ready_to_merge' }),
+        ]),
+      }));
       expect(result).toContain('bad-job');
       expect(result).toContain('ready_to_merge');
-      expect(mockSavePlan).toHaveBeenCalled();
       expect(mockResumePlan).toHaveBeenCalled();
+    });
+
+    it('should accept touchSet violations and move failed job to ready_to_merge', async () => {
+      spyOn(planState, 'loadPlan').mockResolvedValue({
+        id: 'plan-1',
+        name: 'TouchSet Plan',
+        mode: 'supervisor',
+        status: 'paused',
+        checkpoint: 'on_error',
+        checkpointContext: {
+          jobName: 'touch-job',
+          failureKind: 'touchset',
+          touchSetViolations: ['README.md'],
+          touchSetPatterns: ['src/**'],
+        },
+        jobs: [
+          { id: 'j1', name: 'touch-job', prompt: 'fix files', status: 'failed', error: 'touchSet violation' },
+        ],
+        integrationBranch: 'mc/integration/plan-1',
+        baseCommit: 'abc123',
+        createdAt: new Date().toISOString(),
+      });
+
+      const mockSavePlan = spyOn(planState, 'savePlan').mockResolvedValue(undefined);
+      const mockResumePlan = mock().mockResolvedValue(undefined);
+      spyOn(orchestrator.Orchestrator.prototype, 'resumePlan').mockImplementation(mockResumePlan);
+      spyOn(orchestrator.Orchestrator.prototype, 'setPlanModelSnapshot').mockImplementation(() => {});
+
+      const result = await mc_plan_approve.execute({ checkpoint: 'on_error' }, mockContext);
+
+      expect(mockSavePlan).toHaveBeenCalledWith(expect.objectContaining({
+        status: 'running',
+        checkpoint: null,
+        checkpointContext: null,
+        jobs: expect.arrayContaining([
+          expect.objectContaining({ name: 'touch-job', status: 'ready_to_merge' }),
+        ]),
+      }));
+      expect(mockResumePlan).toHaveBeenCalled();
+      expect(result).toContain('TouchSet violations for job "touch-job" accepted');
+    });
+
+    it('should relaunch touchSet-failed job for correction', async () => {
+      spyOn(planState, 'loadPlan').mockResolvedValue({
+        id: 'plan-1',
+        name: 'TouchSet Relaunch Plan',
+        mode: 'supervisor',
+        status: 'paused',
+        checkpoint: 'on_error',
+        checkpointContext: {
+          jobName: 'touch-job',
+          failureKind: 'touchset',
+          touchSetViolations: ['README.md'],
+          touchSetPatterns: ['src/**'],
+        },
+        jobs: [
+          {
+            id: 'j1',
+            name: 'touch-job',
+            prompt: 'fix files',
+            status: 'failed',
+            touchSet: ['src/**'],
+            branch: 'mc/plan/plan-1/touch-job',
+          },
+        ],
+        integrationBranch: 'mc/integration/plan-1',
+        baseCommit: 'abc123',
+        createdAt: new Date().toISOString(),
+      });
+
+      const mockSavePlan = spyOn(planState, 'savePlan').mockResolvedValue(undefined);
+      const mockResumePlan = mock().mockResolvedValue(undefined);
+      const relaunchSpy = mock().mockResolvedValue(undefined);
+      spyOn(orchestrator.Orchestrator.prototype, 'resumePlan').mockImplementation(mockResumePlan);
+      spyOn(orchestrator.Orchestrator.prototype, 'relaunchJobForCorrection').mockImplementation(relaunchSpy);
+      spyOn(orchestrator.Orchestrator.prototype, 'setPlanModelSnapshot').mockImplementation(() => {});
+
+      const result = await mc_plan_approve.execute({ checkpoint: 'on_error', relaunch: 'touch-job' }, mockContext);
+
+      expect(mockSavePlan).toHaveBeenCalledWith(expect.objectContaining({
+        status: 'running',
+        checkpoint: null,
+        checkpointContext: null,
+      }));
+      expect(relaunchSpy).toHaveBeenCalledWith('touch-job', ['README.md'], ['src/**']);
+      expect(mockResumePlan).toHaveBeenCalled();
+      expect(result).toContain('relaunched with correction prompt');
+    });
+
+    it('should re-validate touchSet on retry before proceeding', async () => {
+      spyOn(planState, 'loadPlan').mockResolvedValue({
+        id: 'plan-1',
+        name: 'TouchSet Retry Plan',
+        mode: 'supervisor',
+        status: 'paused',
+        checkpoint: 'on_error',
+        checkpointContext: {
+          jobName: 'touch-job',
+          failureKind: 'touchset',
+          touchSetViolations: ['README.md'],
+          touchSetPatterns: ['src/**'],
+        },
+        jobs: [
+          {
+            id: 'j1',
+            name: 'touch-job',
+            prompt: 'fix files',
+            status: 'failed',
+            touchSet: ['src/**'],
+            branch: 'mc/plan/plan-1/touch-job',
+          },
+        ],
+        integrationBranch: 'mc/integration/plan-1',
+        baseCommit: 'abc123',
+        createdAt: new Date().toISOString(),
+      });
+
+      const validateSpy = spyOn(mergeTrain, 'validateTouchSet').mockResolvedValue({
+        valid: true,
+        changedFiles: ['src/main.ts'],
+      });
+      const mockSavePlan = spyOn(planState, 'savePlan').mockResolvedValue(undefined);
+      const mockResumePlan = mock().mockResolvedValue(undefined);
+      spyOn(orchestrator.Orchestrator.prototype, 'resumePlan').mockImplementation(mockResumePlan);
+      spyOn(orchestrator.Orchestrator.prototype, 'setPlanModelSnapshot').mockImplementation(() => {});
+
+      const result = await mc_plan_approve.execute({ checkpoint: 'on_error', retry: 'touch-job' }, mockContext);
+
+      expect(validateSpy).toHaveBeenCalledWith('mc/plan/plan-1/touch-job', 'mc/integration/plan-1', ['src/**']);
+      expect(mockSavePlan).toHaveBeenCalledWith(expect.objectContaining({
+        status: 'running',
+        jobs: expect.arrayContaining([
+          expect.objectContaining({ name: 'touch-job', status: 'ready_to_merge' }),
+        ]),
+      }));
+      expect(mockResumePlan).toHaveBeenCalled();
+      expect(result).toContain('touch-job');
+      expect(result).toContain('ready_to_merge');
+    });
+
+    it('should reject retry when touchSet remains violated after manual fix', async () => {
+      spyOn(planState, 'loadPlan').mockResolvedValue({
+        id: 'plan-1',
+        name: 'TouchSet Retry Plan',
+        mode: 'supervisor',
+        status: 'paused',
+        checkpoint: 'on_error',
+        checkpointContext: {
+          jobName: 'touch-job',
+          failureKind: 'touchset',
+          touchSetViolations: ['README.md'],
+          touchSetPatterns: ['src/**'],
+        },
+        jobs: [
+          {
+            id: 'j1',
+            name: 'touch-job',
+            prompt: 'fix files',
+            status: 'failed',
+            touchSet: ['src/**'],
+            branch: 'mc/plan/plan-1/touch-job',
+          },
+        ],
+        integrationBranch: 'mc/integration/plan-1',
+        baseCommit: 'abc123',
+        createdAt: new Date().toISOString(),
+      });
+
+      spyOn(mergeTrain, 'validateTouchSet').mockResolvedValue({
+        valid: false,
+        violations: ['README.md'],
+        changedFiles: ['src/main.ts', 'README.md'],
+      });
+
+      expect(
+        mc_plan_approve.execute({ checkpoint: 'on_error', retry: 'touch-job' }, mockContext),
+      ).rejects.toThrow('still has touchSet violations after manual fix');
+    });
+
+    it('should reject relaunch when failure is not touchSet-related', async () => {
+      spyOn(planState, 'loadPlan').mockResolvedValue({
+        id: 'plan-1',
+        name: 'Non TouchSet Plan',
+        mode: 'supervisor',
+        status: 'paused',
+        checkpoint: 'on_error',
+        checkpointContext: {
+          jobName: 'bad-job',
+          failureKind: 'test_failure',
+        },
+        jobs: [
+          { id: 'j1', name: 'bad-job', prompt: 'fix', status: 'failed', error: 'tests failed' },
+        ],
+        integrationBranch: 'mc/integration/plan-1',
+        baseCommit: 'abc123',
+        createdAt: new Date().toISOString(),
+      });
+
+      expect(
+        mc_plan_approve.execute({ checkpoint: 'on_error', relaunch: 'bad-job' }, mockContext),
+      ).rejects.toThrow('was not failed due to a touchSet violation');
     });
 
     it('should allow retry of needs_rebase jobs', async () => {
@@ -111,7 +322,6 @@ describe('mc_plan_approve', () => {
         createdAt: new Date().toISOString(),
       });
 
-      const mockUpdatePlanJob = spyOn(planState, 'updatePlanJob').mockResolvedValue(undefined);
       const mockSavePlan = spyOn(planState, 'savePlan').mockResolvedValue(undefined);
       const mockResumePlan = mock().mockResolvedValue(undefined);
       spyOn(orchestrator.Orchestrator.prototype, 'resumePlan').mockImplementation(mockResumePlan);
@@ -119,10 +329,14 @@ describe('mc_plan_approve', () => {
 
       const result = await mc_plan_approve.execute({ checkpoint: 'on_error', retry: 'conflicting-job' }, mockContext);
 
-      expect(mockUpdatePlanJob).toHaveBeenCalledWith('plan-1', 'conflicting-job', { status: 'ready_to_merge', error: undefined });
+      expect(mockSavePlan).toHaveBeenCalledWith(expect.objectContaining({
+        status: 'running',
+        jobs: expect.arrayContaining([
+          expect.objectContaining({ name: 'conflicting-job', status: 'ready_to_merge' }),
+        ]),
+      }));
       expect(result).toContain('Checkpoint');
       expect(result).toContain('ready_to_merge');
-      expect(mockSavePlan).toHaveBeenCalled();
       expect(mockResumePlan).toHaveBeenCalled();
     });
 
