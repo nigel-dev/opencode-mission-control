@@ -10,6 +10,15 @@ export type PlanStatus =
 
 export type CheckpointType = 'pre_merge' | 'on_error' | 'pre_pr';
 
+export type FailureKind = 'touchset' | 'merge_conflict' | 'test_failure' | 'job_failed';
+
+export interface CheckpointContext {
+  jobName: string;
+  failureKind: FailureKind;
+  touchSetViolations?: string[];
+  touchSetPatterns?: string[];
+}
+
 export type JobStatus =
   | 'queued'
   | 'waiting_deps'
@@ -39,6 +48,7 @@ export interface PlanSpec {
   completedAt?: string;
   prUrl?: string;
   checkpoint?: CheckpointType | null;
+  checkpointContext?: CheckpointContext | null;
 }
 
 export interface JobSpec {
@@ -76,8 +86,8 @@ export const VALID_JOB_TRANSITIONS: Record<JobStatus, JobStatus[]> = {
   queued: ['waiting_deps', 'running', 'stopped', 'canceled'],
   waiting_deps: ['running', 'stopped', 'canceled'],
   running: ['completed', 'failed', 'stopped', 'canceled'],
-  completed: ['ready_to_merge', 'stopped', 'canceled'],
-  failed: ['ready_to_merge', 'stopped', 'canceled'],
+  completed: ['ready_to_merge', 'failed', 'stopped', 'canceled'],
+  failed: ['ready_to_merge', 'running', 'stopped', 'canceled'],
   ready_to_merge: ['merging', 'needs_rebase', 'stopped', 'canceled'],
   merging: ['merged', 'conflict', 'stopped', 'canceled'],
   merged: ['needs_rebase'],

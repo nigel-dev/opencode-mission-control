@@ -72,6 +72,15 @@ export const JobSpecSchema = z.object({
   mode: z.enum(['vanilla', 'plan', 'ralph', 'ulw']).optional(),
 });
 
+export const FailureKindSchema = z.enum(['touchset', 'merge_conflict', 'test_failure', 'job_failed']);
+
+export const CheckpointContextSchema = z.object({
+  jobName: z.string(),
+  failureKind: FailureKindSchema,
+  touchSetViolations: z.array(z.string()).optional(),
+  touchSetPatterns: z.array(z.string()).optional(),
+});
+
 export const PlanSpecSchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -86,6 +95,7 @@ export const PlanSpecSchema = z.object({
   completedAt: z.string().optional(),
   prUrl: z.string().optional(),
   checkpoint: CheckpointTypeSchema.nullable().optional(),
+  checkpointContext: CheckpointContextSchema.nullable().optional(),
   ghAuthenticated: z.boolean().optional(),
 });
 
