@@ -489,6 +489,19 @@ describe('validateTouchSet', () => {
     expect(result.changedFiles).toContain('src/lib/deep/nested.ts');
   });
 
+  it('should treat trailing slash as directory prefix glob', async () => {
+    await mustExec(['git', 'checkout', '-b', 'feature-trailing-slash', 'main'], testRepo.repoDir);
+    mkdirSync(join(testRepo.repoDir, 'ai-docs/gap-analysis'), { recursive: true });
+    writeFileSync(join(testRepo.repoDir, 'ai-docs/gap-analysis/AUDIT.md'), 'audit\n');
+    await mustExec(['git', 'add', '.'], testRepo.repoDir);
+    await mustExec(['git', 'commit', '-m', 'add audit file'], testRepo.repoDir);
+    await mustExec(['git', 'checkout', 'main'], testRepo.repoDir);
+
+    const result = await validateTouchSet('feature-trailing-slash', 'main', ['ai-docs/gap-analysis/'], { cwd: testRepo.repoDir });
+    expect(result.valid).toBe(true);
+    expect(result.changedFiles).toContain('ai-docs/gap-analysis/AUDIT.md');
+  });
+
   it('should return valid when job has no changes', async () => {
     await mustExec(['git', 'checkout', '-b', 'feature-no-changes', 'main'], testRepo.repoDir);
     await mustExec(['git', 'commit', '--allow-empty', '-m', 'empty'], testRepo.repoDir);
