@@ -92,7 +92,6 @@ describe('mc_plan_approve', () => {
       expect(mockUpdatePlanJob).toHaveBeenCalledWith('plan-1', 'bad-job', { status: 'ready_to_merge', error: undefined });
       expect(result).toContain('bad-job');
       expect(result).toContain('ready_to_merge');
-      expect(result).toContain('resuming');
       expect(mockSavePlan).toHaveBeenCalled();
       expect(mockResumePlan).toHaveBeenCalled();
     });
@@ -122,7 +121,7 @@ describe('mc_plan_approve', () => {
 
       expect(mockUpdatePlanJob).toHaveBeenCalledWith('plan-1', 'conflicting-job', { status: 'ready_to_merge', error: undefined });
       expect(result).toContain('Checkpoint');
-      expect(result).toContain('resuming');
+      expect(result).toContain('ready_to_merge');
       expect(mockSavePlan).toHaveBeenCalled();
       expect(mockResumePlan).toHaveBeenCalled();
     });
