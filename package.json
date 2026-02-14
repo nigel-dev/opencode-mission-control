@@ -31,6 +31,7 @@
     "semantic-release": "^25.0.3",
     "typescript": "^5.0.0"
   },
+  "author": "Nigel Bazzeghin <nbazzeghin@gmail.com>",
   "license": "MIT",
   "homepage": "https://github.com/nigel-dev/opencode-mission-control#readme",
   "bugs": {
