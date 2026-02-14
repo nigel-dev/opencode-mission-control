@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto';
 import type { MCConfig } from './config';
 import type { PlanSpec, JobSpec, PlanStatus, CheckpointType, CheckpointContext } from './plan-types';
-import { loadPlan, savePlan, updatePlanJob, clearPlan, validateGhAuth } from './plan-state';
+import { loadPlan, savePlan, updatePlanJob, updatePlanFields, clearPlan, validateGhAuth } from './plan-state';
 import { getDefaultBranch } from './git';
 import { createIntegrationBranch, deleteIntegrationBranch } from './integration';
 import { MergeTrain, checkMergeability, type MergeTestReport, validateTouchSet } from './merge-train';
@@ -291,7 +291,6 @@ export class Orchestrator {
 
     const plan = await loadPlan();
     if (plan && plan.status === 'paused') {
-      // Track jobs approved for merge so reconciler doesn't re-checkpoint them
       if (wasPreMerge) {
         for (const job of plan.jobs) {
           if (job.status === 'ready_to_merge') {
@@ -300,10 +299,11 @@ export class Orchestrator {
         }
       }
 
-      plan.status = 'running';
-      plan.checkpoint = null;
-      plan.checkpointContext = null;
-      await savePlan(plan);
+      await updatePlanFields(plan.id, {
+        status: 'running',
+        checkpoint: null,
+        checkpointContext: null,
+      });
       this.showToast('Mission Control', 'Checkpoint cleared, resuming execution.', 'info');
 
       if (!this.isRunning) {
@@ -391,10 +391,11 @@ export class Orchestrator {
 
   private async setCheckpoint(type: CheckpointType, plan: PlanSpec, context?: CheckpointContext): Promise<void> {
     this.checkpoint = type;
-    plan.status = 'paused';
-    plan.checkpoint = type;
-    plan.checkpointContext = context ?? null;
-    await savePlan(plan);
+    await updatePlanFields(plan.id, {
+      status: 'paused',
+      checkpoint: type,
+      checkpointContext: context ?? null,
+    });
     this.stopReconciler();
     this.showToast(
       'Mission Control',
@@ -446,6 +447,32 @@ export class Orchestrator {
       const maxParallel = (this.config as MCConfig & { maxParallel?: number }).maxParallel ?? 3;
       const runningJobs = (await getRunningJobs()).filter((job) => job.planId === plan.id);
       let runningCount = runningJobs.length;
+
+      // Safety net: detect plan jobs stuck as 'running' when jobs.json already
+      // shows them as completed/failed (can happen if a prior savePlan race
+      // overwrote their status, or if the 'complete' event was missed).
+      const jobState = await loadJobState();
+      const runningJobNames = new Set(runningJobs.map((j) => j.name));
+      for (const planJob of plan.jobs) {
+        if (planJob.status !== 'running') continue;
+        if (runningJobNames.has(planJob.name)) continue;
+
+        const stateJob = jobState.jobs.find(
+          (j) => j.name === planJob.name && j.planId === plan.id,
+        );
+        if (!stateJob) continue;
+
+        if (stateJob.status === 'completed') {
+          await updatePlanJob(plan.id, planJob.name, { status: 'completed' });
+          planJob.status = 'completed';
+        } else if (stateJob.status === 'failed') {
+          await updatePlanJob(plan.id, planJob.name, {
+            status: 'failed',
+            error: 'recovered from missed completion event',
+          });
+          planJob.status = 'failed';
+        }
+      }
 
       const mergeOrder = [...plan.jobs].sort(
         (a, b) => (a.mergeOrder ?? Number.MAX_SAFE_INTEGER) - (b.mergeOrder ?? Number.MAX_SAFE_INTEGER),
@@ -654,23 +681,26 @@ export class Orchestrator {
           return;
         }
 
-        latestPlan.status = 'creating_pr';
-        await savePlan(latestPlan);
+        await updatePlanFields(latestPlan.id, { status: 'creating_pr' });
 
         try {
           const prUrl = await this.createPR();
-          latestPlan.prUrl = prUrl;
-          latestPlan.status = 'completed';
-          latestPlan.completedAt = new Date().toISOString();
-          await savePlan(latestPlan);
+          const completedAt = new Date().toISOString();
+          await updatePlanFields(latestPlan.id, {
+            status: 'completed',
+            prUrl,
+            completedAt,
+          });
           this.stopReconciler();
           this.unsubscribeFromMonitorEvents();
           this.showToast('Mission Control', `Plan completed! PR: ${prUrl}`, 'success');
           this.notify(`🎉 Plan "${latestPlan.name}" completed! PR created: ${prUrl}`);
         } catch (prError) {
-          latestPlan.status = 'failed';
-          latestPlan.completedAt = new Date().toISOString();
-          await savePlan(latestPlan);
+          const completedAt = new Date().toISOString();
+          await updatePlanFields(latestPlan.id, {
+            status: 'failed',
+            completedAt,
+          });
           this.stopReconciler();
           this.unsubscribeFromMonitorEvents();
           const errMsg = prError instanceof Error ? prError.message : String(prError);
@@ -681,15 +711,17 @@ export class Orchestrator {
       }
 
       if (latestPlan.status !== plan.status) {
-        latestPlan.status = plan.status;
+        const updates: { status: typeof plan.status; completedAt?: string } = {
+          status: plan.status,
+        };
         if (plan.status === 'failed') {
-          latestPlan.completedAt = new Date().toISOString();
+          updates.completedAt = new Date().toISOString();
           this.stopReconciler();
           this.unsubscribeFromMonitorEvents();
           this.showToast('Mission Control', `Plan "${latestPlan.name}" failed.`, 'error');
           this.notify(`❌ Plan "${latestPlan.name}" failed.`);
         }
-        await savePlan(latestPlan);
+        await updatePlanFields(latestPlan.id, updates);
       }
   }
 
@@ -1154,10 +1186,11 @@ If your work needs human review before it can proceed: mc_report(status: "needs_
     }
 
     if (plan.status === 'paused') {
-      plan.status = 'running';
-      plan.checkpoint = null;
-      plan.checkpointContext = null;
-      await savePlan(plan);
+      await updatePlanFields(plan.id, {
+        status: 'running',
+        checkpoint: null,
+        checkpointContext: null,
+      });
     }
     this.checkpoint = null;
 
@@ -1196,12 +1229,10 @@ If your work needs human review before it can proceed: mc_report(status: "needs_
     }
 
     if (hasDeadRunningJob) {
-      const currentPlan = await loadPlan();
-      if (currentPlan) {
-        currentPlan.status = 'failed';
-        currentPlan.completedAt = new Date().toISOString();
-        await savePlan(currentPlan);
-      }
+      await updatePlanFields(plan.id, {
+        status: 'failed',
+        completedAt: new Date().toISOString(),
+      });
       return;
     }
 
