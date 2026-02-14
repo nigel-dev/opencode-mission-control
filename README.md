@@ -504,7 +504,7 @@ Create and start a multi-job orchestrated plan.
 | `name` | `string` | Yes | Unique job name |
 | `prompt` | `string` | Yes | Task prompt for the AI agent |
 | `dependsOn` | `string[]` | No | Job names this job depends on (must complete and merge first) |
-| `touchSet` | `string[]` | No | File globs this job expects to modify |
+| `touchSet` | `string[]` | No | File globs this job expects to modify. After completion, the orchestrator validates that only files matching these patterns were changed. Violations pause the plan — see [TouchSet Enforcement](#touchset-enforcement). |
 | `mode` | `"vanilla"` \| `"plan"` \| `"ralph"` \| `"ulw"` | No | Execution mode override (defaults to `omo.defaultMode` config) |
 | `copyFiles` | `string[]` | No | Files to copy into the worktree |
 | `symlinkDirs` | `string[]` | No | Directories to symlink into the worktree |
@@ -563,11 +563,21 @@ Show the current state of the active plan — job statuses, progress, and any ch
 
 #### `mc_plan_approve`
 
-Approve a copilot plan to start execution, or clear a supervisor checkpoint to continue.
+Approve a pending copilot plan, clear a supervisor checkpoint, or handle a failed job. When a touchSet violation pauses the plan, three actions are available:
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `checkpoint` | `"pre_merge"` \| `"on_error"` \| `"pre_pr"` | No | Specific checkpoint to clear (supervisor mode) |
+| `retry` | `string` | No | Name of a failed/conflict/needs_rebase job to retry after manual fix. Re-validates touchSet before proceeding. |
+| `relaunch` | `string` | No | Name of a touchSet-failed job to relaunch. Spawns a new agent in the existing worktree with a correction prompt. |
+
+**TouchSet violation options:**
+
+| Action | Command | Behavior |
+|--------|---------|----------|
+| **Accept** | `mc_plan_approve(checkpoint: "on_error")` | Violations are legitimate — skip validation and proceed to merge |
+| **Relaunch** | `mc_plan_approve(checkpoint: "on_error", relaunch: "job")` | Spawn agent to fix — relaunches in existing worktree with violation details |
+| **Retry** | `mc_plan_approve(checkpoint: "on_error", retry: "job")` | You fixed it manually — re-validates touchSet, then proceeds if clean |
 
 #### `mc_plan_cancel`
 
@@ -622,14 +632,38 @@ Result:
 
 > **Why not `mc_launch`?** You *could* launch these sequentially, merging each into main before starting the next. But you'd lose the automated test gating, the single integration PR, and the parallel execution of `dashboard-ui` and `docs`. The plan handles the dependency graph, merge ordering, and PR creation — you just check `mc_plan_status` or wait for the completion notification.
 
+### TouchSet Enforcement
+
+When a job specifies `touchSet` patterns, the orchestrator validates the job's changes after completion — before the job enters the merge train. If the job modified files that don't match any `touchSet` glob, the plan pauses with an `on_error` checkpoint:
+
+```
+❌ Job "db-schema" modified files outside its touchSet:
+  Violations: src/types/search.ts, src/utils/format.ts
+  Allowed: src/db/**
+
+Options:
+  Accept violations:  mc_plan_approve(checkpoint: "on_error")
+  Agent fixes branch: mc_plan_approve(checkpoint: "on_error", relaunch: "db-schema")
+  You fix, re-check:  mc_plan_approve(checkpoint: "on_error", retry: "db-schema")
+```
+
+| Option | When to use |
+|--------|-------------|
+| **Accept** | You reviewed the violations and they're legitimate (e.g., the agent needed to update shared types) |
+| **Relaunch** | The violations are accidental — a new agent spawns in the same worktree with a correction prompt to revert them |
+| **Retry** | You manually fixed the branch — Mission Control re-validates the touchSet before proceeding |
+
+The **relaunch** path reuses the existing worktree and branch. The correction agent sees the full git history and receives a prompt with the original task, the specific violations, and the allowed patterns. After the agent completes, touchSet validation runs again automatically.
+
 ### Merge Train
 
 The Merge Train is the engine behind plan integration. Each completed job's branch is merged into a dedicated **integration branch** (`mc/integration-{plan-id}`):
 
-1. **Merge** — `git merge --no-ff {job-branch}` into the integration worktree
-2. **Test** — If a `testCommand` is configured (or detected from `package.json`), it runs after each merge
-3. **Rollback** — If tests fail or time out, the merge is automatically rolled back (`git merge --abort` or `git reset --hard HEAD~1`)
-4. **Conflict detection** — Merge conflicts are caught, reported with file-level detail, and the merge is aborted
+1. **TouchSet validation** — If `touchSet` is configured, verify the job only modified allowed files (violations pause the plan)
+2. **Merge** — `git merge --no-ff {job-branch}` into the integration worktree
+3. **Test** — If a `testCommand` is configured (or detected from `package.json`), it runs after each merge
+4. **Rollback** — If tests fail or time out, the merge is automatically rolled back (`git merge --abort` or `git reset --hard HEAD~1`)
+5. **Conflict detection** — Merge conflicts are caught, reported with file-level detail, and the merge is aborted
 
 Once all jobs are merged and tests pass, the integration branch is pushed and a PR is created.
 
@@ -801,6 +835,12 @@ Yes. Use `mc_attach` to get the tmux command, then run it in your terminal. You'
 <summary><strong>How does the plan merge train handle test failures?</strong></summary>
 
 If the configured `testCommand` fails after a merge, the merge is automatically rolled back. The job is marked as failed and the plan status updates accordingly (in supervisor mode, it pauses for your review).
+</details>
+
+<details>
+<summary><strong>What happens if a job modifies files outside its touchSet?</strong></summary>
+
+The plan pauses at an `on_error` checkpoint with three options: **accept** the violations if they're legitimate, **relaunch** the agent with a correction prompt to fix them, or **retry** after you fix the branch manually. See [TouchSet Enforcement](#touchset-enforcement) for details.
 </details>
 
 <details>
