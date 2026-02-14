@@ -465,7 +465,7 @@ export class Orchestrator {
         if (stateJob.status === 'completed') {
           await updatePlanJob(plan.id, planJob.name, { status: 'completed' });
           planJob.status = 'completed';
-        } else if (stateJob.status === 'failed') {
+        } else if (stateJob.status === 'failed' || stateJob.status === 'stopped') {
           await updatePlanJob(plan.id, planJob.name, {
             status: 'failed',
             error: 'recovered from missed completion event',

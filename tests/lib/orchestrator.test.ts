@@ -906,6 +906,54 @@ describe('orchestrator', () => {
     // Safety net should have corrected the stuck job status
     expect(planStateMod.updatePlanJob).toHaveBeenCalledWith('plan-1', 'stuck-job', { status: 'completed' });
   });
+
+  it('reconciliation safety net recovers stopped jobs as failed', async () => {
+    planState = makePlan({
+      status: 'running',
+      jobs: [
+        makeJob('killed-job', { status: 'running', mergeOrder: 0 }),
+        makeJob('merged-job', { status: 'merged', mergeOrder: 1 }),
+      ],
+    });
+
+    runningJobs = [];
+
+    spyOn(jobStateMod, 'loadJobState').mockImplementation(async () => ({
+      version: 2,
+      jobs: [
+        {
+          id: 'killed-job-id',
+          name: 'killed-job',
+          planId: 'plan-1',
+          status: 'stopped' as const,
+          worktreePath: '/tmp/w1',
+          branch: 'mc/killed-job',
+          tmuxTarget: 'mc-killed-job',
+          placement: 'session' as const,
+          prompt: 'do killed-job',
+          mode: 'vanilla' as const,
+          createdAt: '2026-01-01T00:00:00.000Z',
+          completedAt: '2026-01-01T00:01:00.000Z',
+        },
+      ],
+      updatedAt: new Date().toISOString(),
+    }));
+
+    const orchestrator = new Orchestrator(monitor as any, {
+      defaultPlacement: 'session',
+      pollInterval: 10000,
+      idleThreshold: 300000,
+      worktreeBasePath: '/tmp',
+      omo: { enabled: false, defaultMode: 'vanilla' },
+    } as any);
+
+    await (orchestrator as any).reconcile();
+
+    expect(planStateMod.updatePlanJob).toHaveBeenCalledWith('plan-1', 'killed-job', {
+      status: 'failed',
+      error: 'recovered from missed completion event',
+    });
+  });
 });
 
 describe('orchestrator reconcile pending (dirty re-reconcile)', () => {
