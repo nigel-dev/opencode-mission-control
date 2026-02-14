@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
 import type { MCConfig } from './config';
-import type { PlanSpec, JobSpec, PlanStatus, CheckpointType } from './plan-types';
+import type { PlanSpec, JobSpec, PlanStatus, CheckpointType, CheckpointContext } from './plan-types';
 import { loadPlan, savePlan, updatePlanJob, clearPlan, validateGhAuth } from './plan-state';
 import { getDefaultBranch } from './git';
 import { createIntegrationBranch, deleteIntegrationBranch } from './integration';
@@ -302,6 +302,7 @@ export class Orchestrator {
 
       plan.status = 'running';
       plan.checkpoint = null;
+      plan.checkpointContext = null;
       await savePlan(plan);
       this.showToast('Mission Control', 'Checkpoint cleared, resuming execution.', 'info');
 
@@ -388,10 +389,11 @@ export class Orchestrator {
     this.isRunning = false;
   }
 
-  private async setCheckpoint(type: CheckpointType, plan: PlanSpec): Promise<void> {
+  private async setCheckpoint(type: CheckpointType, plan: PlanSpec, context?: CheckpointContext): Promise<void> {
     this.checkpoint = type;
     plan.status = 'paused';
     plan.checkpoint = type;
+    plan.checkpointContext = context ?? null;
     await savePlan(plan);
     this.stopReconciler();
     this.showToast(
@@ -501,8 +503,21 @@ export class Orchestrator {
               job.status = 'failed';
 
               this.showToast('Mission Control', `Job "${job.name}" touched files outside its touchSet. Plan paused.`, 'error');
-              this.notify(`❌ Job "${job.name}" modified files outside its touchSet:\n  Violations: ${validation.violations.join(', ')}\n  Allowed: ${job.touchSet.join(', ')}\nFix the branch and retry with mc_plan_approve(checkpoint: "on_error", retry: "${job.name}").`);
-              await this.setCheckpoint('on_error', plan);
+              this.notify(
+                `❌ Job "${job.name}" modified files outside its touchSet:\n` +
+                `  Violations: ${validation.violations.join(', ')}\n` +
+                `  Allowed: ${job.touchSet.join(', ')}\n\n` +
+                `Options:\n` +
+                `  Accept violations:  mc_plan_approve(checkpoint: "on_error")\n` +
+                `  Agent fixes branch: mc_plan_approve(checkpoint: "on_error", relaunch: "${job.name}")\n` +
+                `  You fix, re-check:  mc_plan_approve(checkpoint: "on_error", retry: "${job.name}")`,
+              );
+              await this.setCheckpoint('on_error', plan, {
+                jobName: job.name,
+                failureKind: 'touchset',
+                touchSetViolations: validation.violations,
+                touchSetPatterns: job.touchSet,
+              });
               return;
             }
           }
@@ -539,7 +554,10 @@ export class Orchestrator {
 
             this.showToast('Mission Control', `Job "${job.name}" has merge conflicts. Plan paused.`, 'error');
             this.notify(`❌ Job "${job.name}" would conflict with the integration branch.\n  Files: ${mergeCheck.conflicts?.join(', ') ?? 'unknown'}\nRebase the job branch and retry with mc_plan_approve(checkpoint: "on_error", retry: "${job.name}").`);
-            await this.setCheckpoint('on_error', plan);
+            await this.setCheckpoint('on_error', plan, {
+              jobName: job.name,
+              failureKind: 'merge_conflict',
+            });
             return;
           }
         }
@@ -590,7 +608,10 @@ export class Orchestrator {
 
           this.showToast('Mission Control', `Merge conflict in job "${nextJob.name}". Plan paused.`, 'error');
           this.notify(`❌ Merge conflict in job "${nextJob.name}". Files: ${mergeResult.files?.join(', ') ?? 'unknown'}. Fix the branch and retry with mc_plan_approve(checkpoint: "on_error", retry: "${nextJob.name}").`);
-          await this.setCheckpoint('on_error', plan);
+          await this.setCheckpoint('on_error', plan, {
+            jobName: nextJob.name,
+            failureKind: 'merge_conflict',
+          });
           return;
         } else {
           await updatePlanJob(plan.id, nextJob.name, {
@@ -605,7 +626,10 @@ export class Orchestrator {
 
           this.showToast('Mission Control', `Job "${nextJob.name}" failed merge tests. Plan paused.`, 'error');
           this.notify(`❌ Job "${nextJob.name}" failed merge tests. Fix the branch and retry with mc_plan_approve(checkpoint: "on_error", retry: "${nextJob.name}").`);
-          await this.setCheckpoint('on_error', plan);
+          await this.setCheckpoint('on_error', plan, {
+            jobName: nextJob.name,
+            failureKind: 'test_failure',
+          });
           return;
         }
       }
@@ -893,7 +917,10 @@ If your work needs human review before it can proceed: mc_report(status: "needs_
 
           this.showToast('Mission Control', `Job "${job.name}" failed. Plan paused.`, 'error');
           this.notify(`❌ Job "${job.name}" failed. Fix and retry with mc_plan_approve(checkpoint: "on_error", retry: "${job.name}").`);
-          await this.setCheckpoint('on_error', plan);
+          await this.setCheckpoint('on_error', plan, {
+            jobName: job.name,
+            failureKind: 'job_failed',
+          });
         })
         .catch(() => {})
         .finally(() => {
@@ -945,6 +972,7 @@ If your work needs human review before it can proceed: mc_report(status: "needs_
     if (plan.status === 'paused') {
       plan.status = 'running';
       plan.checkpoint = null;
+      plan.checkpointContext = null;
       await savePlan(plan);
     }
     this.checkpoint = null;
