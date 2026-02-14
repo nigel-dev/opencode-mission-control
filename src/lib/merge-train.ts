@@ -73,7 +73,9 @@ export async function validateTouchSet(
   const violations: string[] = [];
   for (const file of changedFiles) {
     const matchesAny = touchSet.some(pattern => {
-      const glob = new Bun.Glob(pattern);
+      // Trailing slash means "this directory and everything inside it"
+      const normalized = pattern.endsWith('/') ? `${pattern}**` : pattern;
+      const glob = new Bun.Glob(normalized);
       return glob.match(file);
     });
     if (!matchesAny) {
