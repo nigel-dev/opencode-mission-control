@@ -636,6 +636,14 @@ describe('orchestrator', () => {
     );
     expect(planState?.status).toBe('paused');
     expect(planState?.checkpoint).toBe('on_error');
+    expect(planState?.checkpointContext).toEqual(
+      expect.objectContaining({
+        jobName: 'touch-violator',
+        failureKind: 'touchset',
+        touchSetViolations: expect.arrayContaining(['README.md']),
+        touchSetPatterns: expect.arrayContaining(['src/**']),
+      }),
+    );
   });
 
   it('should allow transition to ready_to_merge when touchSet is satisfied', async () => {
