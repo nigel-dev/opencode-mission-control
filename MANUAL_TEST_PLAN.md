@@ -132,10 +132,11 @@ Run these tests for basic validation after a code change. References use test ID
 | 6 | Phase 5 | 5.7-5.10 (plan with deps → verify waiting_deps → cancel) | Plan basics |
 | 7 | Phase 9 | 9.1 (overview empty) | Dashboard baseline |
 | 8 | Phase 9 | 9.4 (overview with jobs) | Dashboard with data |
-| 9 | Phase 9 | 9.14 (overview after cleanup) | Dashboard cleanup |
-| 10 | Phase 12 | Nuclear Cleanup | Clean exit |
+| 9 | Phase 5G | 5.76 (retry + relaunch mutual exclusion) | TouchSet param validation |
+| 10 | Phase 9 | 9.14 (overview after cleanup) | Dashboard cleanup |
+| 11 | Phase 12 | Nuclear Cleanup | Clean exit |
 
-**Pass criteria**: All 10 steps succeed. If any fail, run the full test plan for that phase.
+**Pass criteria**: All 11 steps succeed. If any fail, run the full test plan for that phase.
 
 ---
 
@@ -159,7 +160,7 @@ All 17 tools must be exercised during this plan. Check off as tested:
 | `mc_plan` | 5, 6 | Create orchestrated plans |
 | `mc_plan_status` | 5, 6 | Plan progress |
 | `mc_plan_cancel` | 5, 6 | Cancel active plan |
-| `mc_plan_approve` | 5 | Approve copilot/supervisor |
+| `mc_plan_approve` | 5, 5G | Approve copilot/supervisor, accept/relaunch/retry touchSet violations |
 | `mc_report` | 8 | Agent status reporting (filesystem verification) |
 | `mc_overview` | 9 | Dashboard summary |
 
@@ -175,7 +176,7 @@ From `plan-types.ts`:
 | `waiting_deps` | Waiting for dependencies to merge | Phase 5, 6 |
 | `running` | Agent is actively working | Phase 1, 3, 6 |
 | `completed` | Agent finished successfully | Phase 1 (if agent completes), 6 |
-| `failed` | Agent crashed or exited non-zero | Phase 11 (observational) |
+| `failed` | Agent crashed, exited non-zero, or touchSet violation | Phase 5G, 11 (observational) |
 | `ready_to_merge` | Completed and queued for merge train | Phase 6 (plan context) |
 | `merging` | Currently being merged into integration | Phase 6 (plan context) |
 | `merged` | Successfully merged into integration | Phase 6 (plan context) |
@@ -480,14 +481,123 @@ This phase tests the git integration tools on a job with real commits.
 | 5.29 | Check for checkpoint pauses | `mc_plan_status` | May show `paused` at checkpoint or `running` |
 | 5.30 | Approve checkpoint (if paused) | `mc_plan_approve` checkpoint=pre_merge | Execution continues |
 
+### 5G: TouchSet Enforcement
+
+This section tests the touchSet violation detection and the three resolution paths:
+**accept**, **relaunch**, and **retry**. These require a plan with `touchSet` configured
+and a job that deliberately modifies files outside its allowed patterns.
+
+> **Key Concept**: TouchSet validation runs after a job completes but before it enters the
+> merge train. If violations are found, the plan pauses at an `on_error` checkpoint with
+> structured `checkpointContext` containing `failureKind`, `jobName`, `touchSetViolations`,
+> and `touchSetPatterns`.
+
+#### 5G-1: TouchSet Violation Detection
+
+| # | Test | Action | Expected |
+|---|------|--------|----------|
+| 5.35 | Cleanup from prior tests | `mc_cleanup` all=true, deleteBranch=true | Clean |
+| 5.36 | Create plan with touchSet | `mc_plan` name=tmc-plan-touch, mode=supervisor, jobs=[{name: "tmc-ts1", prompt: "Create allowed.txt with 'hello' and also create rogue.txt with 'oops'", touchSet: ["allowed.txt"]}] | Plan created, job launches |
+| 5.37 | **Wait 3-5 seconds** | — | — |
+| 5.38 | Verify job running | `mc_plan_status` | tmc-ts1=`running` |
+| 5.39 | Kill job to simulate completion | `mc_kill` name=tmc-ts1 | Stopped |
+| 5.40 | Get worktree path | `mc_status` name=tmc-ts1 | Extract worktree path |
+| 5.41 | Create violating files in worktree | In worktree: `echo 'hello' > allowed.txt && echo 'oops' > rogue.txt && git add . && git commit -m "add files"` | Commit with both files |
+| 5.42 | **Simulate completion**: Set job status to `completed` via state file edit — update `jobs.json` entry for tmc-ts1 to `status: "completed"` | Job appears completed |
+| 5.43 | **Wait 15 seconds** | Orchestrator reconciler detects completion and runs touchSet validation | — |
+| 5.44 | Verify plan paused | `mc_plan_status` | Plan `paused`, checkpoint=`on_error` |
+| 5.45 | Verify checkpoint context | Read `plan.json` from state dir | `checkpointContext.failureKind` = `"touchset"`, `checkpointContext.jobName` = `"tmc-ts1"`, `checkpointContext.touchSetViolations` includes `"rogue.txt"`, `checkpointContext.touchSetPatterns` = `["allowed.txt"]` |
+| 5.46 | Verify job marked failed | `mc_jobs` | tmc-ts1 shows as `failed` |
+
+> **Note**: Steps 5.42-5.43 are synthetic — we manually set the job to `completed` to trigger
+> the orchestrator's touchSet validation. In production, the monitor detects agent completion
+> and transitions the job state automatically.
+
+#### 5G-2: Accept Path (Clear Checkpoint)
+
+Continue from 5G-1 state (plan paused with touchSet violation).
+
+| # | Test | Action | Expected |
+|---|------|--------|----------|
+| 5.47 | Accept violations | `mc_plan_approve` checkpoint=on_error | Checkpoint cleared, job moves to `ready_to_merge` |
+| 5.48 | Verify plan resumed | `mc_plan_status` | Plan `running` (or `merging` if merge train started) |
+| 5.49 | Verify job state | `mc_jobs` | tmc-ts1 = `ready_to_merge` or `merging` or `merged` |
+
+> **Cancel immediately after verifying** — do NOT let the plan reach `creating_pr`.
+
+| # | Action | Verify |
+|---|--------|--------|
+| 5.50 | `mc_plan_cancel` | Plan cancelled |
+| 5.51 | `mc_cleanup` all=true, deleteBranch=true | Cleaned |
+
+#### 5G-3: Relaunch Path (Agent Correction)
+
+This tests spawning a new agent in the existing worktree to fix violations.
+
+| # | Test | Action | Expected |
+|---|------|--------|----------|
+| 5.52 | Create plan with touchSet | `mc_plan` name=tmc-plan-relaunch, mode=supervisor, jobs=[{name: "tmc-rl1", prompt: "Create allowed.txt with 'hello'", touchSet: ["allowed.txt"]}] | Plan created |
+| 5.53 | **Wait 3-5 seconds** | — | — |
+| 5.54 | Kill job, create violation, set completed | Same as steps 5.39-5.42 for tmc-rl1 | Job appears completed with rogue.txt |
+| 5.55 | **Wait 15 seconds** | Orchestrator detects and validates | — |
+| 5.56 | Verify plan paused | `mc_plan_status` | Paused, checkpoint=`on_error` |
+| 5.57 | Relaunch agent | `mc_plan_approve` checkpoint=on_error, relaunch=tmc-rl1 | New tmux session created in existing worktree, job back to `running` |
+| 5.58 | **Wait 3-5 seconds** | — | — |
+| 5.59 | Verify new tmux session | `tmux list-sessions \| grep mc-tmc-rl1` | Session exists |
+| 5.60 | Verify job running | `mc_jobs` | tmc-rl1 = `running` |
+| 5.61 | Verify correction prompt | `mc_capture` name=tmc-rl1, lines=50 | Agent output visible — correction prompt includes violation details |
+
+> **Cancel immediately** — the relaunched agent may or may not fix the violations.
+
+| # | Action | Verify |
+|---|--------|--------|
+| 5.62 | `mc_plan_cancel` | Plan cancelled |
+| 5.63 | `mc_cleanup` all=true, deleteBranch=true | Cleaned |
+
+#### 5G-4: Retry Path (Manual Fix + Re-validation)
+
+This tests manually fixing the branch and having MC re-validate.
+
+| # | Test | Action | Expected |
+|---|------|--------|----------|
+| 5.64 | Create plan with touchSet | `mc_plan` name=tmc-plan-retry, mode=supervisor, jobs=[{name: "tmc-rt1", prompt: "Create allowed.txt with 'hello'", touchSet: ["allowed.txt"]}] | Plan created |
+| 5.65 | **Wait 3-5 seconds** | — | — |
+| 5.66 | Kill job, create violation, set completed | Same as steps 5.39-5.42 for tmc-rt1 | Job appears completed with rogue.txt |
+| 5.67 | **Wait 15 seconds** | Orchestrator detects and validates | — |
+| 5.68 | Verify plan paused | `mc_plan_status` | Paused, checkpoint=`on_error` |
+| 5.69 | Retry WITHOUT fixing (should fail) | `mc_plan_approve` checkpoint=on_error, retry=tmc-rt1 | Error: touchSet still violated (rogue.txt still present) |
+| 5.70 | Verify plan still paused | `mc_plan_status` | Still paused, checkpoint=`on_error` |
+| 5.71 | Fix violation manually | In worktree: `git rm rogue.txt && git commit -m "remove rogue file"` | rogue.txt removed |
+| 5.72 | Retry after fix (should succeed) | `mc_plan_approve` checkpoint=on_error, retry=tmc-rt1 | TouchSet re-validated, job moves to `ready_to_merge` |
+| 5.73 | Verify plan resumed | `mc_plan_status` | Plan running |
+
+> **Cancel immediately**.
+
+| # | Action | Verify |
+|---|--------|--------|
+| 5.74 | `mc_plan_cancel` | Plan cancelled |
+| 5.75 | `mc_cleanup` all=true, deleteBranch=true | Cleaned |
+
+#### 5G-5: Mutual Exclusion (retry vs relaunch)
+
+| # | Test | Action | Expected |
+|---|------|--------|----------|
+| 5.76 | Both retry and relaunch | `mc_plan_approve` checkpoint=on_error, retry=tmc-x, relaunch=tmc-x | Error: cannot specify both retry and relaunch |
+
+#### 5G-6: Relaunch Non-TouchSet Job Rejected
+
+| # | Test | Action | Expected |
+|---|------|--------|----------|
+| 5.77 | Relaunch on non-touchset failure | (If a plan is paused with a non-touchset failure) `mc_plan_approve` checkpoint=on_error, relaunch=jobname | Error: relaunch only available for touchSet violations |
+
 ### Phase 5 Cleanup
 
 | # | Action | Verify |
 |---|--------|--------|
-| 5.31 | `mc_plan_cancel` (if still active) | Plan cancelled |
-| 5.32 | `mc_cleanup` all=true, deleteBranch=true | All plan artifacts cleaned |
-| 5.33 | `mc_jobs` — verify empty | "No jobs found." |
-| 5.34 | `mc_plan_status` — verify no plan | "No active plan" |
+| 5.78 | `mc_plan_cancel` (if still active) | Plan cancelled |
+| 5.79 | `mc_cleanup` all=true, deleteBranch=true | All plan artifacts cleaned |
+| 5.80 | `mc_jobs` — verify empty | "No jobs found." |
+| 5.81 | `mc_plan_status` — verify no plan | "No active plan" |
 
 ---
 
@@ -963,7 +1073,7 @@ rm -f "$STATE_DIR/state/jobs.json" 2>/dev/null || true
 | 2 | Error handling & edge cases | 28 | | | | +4 window placement, +11 post-create hooks |
 | 3 | Multiple jobs | 14 | | | | +3 status filter tests |
 | 4 | Git workflow (sync & merge) | 18 | | | | |
-| 5 | Plan orchestration | 34 | | | | |
+| 5 | Plan orchestration | 81 | | | | +47 touchSet enforcement (5G: detect, accept, relaunch, retry, mutual exclusion) |
 | 6 | Realistic multi-job (overlap/conflict) | 49 | | | | |
 | 7 | Model verification | 12 | | | | +3 model ID, prompt file, model match |
 | 8 | mc_report flow | 54 | | | | +17 deterministic injection (replaced 21 non-deterministic) |
@@ -971,7 +1081,7 @@ rm -f "$STATE_DIR/state/jobs.json" 2>/dev/null || true
 | 10 | OMO plan mode | 10 | | | | |
 | 11 | Hooks (observational) | 5 | | | | |
 | 12 | Final verification & nuclear cleanup | 8 | | | | |
-| **Total** | | **276** | | | | |
+| **Total** | | **323** | | | | |
 
 ---
 
@@ -987,6 +1097,7 @@ rm -f "$STATE_DIR/state/jobs.json" 2>/dev/null || true
 8. **Report reliability**: Agents have `mc_report` available (plugin loaded via `.opencode` symlink) and are instructed to call it via `MC_REPORT_SUFFIX` prompt injection. Report files should appear reliably, but agent behavior is ultimately non-deterministic — a missing report after 15 seconds warrants investigation but is not necessarily a plugin failure.
 9. **Launcher script timing**: `.mc-launch.sh` is deleted after 5 seconds. Phase 7 must read it immediately after launch. If you miss the window, the test is inconclusive, not failed.
 10. **Worktree initialization race**: Some operations may fail if attempted before the worktree is fully initialized. The 3-5 second wait after every `mc_launch` mitigates this.
+11. **TouchSet testing on feature branches**: When running Phase 5G on a non-main branch, job worktrees inherit the feature branch's uncommitted changes. TouchSet validation compares the job branch against the integration branch, so feature branch source files show up as spurious violations alongside the actual test violations (e.g., `rogue.txt`). This is a testing artifact — in production, both branches share the same base so only the job's own changes appear.
 
 ---
 
@@ -1043,12 +1154,12 @@ This is mitigated by:
 
 ```
 queued ──────> waiting_deps ──> running ──> completed ──> ready_to_merge ──> merging ──> merged
-  │               │               │                                            │
-  │               │               ├──> failed                                  ├──> conflict ──> ready_to_merge
-  │               │               │                                            │
-  │               │               ├──> stopped                                 └──> (canceled/stopped)
-  │               │               │
-  │               │               └──> canceled
+  │               │               │            │                                │
+  │               │               ├──> failed  └──> failed (touchSet)           ├──> conflict ──> ready_to_merge
+  │               │               │              │                              │
+  │               │               ├──> stopped   ├──> ready_to_merge (accept)   └──> (canceled/stopped)
+  │               │               │              ├──> running (relaunch)
+  │               │               └──> canceled  └──> ready_to_merge (retry)
   │               │
   │               ├──> stopped
   │               └──> canceled
