@@ -881,6 +881,190 @@ If your work needs human review before it can proceed: mc_report(status: "needs_
     }
   }
 
+  async relaunchJobForCorrection(
+    jobName: string,
+    violations: string[],
+    touchSetPatterns: string[],
+  ): Promise<void> {
+    const plan = await loadPlan();
+    if (!plan) {
+      throw new Error('No active plan');
+    }
+
+    const job = plan.jobs.find((j) => j.name === jobName);
+    if (!job) {
+      throw new Error(`Job "${jobName}" not found in plan`);
+    }
+    if (!job.worktreePath || !job.branch) {
+      throw new Error(`Job "${jobName}" has no worktree or branch — cannot relaunch`);
+    }
+
+    const placement = this.planPlacement ?? this.config.defaultPlacement ?? 'session';
+    const mode = job.mode ?? this.config.omo?.defaultMode ?? 'vanilla';
+    const sanitizedName = job.name.replace(/[^a-zA-Z0-9_-]/g, '-');
+    const tmuxSessionName = `mc-${sanitizedName}`;
+    const tmuxTarget =
+      placement === 'session'
+        ? tmuxSessionName
+        : (() => {
+            const currentSession = getCurrentSession();
+            if (!currentSession && !isInsideTmux()) {
+              throw new Error('Window placement requires running inside tmux');
+            }
+            return `${currentSession}:${sanitizedName}`;
+          })();
+
+    // Kill old tmux session if still alive
+    try {
+      if (placement === 'session') {
+        await killSession(tmuxSessionName);
+      } else {
+        const [session, window] = tmuxTarget.split(':');
+        if (session && window) {
+          await killWindow(session, window);
+        }
+      }
+    } catch {
+      // Session may already be dead — that's fine
+    }
+
+    // Build correction prompt with context from the original task
+    const correctionPrompt =
+      `CORRECTION TASK — TouchSet Violation\n\n` +
+      `The previous task in this worktree was:\n"${job.prompt}"\n\n` +
+      `It completed successfully but modified files outside the allowed scope.\n\n` +
+      `Violations (files you must revert):\n${violations.map((v) => `  - ${v}`).join('\n')}\n\n` +
+      `Allowed patterns (files you may keep):\n${touchSetPatterns.map((p) => `  - ${p}`).join('\n')}\n\n` +
+      `Instructions:\n` +
+      `1. Review the changes on this branch (git log, git diff)\n` +
+      `2. Revert ONLY the violating files listed above — do NOT break the intended work\n` +
+      `3. If a violating file is genuinely required, explain why in your commit message\n` +
+      `4. Commit your corrections and report completion`;
+
+    const mcReportSuffix = `\n\nCRITICAL — STATUS REPORTING REQUIRED:
+You MUST call the mc_report tool at these points — this is NOT optional:
+
+1. IMMEDIATELY when you start: mc_report(status: "working", message: "Starting: <brief description>")
+2. At each major milestone: mc_report(status: "progress", message: "<what you accomplished>", progress: <0-100>)
+3. If you get stuck or need input: mc_report(status: "blocked", message: "<what's blocking you>")
+4. WHEN YOU ARE COMPLETELY DONE: mc_report(status: "completed", message: "<summary of what was done>")
+
+The "completed" call is MANDATORY — it signals Mission Control that your job is finished. Without it, your job will appear stuck as "running" and block the pipeline. Always call mc_report(status: "completed", ...) as your FINAL action.
+
+If your work needs human review before it can proceed: mc_report(status: "needs_review", message: "<what needs review>")`;
+    const autoCommitSuffix = (this.config.autoCommit !== false)
+      ? `\n\nIMPORTANT: When you have completed ALL of your work, you MUST commit your changes before finishing. Stage all modified and new files, then create a commit with a conventional commit message (e.g. "feat: ...", "fix: ...", "docs: ...", "refactor: ...", "chore: ..."). Do NOT skip this step.`
+      : '';
+
+    let fullPrompt = correctionPrompt + mcReportSuffix + autoCommitSuffix;
+    if (mode === 'ralph') {
+      fullPrompt = `/ralph-loop ${fullPrompt}`;
+    } else if (mode === 'ulw') {
+      fullPrompt = `/ulw-loop ${fullPrompt}`;
+    }
+
+    const worktreePath = job.worktreePath;
+    let promptFilePath: string | undefined;
+
+    try {
+      promptFilePath = await writePromptFile(worktreePath, fullPrompt);
+      const model = this.planModelSnapshot ?? getCurrentModel();
+      const launcherPath = await writeLauncherScript(worktreePath, promptFilePath, model);
+
+      const initialCommand = `bash '${launcherPath}'`;
+      if (placement === 'session') {
+        await createSession({
+          name: tmuxSessionName,
+          workdir: worktreePath,
+          command: initialCommand,
+        });
+      } else {
+        await createWindow({
+          session: getCurrentSession()!,
+          name: sanitizedName,
+          workdir: worktreePath,
+          command: initialCommand,
+        });
+      }
+
+      await setPaneDiedHook(tmuxTarget, `run-shell "echo '${job.id}' >> .mission-control/completed-jobs.log"`);
+      cleanupPromptFile(promptFilePath);
+      cleanupLauncherScript(worktreePath);
+
+      if (mode !== 'vanilla') {
+        try {
+          await new Promise((resolve) => setTimeout(resolve, 2000));
+          switch (mode) {
+            case 'plan':
+              await sendKeys(tmuxTarget, '/start-work');
+              await sendKeys(tmuxTarget, 'Enter');
+              break;
+            case 'ralph':
+              await sendKeys(tmuxTarget, '/ralph-loop');
+              await sendKeys(tmuxTarget, 'Enter');
+              break;
+            case 'ulw':
+              await sendKeys(tmuxTarget, '/ulw-loop');
+              await sendKeys(tmuxTarget, 'Enter');
+              break;
+          }
+        } catch {
+          // Non-fatal: OMO command delivery is best-effort
+        }
+      }
+
+      // Clean up stale job entries and create fresh one for the relaunch
+      const existingState = await loadJobState();
+      const staleJobs = existingState.jobs.filter(
+        (j) => j.name === job.name && j.status !== 'running',
+      );
+      for (const stale of staleJobs) {
+        await removeReport(stale.id).catch(() => {});
+        await removeJob(stale.id).catch(() => {});
+      }
+
+      const jobId = randomUUID();
+      await addJob({
+        id: jobId,
+        name: job.name,
+        worktreePath,
+        branch: job.branch,
+        tmuxTarget,
+        placement,
+        status: 'running',
+        prompt: correctionPrompt,
+        mode,
+        createdAt: new Date().toISOString(),
+        planId: plan.id,
+      });
+
+      await updatePlanJob(plan.id, job.name, {
+        status: 'running',
+        tmuxTarget,
+        error: undefined,
+      });
+    } catch (error) {
+      if (promptFilePath) {
+        cleanupPromptFile(promptFilePath, 0);
+      }
+
+      try {
+        if (placement === 'session') {
+          await killSession(tmuxSessionName);
+        } else {
+          const [session, window] = tmuxTarget.split(':');
+          if (session && window) {
+            await killWindow(session, window);
+          }
+        }
+      } catch {}
+
+      throw new Error(
+        `Failed to relaunch job "${jobName}" for correction: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
   private handleJobComplete = (job: Job): void => {
     if (!job.planId || !this.activePlanId || job.planId !== this.activePlanId) {
       return;
