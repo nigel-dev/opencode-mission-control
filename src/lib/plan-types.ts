@@ -49,6 +49,7 @@ export interface PlanSpec {
   prUrl?: string;
   checkpoint?: CheckpointType | null;
   checkpointContext?: CheckpointContext | null;
+  launchSessionID?: string;
 }
 
 export interface JobSpec {

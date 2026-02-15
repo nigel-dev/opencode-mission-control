@@ -307,6 +307,7 @@ export const mc_launch: ToolDefinition = tool({
       mode,
       planFile: args.planFile,
       createdAt: new Date().toISOString(),
+      launchSessionID: context?.sessionID,
     };
 
     await addJob(job);

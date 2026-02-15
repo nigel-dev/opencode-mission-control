@@ -58,7 +58,7 @@ export function setupNotifications(options: SetupNotificationsOptions): void {
       // If detection fails, continue sending (safer default)
     }
 
-    const sessionID = await getActiveSessionID();
+    const sessionID = job.launchSessionID ?? await getActiveSessionID();
     if (!sessionID || !sessionID.startsWith('ses')) {
       return;
     }

@@ -11,6 +11,8 @@ import {
   getJob,
   getJobByName,
   getRunningJobs,
+  migrateJobState,
+  migrateV2ToV3,
   type Job,
   type JobState,
 } from '../../src/lib/job-state';
@@ -43,14 +45,14 @@ describe('job-state', () => {
   describe('loadJobState', () => {
     it('should return default state when file does not exist', async () => {
       const state = await loadJobState();
-      expect(state.version).toBe(2);
+      expect(state.version).toBe(3);
       expect(state.jobs).toEqual([]);
       expect(state.updatedAt).toBeDefined();
     });
 
     it('should load existing state from file', async () => {
       const testState: JobState = {
-        version: 2,
+        version: 3,
         jobs: [
           {
             id: 'test-1',
@@ -71,7 +73,7 @@ describe('job-state', () => {
       await Bun.write(getTestStateFile(), JSON.stringify(testState));
       const loaded = await loadJobState();
 
-      expect(loaded.version).toBe(2);
+      expect(loaded.version).toBe(3);
       expect(loaded.jobs).toHaveLength(1);
       expect(loaded.jobs[0].id).toBe('test-1');
     });
@@ -80,7 +82,7 @@ describe('job-state', () => {
   describe('saveJobState', () => {
     it('should save state to file with updated timestamp', async () => {
       const state: JobState = {
-        version: 2,
+        version: 3,
         jobs: [],
         updatedAt: '2024-01-01T00:00:00Z',
       };
@@ -88,13 +90,13 @@ describe('job-state', () => {
       await saveJobState(state);
       const loaded = await loadJobState();
 
-      expect(loaded.version).toBe(2);
+      expect(loaded.version).toBe(3);
       expect(loaded.updatedAt).not.toBe('2024-01-01T00:00:00Z');
     });
 
     it('should use atomic write pattern', async () => {
       const state: JobState = {
-        version: 2,
+        version: 3,
         jobs: [],
         updatedAt: new Date().toISOString(),
       };
@@ -366,6 +368,189 @@ describe('job-state', () => {
       const running = await getRunningJobs();
 
       expect(running).toHaveLength(0);
+    });
+  });
+
+  describe('migrateV2ToV3', () => {
+    it('should migrate v2 state to v3 adding launchSessionID', () => {
+      const v2State = {
+        version: 2,
+        jobs: [
+          {
+            id: 'job-1',
+            name: 'Test Job',
+            worktreePath: '/path/to/worktree',
+            branch: 'main',
+            tmuxTarget: 'mc-test',
+            placement: 'session',
+            status: 'running',
+            prompt: 'Test prompt',
+            mode: 'vanilla',
+            createdAt: '2024-01-01T00:00:00Z',
+            planId: 'plan-1',
+          },
+        ],
+        updatedAt: '2024-01-01T00:00:00Z',
+      };
+
+      const migrated = migrateV2ToV3(v2State);
+
+      expect(migrated.version).toBe(3);
+      expect(migrated.jobs).toHaveLength(1);
+      expect(migrated.jobs[0].launchSessionID).toBeUndefined();
+      expect(migrated.jobs[0].id).toBe('job-1');
+      expect(migrated.jobs[0].planId).toBe('plan-1');
+    });
+
+    it('should preserve existing launchSessionID if present', () => {
+      const v2State = {
+        version: 2,
+        jobs: [
+          {
+            id: 'job-1',
+            name: 'Test Job',
+            worktreePath: '/path/to/worktree',
+            branch: 'main',
+            tmuxTarget: 'mc-test',
+            placement: 'session',
+            status: 'running',
+            prompt: 'Test prompt',
+            mode: 'vanilla',
+            createdAt: '2024-01-01T00:00:00Z',
+            launchSessionID: 'ses_existing',
+          },
+        ],
+        updatedAt: '2024-01-01T00:00:00Z',
+      };
+
+      const migrated = migrateV2ToV3(v2State);
+
+      expect(migrated.version).toBe(3);
+      expect(migrated.jobs[0].launchSessionID).toBe('ses_existing');
+    });
+
+    it('should handle empty jobs array', () => {
+      const v2State = {
+        version: 2,
+        jobs: [],
+        updatedAt: '2024-01-01T00:00:00Z',
+      };
+
+      const migrated = migrateV2ToV3(v2State);
+
+      expect(migrated.version).toBe(3);
+      expect(migrated.jobs).toHaveLength(0);
+    });
+  });
+
+  describe('migrateJobState', () => {
+    it('should migrate v1 state through v2 to v3', () => {
+      const v1State = {
+        jobs: [
+          {
+            id: 'job-1',
+            name: 'Test Job',
+            worktreePath: '/path/to/worktree',
+            branch: 'main',
+            tmuxTarget: 'mc-test',
+            placement: 'session',
+            status: 'running',
+            prompt: 'Test prompt',
+            mode: 'vanilla',
+            createdAt: '2024-01-01T00:00:00Z',
+          },
+        ],
+        updatedAt: '2024-01-01T00:00:00Z',
+      };
+
+      const migrated = migrateJobState(v1State);
+
+      expect(migrated.version).toBe(3);
+      expect(migrated.jobs[0].planId).toBeUndefined();
+      expect(migrated.jobs[0].launchSessionID).toBeUndefined();
+    });
+
+    it('should migrate v2 state to v3', () => {
+      const v2State = {
+        version: 2,
+        jobs: [
+          {
+            id: 'job-1',
+            name: 'Test Job',
+            worktreePath: '/path/to/worktree',
+            branch: 'main',
+            tmuxTarget: 'mc-test',
+            placement: 'session',
+            status: 'running',
+            prompt: 'Test prompt',
+            mode: 'vanilla',
+            createdAt: '2024-01-01T00:00:00Z',
+          },
+        ],
+        updatedAt: '2024-01-01T00:00:00Z',
+      };
+
+      const migrated = migrateJobState(v2State);
+
+      expect(migrated.version).toBe(3);
+      expect(migrated.jobs[0].launchSessionID).toBeUndefined();
+    });
+
+    it('should pass through v3 state unchanged', () => {
+      const v3State = {
+        version: 3,
+        jobs: [
+          {
+            id: 'job-1',
+            name: 'Test Job',
+            worktreePath: '/path/to/worktree',
+            branch: 'main',
+            tmuxTarget: 'mc-test',
+            placement: 'session',
+            status: 'running',
+            prompt: 'Test prompt',
+            mode: 'vanilla',
+            createdAt: '2024-01-01T00:00:00Z',
+            launchSessionID: 'ses_abc123',
+          },
+        ],
+        updatedAt: '2024-01-01T00:00:00Z',
+      };
+
+      const migrated = migrateJobState(v3State);
+
+      expect(migrated.version).toBe(3);
+      expect(migrated.jobs[0].launchSessionID).toBe('ses_abc123');
+    });
+  });
+
+  describe('loadJobState with v2 file on disk', () => {
+    it('should auto-migrate v2 state file to v3', async () => {
+      const v2State = {
+        version: 2,
+        jobs: [
+          {
+            id: 'job-1',
+            name: 'Legacy Job',
+            worktreePath: '/path/to/worktree',
+            branch: 'main',
+            tmuxTarget: 'mc-legacy',
+            placement: 'session',
+            status: 'running',
+            prompt: 'Legacy prompt',
+            mode: 'vanilla',
+            createdAt: '2024-01-01T00:00:00Z',
+          },
+        ],
+        updatedAt: '2024-01-01T00:00:00Z',
+      };
+
+      await Bun.write(getTestStateFile(), JSON.stringify(v2State));
+      const loaded = await loadJobState();
+
+      expect(loaded.version).toBe(3);
+      expect(loaded.jobs).toHaveLength(1);
+      expect(loaded.jobs[0].launchSessionID).toBeUndefined();
     });
   });
 });

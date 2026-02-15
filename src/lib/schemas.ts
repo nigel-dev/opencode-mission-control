@@ -16,10 +16,11 @@ export const JobSchema = z.object({
   completedAt: z.string().optional(),
   exitCode: z.number().optional(),
   planId: z.string().optional(),
+  launchSessionID: z.string().optional(),
 });
 
 export const JobStateSchema = z.object({
-  version: z.union([z.literal(1), z.literal(2)]),
+  version: z.union([z.literal(1), z.literal(2), z.literal(3)]),
   jobs: z.array(JobSchema),
   updatedAt: z.string(),
 });
@@ -97,6 +98,7 @@ export const PlanSpecSchema = z.object({
   checkpoint: CheckpointTypeSchema.nullable().optional(),
   checkpointContext: CheckpointContextSchema.nullable().optional(),
   ghAuthenticated: z.boolean().optional(),
+  launchSessionID: z.string().optional(),
 });
 
 export const WorktreeSetupSchema = z.object({
