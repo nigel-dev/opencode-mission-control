@@ -49,3 +49,18 @@ export function cleanupLauncherScript(worktreePath: string, delayMs = 5000): voi
     unlink(launcherPath).catch(() => {});
   }, delayMs);
 }
+
+export async function writeServeLauncherScript(
+  worktreePath: string,
+  port: number,
+  password?: string,
+): Promise<string> {
+  const launcherPath = join(worktreePath, LAUNCHER_FILENAME);
+  const opencodeBin = resolveOpencodePath();
+  const envLine = password
+    ? `export OPENCODE_SERVER_PASSWORD="${password}"\n`
+    : '';
+  const script = `#!/bin/bash\n${envLine}exec ${opencodeBin} serve --port ${port} --hostname 127.0.0.1\n`;
+  await writeFile(launcherPath, script, { mode: 0o755 });
+  return launcherPath;
+}

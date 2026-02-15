@@ -4,6 +4,7 @@ import { removeWorktree } from '../lib/worktree';
 import { killSession, sessionExists } from '../lib/tmux';
 import { gitCommand } from '../lib/git';
 import { removeReport } from '../lib/reports';
+import { releasePort } from '../lib/port-allocator';
 
 async function deleteBranch(branchName: string): Promise<void> {
   const result = await gitCommand(['branch', '-D', branchName]);
@@ -56,6 +57,10 @@ async function cleanupJobs(
     try {
       if (job.placement === 'session' && await sessionExists(job.tmuxTarget)) {
         try { await killSession(job.tmuxTarget); } catch {}
+      }
+
+      if (job.port) {
+        try { await releasePort(job.port); } catch {}
       }
 
       await removeWorktreeWithFallback(job.worktreePath);

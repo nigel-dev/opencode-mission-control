@@ -1,10 +1,12 @@
 import { tool, type ToolDefinition } from '@opencode-ai/plugin';
 import { randomUUID } from 'crypto';
-import { getJobByName, addJob, type Job } from '../lib/job-state';
+import { getJobByName, addJob, getRunningJobs, type Job } from '../lib/job-state';
 import { createWorktree, removeWorktree } from '../lib/worktree';
 import {
   createSession,
   createWindow,
+  killSession,
+  killWindow,
   setPaneDiedHook,
   sendKeys,
   getCurrentSession,
@@ -15,8 +17,10 @@ import { loadConfig } from '../lib/config';
 import { detectOMO } from '../lib/omo';
 import { copyPlansToWorktree } from '../lib/plan-copier';
 import { resolvePostCreateHook } from '../lib/worktree-setup';
-import { writePromptFile, cleanupPromptFile, writeLauncherScript, cleanupLauncherScript } from '../lib/prompt-file';
+import { writePromptFile, cleanupPromptFile, writeLauncherScript, cleanupLauncherScript, writeServeLauncherScript } from '../lib/prompt-file';
 import { getCurrentModel } from '../lib/model-tracker';
+import { allocatePort, releasePort } from '../lib/port-allocator';
+import { waitForServer, createSessionAndPrompt } from '../lib/sdk-client';
 
 /**
  * Sleep for a given number of milliseconds
@@ -201,99 +205,218 @@ export const mc_launch: ToolDefinition = tool({
       }
     }
 
-    // 6. Write launcher script before creating tmux session
-    let promptFilePath: string | undefined;
-    let launcherPath: string | undefined;
-    try {
-      const fullPrompt = buildFullPrompt({
-        prompt: args.prompt,
-        mode,
-        planFile: args.planFile,
-        autoCommit: config.autoCommit,
-      });
-      promptFilePath = await writePromptFile(worktreePath, fullPrompt);
-      const model = getCurrentModel(context?.sessionID);
-      launcherPath = await writeLauncherScript(worktreePath, promptFilePath, model);
-    } catch (error) {
-      if (promptFilePath) {
-        cleanupPromptFile(promptFilePath, 0);
-      }
+    // 6. Branch: serve mode vs TUI mode
+    const useServeMode = config.useServeMode === true;
+    let allocatedPort: number | undefined;
+    let serverUrl: string | undefined;
+
+    if (useServeMode) {
+      // === SERVE MODE ===
+      // Allocate port
       try {
-        await removeWorktree(worktreePath, true);
-      } catch {
-        // Best-effort cleanup
-      }
-      throw new Error(
-        `Failed to write launch files: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
-
-    // 7. Create tmux session/window with launcher as initial command
-    const initialCommand = `bash '${launcherPath}'`;
-    try {
-      if (placement === 'session') {
-        await createSession({
-          name: tmuxSessionName,
-          workdir: worktreePath,
-          command: initialCommand,
-        });
-      } else {
-        const currentSession = getCurrentSession()!;
-        await createWindow({
-          session: currentSession,
-          name: sanitizedName,
-          workdir: worktreePath,
-          command: initialCommand,
-        });
-      }
-    } catch (error) {
-      cleanupPromptFile(promptFilePath!, 0);
-      cleanupLauncherScript(worktreePath, 0);
-      try {
-        await removeWorktree(worktreePath, true);
-      } catch {
-        // Best-effort cleanup
-      }
-      throw new Error(
-        `Failed to create tmux ${placement}: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
-
-    // 8. Set up pane-died hook for completion detection
-    try {
-      const hookCommand = `run-shell "echo '${jobId}' >> .mission-control/completed-jobs.log"`;
-      await setPaneDiedHook(tmuxTarget, hookCommand);
-    } catch {
-      // Non-fatal: pane-died hook is supplementary; polling is primary
-    }
-
-    cleanupPromptFile(promptFilePath!);
-    cleanupLauncherScript(worktreePath);
-
-    // 9. For OMO modes, send follow-up commands after opencode starts
-    if (mode !== 'vanilla') {
-      try {
-        await sleep(2000);
-        switch (mode) {
-          case 'plan':
-            await sendKeys(tmuxTarget, '/start-work');
-            await sendKeys(tmuxTarget, 'Enter');
-            break;
-          case 'ralph':
-            await sendKeys(tmuxTarget, '/ralph-loop');
-            await sendKeys(tmuxTarget, 'Enter');
-            break;
-          case 'ulw':
-            await sendKeys(tmuxTarget, '/ulw-loop');
-            await sendKeys(tmuxTarget, 'Enter');
-            break;
+        const activeJobs = await getRunningJobs();
+        allocatedPort = await allocatePort(config, activeJobs);
+      } catch (error) {
+        try {
+          await removeWorktree(worktreePath, true);
+        } catch {
+          // Best-effort cleanup
         }
+        throw new Error(
+          `Failed to allocate port: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+
+      serverUrl = `http://127.0.0.1:${allocatedPort}`;
+
+      // Write serve launcher script
+      let launcherPath: string;
+      try {
+        launcherPath = await writeServeLauncherScript(
+          worktreePath,
+          allocatedPort,
+          config.serverPassword,
+        );
+      } catch (error) {
+        await releasePort(allocatedPort).catch(() => {});
+        try {
+          await removeWorktree(worktreePath, true);
+        } catch {
+          // Best-effort cleanup
+        }
+        throw new Error(
+          `Failed to write serve launcher: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+
+      // Create tmux session/window
+      const initialCommand = `bash '${launcherPath}'`;
+      try {
+        if (placement === 'session') {
+          await createSession({
+            name: tmuxSessionName,
+            workdir: worktreePath,
+            command: initialCommand,
+          });
+        } else {
+          const currentSession = getCurrentSession()!;
+          await createWindow({
+            session: currentSession,
+            name: sanitizedName,
+            workdir: worktreePath,
+            command: initialCommand,
+          });
+        }
+      } catch (error) {
+        await releasePort(allocatedPort).catch(() => {});
+        cleanupLauncherScript(worktreePath, 0);
+        try {
+          await removeWorktree(worktreePath, true);
+        } catch {
+          // Best-effort cleanup
+        }
+        throw new Error(
+          `Failed to create tmux ${placement}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+
+      // Set up pane-died hook
+      try {
+        const hookCommand = `run-shell "echo '${jobId}' >> .mission-control/completed-jobs.log"`;
+        await setPaneDiedHook(tmuxTarget, hookCommand);
       } catch {
-        // Non-fatal: OMO command delivery is best-effort
+        // Non-fatal: pane-died hook is supplementary; polling is primary
+      }
+
+      cleanupLauncherScript(worktreePath);
+
+      // Wait for server and send prompt via SDK
+      try {
+        const client = await waitForServer(allocatedPort, {
+          password: config.serverPassword,
+        });
+        const fullPrompt = buildFullPrompt({
+          prompt: args.prompt,
+          mode,
+          planFile: args.planFile,
+          autoCommit: config.autoCommit,
+        });
+        await createSessionAndPrompt(client, fullPrompt);
+      } catch (error) {
+        await releasePort(allocatedPort).catch(() => {});
+        try {
+          if (placement === 'session') {
+            await killSession(tmuxTarget);
+          } else {
+            const [session, window] = tmuxTarget.split(':');
+            if (session && window) {
+              await killWindow(session, window);
+            }
+          }
+        } catch {
+          // Best-effort tmux cleanup
+        }
+        try {
+          await removeWorktree(worktreePath, true);
+        } catch {
+          // Best-effort cleanup
+        }
+        throw new Error(
+          `Failed to start serve session: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    } else {
+      // === TUI MODE (existing behavior) ===
+      let promptFilePath: string | undefined;
+      let launcherPath: string | undefined;
+      try {
+        const fullPrompt = buildFullPrompt({
+          prompt: args.prompt,
+          mode,
+          planFile: args.planFile,
+          autoCommit: config.autoCommit,
+        });
+        promptFilePath = await writePromptFile(worktreePath, fullPrompt);
+        const model = getCurrentModel(context?.sessionID);
+        launcherPath = await writeLauncherScript(worktreePath, promptFilePath, model);
+      } catch (error) {
+        if (promptFilePath) {
+          cleanupPromptFile(promptFilePath, 0);
+        }
+        try {
+          await removeWorktree(worktreePath, true);
+        } catch {
+          // Best-effort cleanup
+        }
+        throw new Error(
+          `Failed to write launch files: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+
+      const initialCommand = `bash '${launcherPath}'`;
+      try {
+        if (placement === 'session') {
+          await createSession({
+            name: tmuxSessionName,
+            workdir: worktreePath,
+            command: initialCommand,
+          });
+        } else {
+          const currentSession = getCurrentSession()!;
+          await createWindow({
+            session: currentSession,
+            name: sanitizedName,
+            workdir: worktreePath,
+            command: initialCommand,
+          });
+        }
+      } catch (error) {
+        cleanupPromptFile(promptFilePath!, 0);
+        cleanupLauncherScript(worktreePath, 0);
+        try {
+          await removeWorktree(worktreePath, true);
+        } catch {
+          // Best-effort cleanup
+        }
+        throw new Error(
+          `Failed to create tmux ${placement}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+
+      try {
+        const hookCommand = `run-shell "echo '${jobId}' >> .mission-control/completed-jobs.log"`;
+        await setPaneDiedHook(tmuxTarget, hookCommand);
+      } catch {
+        // Non-fatal: pane-died hook is supplementary; polling is primary
+      }
+
+      cleanupPromptFile(promptFilePath!);
+      cleanupLauncherScript(worktreePath);
+
+      if (mode !== 'vanilla') {
+        try {
+          await sleep(2000);
+          switch (mode) {
+            case 'plan':
+              await sendKeys(tmuxTarget, '/start-work');
+              await sendKeys(tmuxTarget, 'Enter');
+              break;
+            case 'ralph':
+              await sendKeys(tmuxTarget, '/ralph-loop');
+              await sendKeys(tmuxTarget, 'Enter');
+              break;
+            case 'ulw':
+              await sendKeys(tmuxTarget, '/ulw-loop');
+              await sendKeys(tmuxTarget, 'Enter');
+              break;
+          }
+        } catch {
+          // Non-fatal: OMO command delivery is best-effort
+        }
       }
     }
 
-    // 9. Create and persist job
+    // 7. Create and persist job
     const job: Job = {
       id: jobId,
       name: args.name,
@@ -308,12 +431,14 @@ export const mc_launch: ToolDefinition = tool({
       planFile: args.planFile,
       createdAt: new Date().toISOString(),
       launchSessionID: context?.sessionID,
+      port: allocatedPort,
+      serverUrl,
     };
 
     await addJob(job);
 
-    // 10. Return job info
-    return [
+    // 8. Return job info
+    const infoLines = [
       `Job "${args.name}" launched successfully.`,
       '',
       `  ID:        ${jobId}`,
@@ -323,10 +448,20 @@ export const mc_launch: ToolDefinition = tool({
       `  tmux:      ${tmuxTarget}`,
       `  Placement: ${placement}`,
       `  Mode:      ${mode}`,
-      '',
+    ];
+
+    if (allocatedPort) {
+      infoLines.push(`  Port:      ${allocatedPort}`);
+      infoLines.push(`  Server:    ${serverUrl}`);
+    }
+
+    infoLines.push('');
+    infoLines.push(
       placement === 'session'
         ? `Attach with: tmux attach -t ${tmuxSessionName}`
         : `Switch with: tmux select-window -t ${tmuxTarget}`,
-    ].join('\n');
+    );
+
+    return infoLines.join('\n');
   },
 });

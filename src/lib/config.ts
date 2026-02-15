@@ -22,6 +22,9 @@ const DEFAULT_CONFIG: MCConfig = {
   autoCommit: true,
   testTimeout: 600000,
   mergeStrategy: 'squash',
+  useServeMode: true,
+  portRangeStart: 14100,
+  portRangeEnd: 14199,
   omo: {
     enabled: false,
     defaultMode: 'vanilla',
