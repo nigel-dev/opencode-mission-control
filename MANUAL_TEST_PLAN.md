@@ -3,6 +3,9 @@
 > **Context**: We are dogfooding this plugin from within the plugin's own repo.
 > All `mc_*` tool calls are made by the AI agent (us) in this session.
 > This plan covers **all 17 MCP tools**, **all 12 job states**, and **all 8 plan states**.
+>
+> **v1.5 additions**: Phases 13–18 cover serve-mode launch, enhanced `mc_attach`, structured
+> observability, session-aware notifications, permission policies, and dynamic orchestration.
 
 > **Dynamic Path Convention**: All paths use `$(basename $(git rev-parse --show-toplevel))` instead of
 > hardcoded project names. This makes the plan portable across repos and forks.
@@ -77,6 +80,16 @@ git worktree prune 2>/dev/null || true
 echo "Cleaning jobs state..."
 rm -f "$STATE_DIR/state/jobs.json" 2>/dev/null || true
 
+# 12. Clean port allocation (v1.5 serve mode)
+echo "Cleaning port allocation..."
+rm -f "$STATE_DIR/port.lock" 2>/dev/null || true
+
+# 13. Kill leaked serve-mode server processes (ports 14100-14199)
+echo "Killing leaked serve processes..."
+for p in $(lsof -ti:14100-14199 2>/dev/null); do
+  kill "$p" 2>/dev/null || true
+done
+
 echo "=== Nuclear Cleanup Complete ==="
 ```
 
@@ -115,6 +128,9 @@ ls -la dist/index.js
 9. **Cancel before completion**: Plans must be cancelled before all jobs reach `merged` state. If all jobs merge, the plan auto-pushes to remote and enters `creating_pr` state.
 10. **Dynamic paths only**: Never hardcode project names in paths. Always use `$(basename $(git rev-parse --show-toplevel))` or the `$PROJECT_NAME` variable.
 11. **Agent timing**: Simple prompts (echo, file creation) complete in 10-25 seconds. If you need the agent to be in `running` state when you check, either check within 5-10 seconds of launch, use a longer-running prompt like "Read every file in src/ and summarize each one", or kill the agent immediately after launch.
+12. **Serve mode default (v1.5)**: `useServeMode` defaults to `true`. Jobs launch via `opencode serve` + SDK. To test TUI-mode behavior, temporarily set `"useServeMode": false` in `config.json` and restore afterwards.
+13. **Port range (v1.5)**: Serve mode allocates ports from 14100–14199 using `port.lock`. Cleanup releases ports. If stuck, remove `port.lock` manually from the state directory.
+14. **Serve mode startup time**: Serve-mode jobs need 5–10 seconds to start (server boot + SDK session creation), compared to 3–5 seconds for TUI mode. Adjust wait times accordingly.
 
 ---
 
@@ -134,9 +150,12 @@ Run these tests for basic validation after a code change. References use test ID
 | 8 | Phase 9 | 9.4 (overview with jobs) | Dashboard with data |
 | 9 | Phase 5G | 5.76 (retry + relaunch mutual exclusion) | TouchSet param validation |
 | 10 | Phase 9 | 9.14 (overview after cleanup) | Dashboard cleanup |
-| 11 | Phase 12 | Nuclear Cleanup | Clean exit |
+| 11 | Phase 13 | 13.1-13.7 (serve mode launch → status → verify port) | Serve mode basics |
+| 12 | Phase 14 | 14.3 (mc_attach opens tmux window for serve job) | Enhanced attach |
+| 13 | Phase 15 | 15.5 (mc_capture returns JSON for serve job) | Structured capture |
+| 14 | Phase 12 | Nuclear Cleanup | Clean exit |
 
-**Pass criteria**: All 11 steps succeed. If any fail, run the full test plan for that phase.
+**Pass criteria**: All 14 steps succeed. If any fail, run the full test plan for that phase.
 
 ---
 
@@ -146,23 +165,23 @@ All 17 tools must be exercised during this plan. Check off as tested:
 
 | Tool | Phase(s) | Notes |
 |------|----------|-------|
-| `mc_launch` | 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 | Core lifecycle |
-| `mc_jobs` | 1, 2, 3, 4, 5, 6, 9 | List/filter jobs |
-| `mc_status` | 1, 2, 9, 10 | Detailed job info |
-| `mc_capture` | 1, 2, 7, 8, 10 | Terminal output |
-| `mc_attach` | 1, 2 | Tmux attach command |
+| `mc_launch` | 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 13 | Core lifecycle + serve mode |
+| `mc_jobs` | 1, 2, 3, 4, 5, 6, 9, 13 | List/filter jobs |
+| `mc_status` | 1, 2, 9, 10, 13, 15 | Detailed job info + serve telemetry |
+| `mc_capture` | 1, 2, 7, 8, 10, 15 | Terminal output + structured events |
+| `mc_attach` | 1, 2, 14 | Tmux attach / serve TUI window |
 | `mc_diff` | 1, 2, 4 | Branch comparison |
-| `mc_kill` | 1, 2, 3, 4, 6, 7, 8 | Stop running jobs |
-| `mc_cleanup` | 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12 | Remove artifacts |
+| `mc_kill` | 1, 2, 3, 4, 6, 7, 8, 13 | Stop running jobs |
+| `mc_cleanup` | 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13 | Remove artifacts + port release |
 | `mc_sync` | 4 | Rebase/merge sync |
 | `mc_merge` | 4, 6 | Merge to main |
 | `mc_pr` | — | **NOT tested** (pushes to remote). Structural mention only. |
-| `mc_plan` | 5, 6 | Create orchestrated plans |
-| `mc_plan_status` | 5, 6 | Plan progress |
-| `mc_plan_cancel` | 5, 6 | Cancel active plan |
+| `mc_plan` | 5, 6, 18 | Create orchestrated plans + dynamic features |
+| `mc_plan_status` | 5, 6, 18 | Plan progress |
+| `mc_plan_cancel` | 5, 6, 18 | Cancel active plan |
 | `mc_plan_approve` | 5, 5G | Approve copilot/supervisor, accept/relaunch/retry touchSet violations |
 | `mc_report` | 8 | Agent status reporting (filesystem verification) |
-| `mc_overview` | 9 | Dashboard summary |
+| `mc_overview` | 9, 15 | Dashboard summary + activity indicators |
 
 ---
 
@@ -978,6 +997,8 @@ These cannot be directly invoked but can be observed during testing.
 
 ## Phase 12 — Final Verification & Nuclear Cleanup
 
+> **Run this LAST** — after all feature phases (including Phases 13–18).
+
 This ensures we leave the repo in **exactly** the same state we found it.
 
 ### 12.1 — Run Nuclear Cleanup
@@ -1043,6 +1064,14 @@ rm -f "$STATE_DIR/state/plan.json" 2>/dev/null || true
 
 # Clean jobs state
 rm -f "$STATE_DIR/state/jobs.json" 2>/dev/null || true
+
+# Clean port allocation (v1.5)
+rm -f "$STATE_DIR/port.lock" 2>/dev/null || true
+
+# Kill leaked serve-mode server processes (v1.5)
+for p in $(lsof -ti:14100-14199 2>/dev/null); do
+  kill "$p" 2>/dev/null || true
+done
 ```
 
 ### 12.7 — Verify against pre-test snapshot
@@ -1064,6 +1093,301 @@ rm -f "$STATE_DIR/state/jobs.json" 2>/dev/null || true
 
 ---
 
+## Phase 13 — Serve Mode Launch & Port Management (#65)
+
+> **Context**: v1.5 defaults to `useServeMode: true`. Jobs launch via `opencode serve` on an
+> allocated port (range 14100–14199), with prompts delivered via the SDK instead of
+> `opencode --prompt`. This phase validates the serve-mode launch path, port allocation,
+> and port release on cleanup.
+>
+> **Prerequisites**: `useServeMode` must be `true` in config (this is the default). If you
+> previously overrode it, restore: edit `config.json` or remove the `useServeMode` key.
+>
+> **Timing Note**: Serve-mode jobs need 5–10 seconds to start (server boot + SDK session
+> creation). Adjust wait times vs TUI mode (3–5 seconds).
+
+### 13A: Basic Serve Mode Launch
+
+| # | Test | Action | Expected |
+|---|------|--------|----------|
+| 13.1 | Launch serve mode job | `mc_launch` name=tmc-serve, prompt="Create a file test-serve.txt with 'hello from serve'" | Success message includes Port and Server URL |
+| 13.2 | **Wait 5-10 seconds** | Allow server startup + SDK session creation | — |
+| 13.3 | Verify port in output | Check launch response | Contains `Port: 14100` (or next available) and `Server: http://127.0.0.1:<port>` |
+| 13.4 | Verify status includes serve fields | `mc_status` name=tmc-serve | Shows `Port: <number>` and `Server URL: http://...` under Metadata |
+| 13.5 | Verify tmux session exists | `tmux list-sessions \| grep mc-tmc-serve` | Session present (serves `opencode serve`) |
+| 13.6 | Verify port lock file | `cat $STATE_DIR/port.lock` | JSON array containing the allocated port number |
+| 13.7 | Verify job state persisted | `mc_jobs` | tmc-serve shown as `running` |
+| 13.8 | Verify launchSessionID captured | Read `$STATE_DIR/state/jobs.json` | Job entry has `launchSessionID` field matching your current session |
+
+### 13B: Port Allocation Uniqueness
+
+| # | Test | Action | Expected |
+|---|------|--------|----------|
+| 13.9 | Launch second serve job | `mc_launch` name=tmc-serve-2, prompt="echo hello" | Success, different port |
+| 13.10 | **Wait 5-10 seconds** | — | — |
+| 13.11 | Verify unique ports | Compare `mc_status` tmc-serve vs `mc_status` tmc-serve-2 | Different port numbers (e.g., 14100 and 14101) |
+| 13.12 | Both in port lock | Read port.lock | Contains both allocated ports |
+
+### 13C: Port Release on Cleanup
+
+| # | Test | Action | Expected |
+|---|------|--------|----------|
+| 13.13 | Kill first job | `mc_kill` name=tmc-serve | Stopped |
+| 13.14 | Cleanup first job | `mc_cleanup` name=tmc-serve, deleteBranch=true | Cleaned |
+| 13.15 | Verify port released | Read port.lock | First job's port no longer listed |
+| 13.16 | Kill and cleanup second | `mc_kill` name=tmc-serve-2; `mc_cleanup` name=tmc-serve-2, deleteBranch=true | Cleaned |
+| 13.17 | Verify all ports released | Read port.lock | Empty array `[]` or file absent |
+| 13.18 | Verify clean state | `mc_jobs` | "No jobs found." |
+
+### 13D: TUI Mode Fallback
+
+| # | Test | Action | Expected |
+|---|------|--------|----------|
+| 13.19 | Set useServeMode=false | Edit `$STATE_DIR/config.json`: set `"useServeMode": false` | Config saved |
+| 13.20 | Launch TUI mode job | `mc_launch` name=tmc-tui-fallback, prompt="echo hello" | Success — **no** Port or Server URL in output |
+| 13.21 | **Wait 3-5 seconds** | — | — |
+| 13.22 | Verify no port allocated | `mc_status` name=tmc-tui-fallback | No Port or Server URL fields |
+| 13.23 | Cleanup | `mc_kill` name=tmc-tui-fallback; `mc_cleanup` name=tmc-tui-fallback, deleteBranch=true | Cleaned |
+| 13.24 | **Restore useServeMode** | Edit `config.json`: set `"useServeMode": true` or remove the key | Config restored to serve-mode default |
+
+**Phase 13 Gate**: All ports must be released and config restored before proceeding.
+
+---
+
+## Phase 14 — Enhanced mc_attach (#65)
+
+> **Context**: In serve mode, `mc_attach` opens an `opencode attach <serverUrl>` TUI in a new
+> tmux window (when running inside tmux) instead of returning a `tmux attach -t` command.
+> This phase validates both serve-mode and TUI-mode attach behavior.
+
+### 14A: Serve Mode Attach (Inside tmux)
+
+| # | Test | Action | Expected |
+|---|------|--------|----------|
+| 14.1 | Launch serve mode job | `mc_launch` name=tmc-attach-s, prompt="echo attach test" | Success with port |
+| 14.2 | **Wait 5-10 seconds** | — | — |
+| 14.3 | Attach opens tmux window | `mc_attach` name=tmc-attach-s | Returns "Opened TUI for job 'tmc-attach-s' in new tmux window" |
+| 14.4 | Verify tmux window created | `tmux list-windows` (in current session) | Window named `mc-tmc-attach-s` exists |
+| 14.5 | Clean up attach window | Kill the window: `tmux kill-window -t :mc-tmc-attach-s` | Window removed |
+
+### 14B: TUI Mode Attach (Backward Compatibility)
+
+| # | Test | Action | Expected |
+|---|------|--------|----------|
+| 14.6 | Kill serve job | `mc_kill` name=tmc-attach-s | Stopped |
+| 14.7 | Cleanup serve job | `mc_cleanup` name=tmc-attach-s, deleteBranch=true | Cleaned |
+| 14.8 | Set useServeMode=false | Edit config | Done |
+| 14.9 | Launch TUI job | `mc_launch` name=tmc-attach-t, prompt="echo tui attach" | Success, no port |
+| 14.10 | **Wait 3-5 seconds** | — | — |
+| 14.11 | Attach returns tmux command | `mc_attach` name=tmc-attach-t | Returns `tmux attach -t mc-tmc-attach-t` (session mode) |
+| 14.12 | Cleanup | `mc_kill` name=tmc-attach-t; `mc_cleanup` name=tmc-attach-t, deleteBranch=true | Cleaned |
+| 14.13 | Restore useServeMode | Edit config back to `true` or remove key | Done |
+
+---
+
+## Phase 15 — Serve Mode Observability (#66)
+
+> **Context**: v1.5 enriches `mc_status`, `mc_capture`, and `mc_overview` with structured
+> telemetry for serve-mode jobs. `mc_capture` returns JSON events (with `filter` parameter)
+> instead of raw terminal text. `mc_status` adds a "Serve Mode Telemetry" section.
+> `mc_overview` shows per-job activity indicators (current tool, last activity time).
+
+### 15A: Enriched mc_status
+
+| # | Test | Action | Expected |
+|---|------|--------|----------|
+| 15.1 | Launch serve job | `mc_launch` name=tmc-obs, prompt="Create file observe.txt with 'testing observability'" | Success with port |
+| 15.2 | **Wait 10-15 seconds** | Allow SDK events to accumulate | — |
+| 15.3 | Status shows telemetry section | `mc_status` name=tmc-obs | Contains "Serve Mode Telemetry:" with fields: Session State, Current File, Files Edited, Last Activity, Events Accumulated |
+| 15.4 | Status shows port and server | `mc_status` name=tmc-obs | Metadata section includes `Port: <N>` and `Server URL: http://...` |
+
+### 15B: Structured mc_capture (Serve Mode)
+
+| # | Test | Action | Expected |
+|---|------|--------|----------|
+| 15.5 | Capture all events | `mc_capture` name=tmc-obs | Returns **JSON** (not raw text) with fields: `job`, `mode: "serve"`, `status`, `filter: "all"`, `summary`, `events` |
+| 15.6 | Verify summary structure | Parse JSON from 15.5 | `summary` has: `totalEvents`, `filesEdited`, `currentTool`, `currentFile`, `lastActivityAt` |
+| 15.7 | Capture with file.edited filter | `mc_capture` name=tmc-obs, filter="file.edited" | JSON with `filter: "file.edited"`, events only contain `type: "file.edited"` entries |
+| 15.8 | Capture with tool filter | `mc_capture` name=tmc-obs, filter="tool" | JSON with `filter: "tool"`, events only contain `type: "tool"` entries |
+| 15.9 | Capture with error filter | `mc_capture` name=tmc-obs, filter="error" | JSON with `filter: "error"`, events array (likely empty for successful work) |
+
+### 15C: Enriched mc_overview
+
+| # | Test | Action | Expected |
+|---|------|--------|----------|
+| 15.10 | Overview with serve job | `mc_overview` | Running Jobs section shows activity indicator format |
+| 15.11 | Verify activity format | Check running job line for tmc-obs | Format: `- tmc-obs | <tool-or-idle> | <time ago> | mc/tmc-obs` (NOT `last report: ...` format used for TUI jobs) |
+
+### 15D: TUI Mode Capture Fallback
+
+| # | Test | Action | Expected |
+|---|------|--------|----------|
+| 15.12 | Kill serve job | `mc_kill` name=tmc-obs | Stopped |
+| 15.13 | Cleanup serve job | `mc_cleanup` name=tmc-obs, deleteBranch=true | Cleaned |
+| 15.14 | Set useServeMode=false | Edit config | Done |
+| 15.15 | Launch TUI job | `mc_launch` name=tmc-obs-tui, prompt="echo tui observe" | Success, no port |
+| 15.16 | **Wait 3-5 seconds** | — | — |
+| 15.17 | Capture returns raw text | `mc_capture` name=tmc-obs-tui | Returns **plain text** terminal output (NOT JSON) |
+| 15.18 | Status has no telemetry section | `mc_status` name=tmc-obs-tui | No "Serve Mode Telemetry" section |
+| 15.19 | Overview uses report format | `mc_overview` | Running job line uses `last report: ...` format (NOT activity indicator format) |
+| 15.20 | Cleanup | `mc_kill` name=tmc-obs-tui; `mc_cleanup` name=tmc-obs-tui, deleteBranch=true | Cleaned |
+| 15.21 | Restore useServeMode | Edit config back to `true` | Done |
+
+---
+
+## Phase 16 — Session-Aware Notifications & Title Annotations (#74, #75)
+
+> **Context**: v1.5 routes notifications to the session that **launched** the job (via
+> `launchSessionID` stored on the job record), not just the current active session.
+> Session titles are annotated with job status on completion, failure, or awaiting input.
+>
+> These features are **observational** during manual testing — they happen automatically
+> as jobs complete/fail. Title annotations require the OpenCode SDK session API.
+
+### 16A: launchSessionID Capture
+
+| # | Test | Action | Expected |
+|---|------|--------|----------|
+| 16.1 | Launch a job | `mc_launch` name=tmc-notify, prompt="echo notify test" | Success |
+| 16.2 | **Wait 3-5 seconds** | — | — |
+| 16.3 | Verify launchSessionID | Read jobs.json from state dir | tmc-notify has `launchSessionID` field starting with `ses` |
+| 16.4 | SessionID matches current | Compare with your active session ID | They match |
+
+### 16B: Notification Routing (Observational)
+
+| # | Test | How to Observe | Expected |
+|---|------|----------------|----------|
+| 16.5 | Completion notification | Wait for tmc-notify to complete (or kill + let monitor detect) | 🟢 completion notification appears in **this** session |
+| 16.6 | Failure notification | Kill a running job: `mc_kill` name=tmc-notify | 🔴 failure notification appears in **this** session (after monitor detects pane death) |
+
+### 16C: Session Title Annotations (Observational)
+
+| # | Test | How to Observe | Expected |
+|---|------|----------------|----------|
+| 16.7 | Title annotated on completion | After a job completes, check your OpenCode session title (if visible in UI) | Title shows `<jobName> done` |
+| 16.8 | Title annotated on failure | After a job fails, check session title | Title shows `<jobName> failed` |
+| 16.9 | Multiple annotations | If 2+ jobs complete/fail before title resets | Title shows `N jobs need attention` |
+| 16.10 | Title reset on re-entry | Start a new conversation or re-enter the session | Title reverts to original |
+
+> **Note**: Title annotations are fire-and-forget — if the SDK session API is unavailable,
+> they silently fail without affecting job execution.
+
+### 16D: Cleanup
+
+| # | Action | Verify |
+|---|--------|--------|
+| 16.11 | Kill tmc-notify (if still running) | Stopped |
+| 16.12 | `mc_cleanup` name=tmc-notify, deleteBranch=true | Cleaned |
+| 16.13 | `mc_jobs` | Empty |
+
+---
+
+## Phase 17 — Permission Policy Engine (#69)
+
+> **Context**: v1.5 introduces a permission policy engine that evaluates agent permission
+> requests (file edits, shell commands, network access, package installs, MCP tools) against
+> configurable policies. The default policy auto-approves inside-worktree operations and
+> denies or prompts for outside-worktree operations.
+>
+> Permission policies are enforced by the question relay during serve-mode execution. Manual
+> testing verifies the policy configuration loads correctly and that defaults are sane.
+> Full evaluation logic is covered by unit tests (`tests/lib/permission-policy.test.ts`,
+> `tests/lib/question-relay.test.ts`).
+
+### 17A: Default Policy Verification
+
+| # | Test | Action | Expected |
+|---|------|--------|----------|
+| 17.1 | Read default config | Load config and inspect `defaultPermissionPolicy` | Policy object exists with `permissions` key |
+| 17.2 | fileEdit inside | Check `permissions.fileEdit.insideWorktree` | `"auto-approve"` |
+| 17.3 | fileEdit outside | Check `permissions.fileEdit.outsideWorktree` | `"deny"` |
+| 17.4 | shellCommand inside | Check `permissions.shellCommand.insideWorktree` | `"auto-approve"` |
+| 17.5 | shellCommand outside | Check `permissions.shellCommand.outsideWorktree` | `"ask-user"` |
+| 17.6 | networkAccess | Check `permissions.networkAccess` | `"deny"` |
+| 17.7 | installPackages | Check `permissions.installPackages` | `"ask-user"` |
+| 17.8 | mcpTools | Check `permissions.mcpTools` | `"auto-approve"` |
+
+### 17B: Custom Policy Override
+
+| # | Test | Action | Expected |
+|---|------|--------|----------|
+| 17.9 | Set permissive policy | Edit config.json to set `"defaultPermissionPolicy"` with all values as `"auto-approve"` | Config saved |
+| 17.10 | Verify permissive loads | Re-read config, check all permission values | All `"auto-approve"` |
+| 17.11 | Set restrictive policy | Edit config.json to set all values to `"deny"` | Config saved |
+| 17.12 | Verify restrictive loads | Re-read config | All `"deny"` |
+| 17.13 | Remove override | Delete `defaultPermissionPolicy` key from config.json | Config falls back to defaults |
+| 17.14 | Verify defaults restored | Re-read config | Matches defaults from 17A |
+
+### 17C: Schema Support (Structural)
+
+| # | Test | Action | Expected |
+|---|------|--------|----------|
+| 17.15 | Plan schema has policy | Inspect `PlanSpecSchema` or a plan.json | `permissionPolicy` field exists on PlanSpec |
+| 17.16 | Job schema has policy | Inspect `JobSpecSchema` | `permissionPolicy` field exists on JobSpec |
+| 17.17 | Valid decision values | Check `PermissionPolicyDecisionSchema` | Allows: `"auto-approve"`, `"deny"`, `"ask-user"` |
+
+---
+
+## Phase 18 — Dynamic Orchestration (#68)
+
+> **Context**: v1.5 adds four dynamic orchestration capabilities to the plan system:
+>
+> 1. **Dynamic replanning** — Skip, add, or reorder jobs in a running plan (`skipJob`, `addJob`, `reorderJobs`)
+> 2. **Inter-job communication** — Jobs with `relayPatterns` receive findings about matching files from sibling jobs
+> 3. **Session forking** — New jobs can fork from an existing job's SDK session (serve mode only)
+> 4. **Fix-before-rollback** — On merge train test failure, the failing job's agent gets a chance to fix before full rollback
+>
+> These are deep integration features. Manual testing covers schema/config verification and
+> one synthetic plan test. Full behavioral coverage is in unit tests:
+> `tests/lib/orchestrator.test.ts`, `tests/lib/merge-train.test.ts`, `tests/lib/job-comms.test.ts`.
+
+### 18A: Schema & Config Verification
+
+| # | Test | Action | Expected |
+|---|------|--------|----------|
+| 18.1 | Audit log on plan | Inspect `PlanSpecSchema` | `auditLog` field: array of entries with `timestamp`, `action`, `jobName`, `details`, `userApproved` |
+| 18.2 | Audit action types | Check `AuditActionSchema` | Includes: `skip_job`, `add_job`, `reorder_jobs`, `fork_session`, `relay_finding`, `fix_prompted` |
+| 18.3 | fixBeforeRollbackTimeout default | Check default config | `fixBeforeRollbackTimeout` = `120000` (2 minutes) |
+| 18.4 | relayPatterns on JobSpec | Check `JobSpecSchema` | `relayPatterns` field: optional array of strings |
+| 18.5 | Custom timeout | Edit config to set `"fixBeforeRollbackTimeout": 60000` | Config loads correctly |
+| 18.6 | Restore timeout | Remove `fixBeforeRollbackTimeout` from config | Defaults restored |
+
+### 18B: Inter-Job Communication Schema
+
+| # | Test | Action | Expected |
+|---|------|--------|----------|
+| 18.7 | relayPatterns accepted in plan | `mc_plan` name=tmc-plan-relay, mode=supervisor, jobs=[{name: "tmc-relay1", prompt: "echo relay", relayPatterns: ["src/**"]}, {name: "tmc-relay2", prompt: "echo relay2", dependsOn: ["tmc-relay1"]}] | Plan created successfully — relayPatterns accepted without error |
+| 18.8 | **Wait 3-5 seconds** | — | — |
+| 18.9 | Verify plan status | `mc_plan_status` | Shows both jobs, tmc-relay1 running, tmc-relay2 waiting_deps |
+| 18.10 | Cancel plan | `mc_plan_cancel` | Cancelled |
+| 18.11 | Cleanup | `mc_cleanup` all=true, deleteBranch=true | Cleaned |
+
+### 18C: launchSessionID in Plans
+
+| # | Test | Action | Expected |
+|---|------|--------|----------|
+| 18.12 | Create plan | `mc_plan` name=tmc-plan-session, mode=autopilot, jobs=[{name: "tmc-ps1", prompt: "echo session test"}] | Plan created |
+| 18.13 | **Wait 5-10 seconds** | — | — |
+| 18.14 | Verify launchSessionID on plan | Read `$STATE_DIR/state/plan.json` | Plan has `launchSessionID` field |
+| 18.15 | Verify launchSessionID on plan job | Read plan.json, inspect tmc-ps1 job | Job has `launchSessionID` field |
+| 18.16 | Cancel and cleanup | `mc_plan_cancel`; `mc_cleanup` all=true, deleteBranch=true | Cleaned |
+
+> **Note**: Full dynamic orchestration testing (skipJob, addJob, reorderJobs in live plans,
+> inter-job message delivery, session forking, fix-before-rollback prompting) requires
+> multi-agent scenarios with serve-mode jobs making real code changes. These are covered
+> deterministically by unit tests:
+>
+> | Feature | Test File |
+> |---------|-----------|
+> | skipJob, addJob, reorderJobs | `tests/lib/orchestrator.test.ts` |
+> | Fix-before-rollback | `tests/lib/merge-train.test.ts` |
+> | Inter-job communication | `tests/lib/job-comms.test.ts` |
+> | Session forking | `tests/lib/sdk-client.test.ts` |
+> | Permission evaluation | `tests/lib/permission-policy.test.ts` |
+> | Question relay + auto-approval | `tests/lib/question-relay.test.ts` |
+
+---
+
 ## Results Tracking
 
 | Phase | Description | Total Tests | Pass | Fail | Blocked | Notes |
@@ -1080,8 +1404,14 @@ rm -f "$STATE_DIR/state/jobs.json" 2>/dev/null || true
 | 9 | mc_overview dashboard | 16 | | | | |
 | 10 | OMO plan mode | 10 | | | | |
 | 11 | Hooks (observational) | 5 | | | | |
-| 12 | Final verification & nuclear cleanup | 8 | | | | |
-| **Total** | | **323** | | | | |
+| 12 | Final verification & nuclear cleanup | 8 | | | | Run LAST after Phases 13–18 |
+| 13 | Serve mode launch & port management | 24 | | | | v1.5: port allocation, serve launch, TUI fallback |
+| 14 | Enhanced mc_attach | 13 | | | | v1.5: tmux window for serve, backward compat for TUI |
+| 15 | Serve mode observability | 21 | | | | v1.5: structured capture, telemetry status, activity overview |
+| 16 | Session-aware notifications & title annotations | 13 | | | | v1.5: launchSessionID routing, title annotations (observational) |
+| 17 | Permission policy engine | 17 | | | | v1.5: default policy, custom override, schema support |
+| 18 | Dynamic orchestration | 16 | | | | v1.5: audit log, relay patterns, session IDs in plans |
+| **Total** | | **427** | | | | +104 v1.5 tests |
 
 ---
 
@@ -1098,6 +1428,11 @@ rm -f "$STATE_DIR/state/jobs.json" 2>/dev/null || true
 9. **Launcher script timing**: `.mc-launch.sh` is deleted after 5 seconds. Phase 7 must read it immediately after launch. If you miss the window, the test is inconclusive, not failed.
 10. **Worktree initialization race**: Some operations may fail if attempted before the worktree is fully initialized. The 3-5 second wait after every `mc_launch` mitigates this.
 11. **TouchSet testing on feature branches**: When running Phase 5G on a non-main branch, job worktrees inherit the feature branch's uncommitted changes. TouchSet validation compares the job branch against the integration branch, so feature branch source files show up as spurious violations alongside the actual test violations (e.g., `rogue.txt`). This is a testing artifact — in production, both branches share the same base so only the job's own changes appear.
+12. **Port exhaustion (v1.5)**: The default port range is 14100–14199 (100 ports). If cleanup fails to release ports, the `port.lock` file accumulates stale entries. Symptoms: "No available ports" error on launch. Fix: delete `port.lock` from the state directory.
+13. **Serve-mode server leak (v1.5)**: If `mc_kill` or `mc_cleanup` fails to terminate the `opencode serve` process, ports stay bound. Symptoms: next launch on the same port fails. Fix: `lsof -ti:14100-14199 | xargs kill` or use the Nuclear Cleanup script.
+14. **SDK availability (v1.5)**: Serve-mode tests (Phases 13–15) require `@opencode-ai/sdk` to be installed and the OpenCode serve endpoint to be functional. If the SDK is not available, serve-mode launches will fail at the "waiting for server" step — this is expected, not a plugin bug.
+15. **Title annotation timing (v1.5)**: Session title annotations (Phase 16) are fire-and-forget. If the SDK session API is slow or the session has already been compacted, annotations may not appear. A missing annotation is not a test failure — check the decision log in unit tests instead.
+16. **Permission policy non-determinism (v1.5)**: Permission evaluation during live agent execution depends on the agent triggering permission prompts (file edits, shell commands). Simple test prompts may not trigger any prompts at all, making live permission testing unreliable. Unit tests are the source of truth for policy evaluation logic.
 
 ---
 
@@ -1122,6 +1457,9 @@ orchestrator's `launchJob`. Plugin updates propagate automatically since it's a 
 | Plan awareness | **NO** | Plan context not exposed to agent prompts |
 | Cross-agent visibility | **PARTIAL** | Can list jobs via `mc_jobs` but cannot capture other agents' output |
 | Orchestrator control | **UNSAFE** | Agents COULD call `mc_kill`, `mc_plan_cancel`, `mc_merge` — no guardrails prevent this |
+| Permission policy (v1.5) | **PASSIVE** | Policy governs what the question relay auto-approves/denies for the agent, but the agent itself doesn't see or control the policy |
+| Inter-job comms (v1.5) | **PASSIVE** | Agents with `relayPatterns` receive relay messages as injected prompts — they don't initiate comms |
+| Serve-mode SDK (v1.5) | **INDIRECT** | Agent runs in `opencode serve` — prompts arrive via SDK, not stdin. Agent is unaware of the difference. |
 
 ### Safety Consideration: Dangerous Tools in Agent Hands
 
@@ -1138,13 +1476,17 @@ This is mitigated by:
 
 ### Monitor Mechanisms
 
-| Mechanism | How It Detects | Resulting State |
-|-----------|---------------|-----------------|
-| Polling (10s interval) | Checks if tmux pane is alive | `running` -> `completed` or `failed` |
-| Pane-died hook | tmux fires when pane closes | Immediate state update with exit code |
-| Idle detection (5min) | Output hash unchanged + idle prompt visible | `running` -> `completed` |
-| Exit code 0 | Normal pane death | `completed` |
-| Exit code non-zero | Error pane death | `failed` |
+| Mechanism | Mode | How It Detects | Resulting State |
+|-----------|------|---------------|-----------------|
+| Polling (10s interval) | TUI | Checks if tmux pane is alive | `running` -> `completed` or `failed` |
+| Pane-died hook | Both | tmux fires when pane closes | Immediate state update with exit code |
+| Idle detection (5min) | TUI | Output hash unchanged + idle prompt visible | `running` -> `completed` |
+| Exit code 0 | TUI | Normal pane death | `completed` |
+| Exit code non-zero | TUI | Error pane death | `failed` |
+| SSE event subscription (v1.5) | Serve | SDK subscribes to server-sent events from `opencode serve` | Real-time tool/file tracking via event accumulator |
+| Event accumulator (v1.5) | Serve | Tracks `filesEdited`, `currentTool`, `currentFile`, `lastActivityAt`, `eventCount` | Powers enriched `mc_status`, `mc_capture`, `mc_overview` |
+| Question relay (v1.5) | Serve | Intercepts permission requests from SSE events | Auto-approves (inside worktree) or relays to launching session |
+| Permission policy (v1.5) | Serve | Evaluates permission requests against configured policy | `auto-approve`, `deny`, or `ask-user` per request type |
 
 ---
 
