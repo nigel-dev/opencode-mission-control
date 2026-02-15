@@ -2,6 +2,8 @@
 
 Guide for coding agents working on `opencode-mission-control` in ULW mode.
 
+> NOTE! Never replace the string opencode with claude or claude code unless explicitly asked to.
+
 ## Mission
 
 - Keep changes small, safe, and shippable.
