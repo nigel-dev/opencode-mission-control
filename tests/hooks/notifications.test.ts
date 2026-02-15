@@ -259,4 +259,105 @@ describe('notifications hook', () => {
     const callArgs = mockClient.session.prompt.mock.calls[0][0];
     expect(callArgs.body.parts[0].text).toContain("👀 Job 'review-task' needs review");
   });
+
+  it('should route notification to launchSessionID when present', async () => {
+    setupNotifications({
+      client: mockClient as any,
+      monitor: mockMonitor as any,
+      getActiveSessionID: mockGetActiveSessionID as any,
+      isSubagent: mockIsSubagent as any,
+    });
+
+    const job: Job = {
+      id: 'job-5',
+      name: 'routed-job',
+      worktreePath: '/path/to/worktree',
+      branch: 'mc/routed-job',
+      tmuxTarget: 'mc-routed-job',
+      placement: 'session',
+      status: 'completed',
+      prompt: 'Some task',
+      mode: 'vanilla',
+      createdAt: new Date().toISOString(),
+      completedAt: new Date().toISOString(),
+      launchSessionID: 'ses_launch_abc',
+    };
+
+    const handlers = mockMonitor.handlers.get('complete')!;
+    handlers[0](job);
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(mockClient.session.prompt).toHaveBeenCalled();
+    const callArgs = mockClient.session.prompt.mock.calls[0][0];
+    expect(callArgs.path.id).toBe('ses_launch_abc');
+    expect(callArgs.body.parts[0].text).toContain("🟢 Job 'routed-job' completed");
+  });
+
+  it('should fallback to activeSessionID when launchSessionID is undefined', async () => {
+    mockGetActiveSessionID.mockResolvedValue('ses_active_456');
+
+    setupNotifications({
+      client: mockClient as any,
+      monitor: mockMonitor as any,
+      getActiveSessionID: mockGetActiveSessionID as any,
+      isSubagent: mockIsSubagent as any,
+    });
+
+    const job: Job = {
+      id: 'job-6',
+      name: 'fallback-job',
+      worktreePath: '/path/to/worktree',
+      branch: 'mc/fallback-job',
+      tmuxTarget: 'mc-fallback-job',
+      placement: 'session',
+      status: 'completed',
+      prompt: 'Some task',
+      mode: 'vanilla',
+      createdAt: new Date().toISOString(),
+      completedAt: new Date().toISOString(),
+    };
+
+    const handlers = mockMonitor.handlers.get('complete')!;
+    handlers[0](job);
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(mockClient.session.prompt).toHaveBeenCalled();
+    const callArgs = mockClient.session.prompt.mock.calls[0][0];
+    expect(callArgs.path.id).toBe('ses_active_456');
+  });
+
+  it('should not send notification when launchSessionID is invalid', async () => {
+    mockGetActiveSessionID.mockResolvedValue(undefined);
+
+    setupNotifications({
+      client: mockClient as any,
+      monitor: mockMonitor as any,
+      getActiveSessionID: mockGetActiveSessionID as any,
+      isSubagent: mockIsSubagent as any,
+    });
+
+    const job: Job = {
+      id: 'job-7',
+      name: 'invalid-session-job',
+      worktreePath: '/path/to/worktree',
+      branch: 'mc/invalid-session-job',
+      tmuxTarget: 'mc-invalid-session-job',
+      placement: 'session',
+      status: 'completed',
+      prompt: 'Some task',
+      mode: 'vanilla',
+      createdAt: new Date().toISOString(),
+      completedAt: new Date().toISOString(),
+      launchSessionID: 'not-a-valid-session',
+    };
+
+    const handlers = mockMonitor.handlers.get('complete')!;
+    handlers[0](job);
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(mockClient.session.prompt).not.toHaveBeenCalled();
+  });
 });
