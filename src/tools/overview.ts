@@ -3,6 +3,7 @@ import { loadJobState, getRunningJobs, type Job } from '../lib/job-state';
 import { loadPlan } from '../lib/plan-state';
 import { readAllReports, type AgentReport } from '../lib/reports';
 import { formatTimeAgo } from '../lib/utils';
+import { getSharedMonitor } from '../lib/orchestrator-singleton';
 
 
 
@@ -38,6 +39,29 @@ function getReportForJob(
   reportsByJob: Map<string, AgentReport>,
 ): AgentReport | undefined {
   return reportsByJob.get(`id:${job.id}`) ?? reportsByJob.get(`name:${job.name}`);
+}
+
+function getJobActivityState(job: Job): { state: string; lastActivity: string } {
+  const isServeMode = job.port !== undefined && job.port > 0;
+  if (!isServeMode) {
+    return { state: 'tmux', lastActivity: formatTimeAgo(job.createdAt) };
+  }
+
+  const monitor = getSharedMonitor();
+  const accumulator = monitor.getEventAccumulator(job.id);
+  if (!accumulator) {
+    return { state: 'idle', lastActivity: formatTimeAgo(job.createdAt) };
+  }
+
+  const lastActivityTime = new Date(accumulator.lastActivityAt).toISOString();
+  const lastActivity = formatTimeAgo(lastActivityTime);
+
+  let state = 'idle';
+  if (accumulator.currentTool) {
+    state = accumulator.currentTool;
+  }
+
+  return { state, lastActivity };
 }
 
 function formatRecentCompletions(jobs: Job[]): string[] {
@@ -215,10 +239,17 @@ export const mc_overview: ToolDefinition = tool({
         )
         .map((job) => {
           const lastReport = getReportForJob(job, reportsByJob);
+          const activity = getJobActivityState(job);
+          const isServeMode = job.port !== undefined && job.port > 0;
+
+          if (isServeMode) {
+            return `- ${job.name} | ${activity.state} | ${activity.lastActivity} | ${job.branch}`;
+          }
+
           const reportText = lastReport
             ? `${lastReport.status}: ${truncate(lastReport.message, 60)}`
             : 'none';
-           return `- ${job.name} | ${formatTimeAgo(job.createdAt)} | ${job.branch} | last report: ${reportText}`;
+          return `- ${job.name} | ${activity.lastActivity} | ${job.branch} | last report: ${reportText}`;
         });
       lines.push(...runningLines);
     }

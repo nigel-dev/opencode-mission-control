@@ -4,7 +4,8 @@ import { capturePane } from '../lib/tmux';
 import { isInManagedWorktree } from '../lib/worktree';
 import { gitCommand } from '../lib/git';
 import { readReport } from '../lib/reports';
-import { formatDurationMs } from '../lib/utils';
+import { formatDurationMs, formatTimeAgo } from '../lib/utils';
+import { getSharedMonitor } from '../lib/orchestrator-singleton';
 
 async function getGitStatus(
   worktreePath: string,
@@ -92,7 +93,30 @@ export const mc_status: ToolDefinition = tool({
       duration = formatDurationMs(durationMs);
     }
 
-    // 7. Format output
+    // 7. Get serve-mode telemetry if available (job.port indicates serve-mode)
+    const isServeMode = job.port !== undefined && job.port > 0;
+    let serveModeTelemetry: string[] = [];
+    if (isServeMode) {
+      const monitor = getSharedMonitor();
+      const accumulator = monitor.getEventAccumulator(job.id);
+      if (accumulator) {
+        const activityTime = formatTimeAgo(new Date(accumulator.lastActivityAt).toISOString());
+        serveModeTelemetry = [
+          'Serve Mode Telemetry:',
+          `  Session State: ${accumulator.currentTool || 'idle'}`,
+          `  Current File: ${accumulator.currentFile || '(none)'}`,
+          `  Files Edited: ${accumulator.filesEdited.length}`,
+          ...(accumulator.filesEdited.length > 0
+            ? accumulator.filesEdited.map((f) => `    - ${f}`)
+            : []),
+          `  Last Activity: ${activityTime}`,
+          `  Events Accumulated: ${accumulator.eventCount}`,
+          '',
+        ];
+      }
+    }
+
+    // 8. Format output
     const lines: string[] = [
       `Job: ${job.name}`,
       `Status: ${job.status}`,
@@ -106,6 +130,8 @@ export const mc_status: ToolDefinition = tool({
       ...(job.completedAt ? [`  Completed: ${new Date(job.completedAt).toISOString()}`] : []),
       ...(duration ? [`  Duration: ${duration}`] : []),
       ...(job.exitCode !== undefined ? [`  Exit Code: ${job.exitCode}`] : []),
+      ...(isServeMode && job.port ? [`  Port: ${job.port}`] : []),
+      ...(job.serverUrl ? [`  Server URL: ${job.serverUrl}`] : []),
       '',
       'Paths:',
       `  Worktree: ${job.worktreePath}`,
@@ -119,6 +145,7 @@ export const mc_status: ToolDefinition = tool({
       `  Ahead: ${gitStatus.ahead}`,
       `  Behind: ${gitStatus.behind}`,
       '',
+      ...(serveModeTelemetry.length > 0 ? serveModeTelemetry : []),
       ...(report
         ? [
             'Agent Report:',
