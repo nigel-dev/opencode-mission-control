@@ -1,9 +1,10 @@
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import { join } from 'path';
 import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import type { JobSpec } from '../../src/lib/plan-types';
 import { MergeTrain, checkMergeability, detectInstallCommand, detectTestCommand, validateTouchSet } from '../../src/lib/merge-train';
+import * as sdkClientMod from '../../src/lib/sdk-client';
 
 type TestRepo = {
   rootDir: string;
@@ -517,6 +518,210 @@ describe('validateTouchSet', () => {
     expect(result.valid).toBe(false);
     expect(result.violations).toBeDefined();
     expect(result.violations![0]).toContain('Failed to diff');
+  });
+});
+
+describe('fix-before-rollback', () => {
+  let testRepo: TestRepo;
+
+  beforeEach(async () => {
+    testRepo = await setupRepo();
+  });
+
+  afterEach(() => {
+    rmSync(testRepo.rootDir, { recursive: true, force: true });
+    mock.restore();
+  });
+
+  it('serve-mode job: prompts agent on test failure and retests', async () => {
+    await createBranchCommit(testRepo.repoDir, 'feature-fix', 'fix.txt', 'fix\n');
+
+    const marker = join(testRepo.integrationWorktree, '.retest-pass');
+    const testScript = `test -f '${marker}'`;
+
+    const mockClient = { session: {} };
+    spyOn(sdkClientMod, 'waitForServer').mockResolvedValue(mockClient as any);
+    spyOn(sdkClientMod, 'sendPrompt').mockImplementation(async () => {
+      writeFileSync(marker, 'fixed');
+    });
+
+    const train = new MergeTrain(testRepo.integrationWorktree, {
+      testCommand: testScript,
+      testTimeout: 10000,
+      fixBeforeRollbackTimeout: 10,
+    });
+    const job = makeJob('feature-fix');
+    job.port = 14100;
+    job.launchSessionID = 'session-abc';
+    train.enqueue(job);
+
+    const result = await train.processNext();
+
+    expect(result.success).toBe(true);
+    expect(sdkClientMod.waitForServer).toHaveBeenCalledWith(14100, { timeoutMs: 10000 });
+    expect(sdkClientMod.sendPrompt).toHaveBeenCalledWith(
+      mockClient,
+      'session-abc',
+      expect.stringContaining('Test Failure in Merge Train'),
+    );
+  });
+
+  it('serve-mode job: rolls back when retest also fails', async () => {
+    await createBranchCommit(testRepo.repoDir, 'feature-still-broken', 'broken.txt', 'broken\n');
+
+    const headBefore = await mustExec(
+      ['git', 'rev-parse', 'HEAD'],
+      testRepo.integrationWorktree,
+    );
+
+    const mockClient = { session: {} };
+    spyOn(sdkClientMod, 'waitForServer').mockResolvedValue(mockClient as any);
+    spyOn(sdkClientMod, 'sendPrompt').mockResolvedValue();
+
+    const train = new MergeTrain(testRepo.integrationWorktree, {
+      testCommand: 'false',
+      testTimeout: 10000,
+      fixBeforeRollbackTimeout: 10,
+    });
+    const job = makeJob('feature-still-broken');
+    job.port = 14100;
+    job.launchSessionID = 'session-abc';
+    train.enqueue(job);
+
+    const result = await train.processNext();
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.type).toBe('test_failure');
+    }
+
+    const headAfter = await mustExec(
+      ['git', 'rev-parse', 'HEAD'],
+      testRepo.integrationWorktree,
+    );
+    expect(headAfter).toBe(headBefore);
+  });
+
+  it('TUI-mode job (no port): immediately rolls back without prompting', async () => {
+    await createBranchCommit(testRepo.repoDir, 'feature-tui-fail', 'tui.txt', 'tui\n');
+
+    const headBefore = await mustExec(
+      ['git', 'rev-parse', 'HEAD'],
+      testRepo.integrationWorktree,
+    );
+
+    const waitSpy = spyOn(sdkClientMod, 'waitForServer');
+
+    const train = new MergeTrain(testRepo.integrationWorktree, {
+      testCommand: 'false',
+      testTimeout: 10000,
+      fixBeforeRollbackTimeout: 10,
+    });
+    train.enqueue(makeJob('feature-tui-fail'));
+
+    const result = await train.processNext();
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.type).toBe('test_failure');
+    }
+    expect(waitSpy).not.toHaveBeenCalled();
+
+    const headAfter = await mustExec(
+      ['git', 'rev-parse', 'HEAD'],
+      testRepo.integrationWorktree,
+    );
+    expect(headAfter).toBe(headBefore);
+  });
+
+  it('serve-mode job: falls through to rollback when SDK connection fails', async () => {
+    await createBranchCommit(testRepo.repoDir, 'feature-sdk-fail', 'sdk.txt', 'sdk\n');
+
+    const headBefore = await mustExec(
+      ['git', 'rev-parse', 'HEAD'],
+      testRepo.integrationWorktree,
+    );
+
+    spyOn(sdkClientMod, 'waitForServer').mockRejectedValue(new Error('connection refused'));
+
+    const train = new MergeTrain(testRepo.integrationWorktree, {
+      testCommand: 'false',
+      testTimeout: 10000,
+      fixBeforeRollbackTimeout: 10,
+    });
+    const job = makeJob('feature-sdk-fail');
+    job.port = 14100;
+    job.launchSessionID = 'session-abc';
+    train.enqueue(job);
+
+    const result = await train.processNext();
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.type).toBe('test_failure');
+    }
+
+    const headAfter = await mustExec(
+      ['git', 'rev-parse', 'HEAD'],
+      testRepo.integrationWorktree,
+    );
+    expect(headAfter).toBe(headBefore);
+  });
+
+  it('serve-mode job: prompt includes job name and test output', async () => {
+    await createBranchCommit(testRepo.repoDir, 'feature-prompt-check', 'check.txt', 'check\n');
+
+    const mockClient = { session: {} };
+    spyOn(sdkClientMod, 'waitForServer').mockResolvedValue(mockClient as any);
+    const sendSpy = spyOn(sdkClientMod, 'sendPrompt').mockResolvedValue();
+
+    const train = new MergeTrain(testRepo.integrationWorktree, {
+      testCommand: 'echo "assertion failed: expected 3 got 4" && false',
+      testTimeout: 10000,
+      fixBeforeRollbackTimeout: 10,
+    });
+    const job = makeJob('feature-prompt-check');
+    job.port = 14100;
+    job.launchSessionID = 'session-abc';
+    train.enqueue(job);
+
+    await train.processNext();
+
+    expect(sendSpy).toHaveBeenCalledTimes(1);
+    const promptArg = sendSpy.mock.calls[0][2];
+    expect(promptArg).toContain('feature-prompt-check');
+    expect(promptArg).toContain('assertion failed');
+  });
+
+  it('serve-mode job: does not prompt when launchSessionID is missing', async () => {
+    await createBranchCommit(testRepo.repoDir, 'feature-no-session', 'ns.txt', 'ns\n');
+
+    const headBefore = await mustExec(
+      ['git', 'rev-parse', 'HEAD'],
+      testRepo.integrationWorktree,
+    );
+
+    const waitSpy = spyOn(sdkClientMod, 'waitForServer');
+
+    const train = new MergeTrain(testRepo.integrationWorktree, {
+      testCommand: 'false',
+      testTimeout: 10000,
+      fixBeforeRollbackTimeout: 10,
+    });
+    const job = makeJob('feature-no-session');
+    job.port = 14100;
+    train.enqueue(job);
+
+    const result = await train.processNext();
+
+    expect(result.success).toBe(false);
+    expect(waitSpy).not.toHaveBeenCalled();
+
+    const headAfter = await mustExec(
+      ['git', 'rev-parse', 'HEAD'],
+      testRepo.integrationWorktree,
+    );
+    expect(headAfter).toBe(headBefore);
   });
 });
 
