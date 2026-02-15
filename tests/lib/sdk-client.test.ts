@@ -3,12 +3,14 @@ import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 const mockSessionList = vi.fn();
 const mockSessionCreate = vi.fn();
 const mockSessionPromptAsync = vi.fn();
+const mockSessionFork = vi.fn();
 
 const mockClient = {
   session: {
     list: mockSessionList,
     create: mockSessionCreate,
     promptAsync: mockSessionPromptAsync,
+    fork: mockSessionFork,
   },
 };
 
@@ -17,7 +19,7 @@ vi.mock('@opencode-ai/sdk', () => ({
 }));
 
 const sdk = await import('@opencode-ai/sdk');
-const { createJobClient, waitForServer, sendPrompt, createSessionAndPrompt } = await import('../../src/lib/sdk-client');
+const { createJobClient, waitForServer, sendPrompt, createSessionAndPrompt, forkJobSession } = await import('../../src/lib/sdk-client');
 
 describe('sdk-client', () => {
   beforeEach(() => {
@@ -178,6 +180,127 @@ describe('sdk-client', () => {
       await expect(
         createSessionAndPrompt(mockClient as any, 'Hello'),
       ).rejects.toThrow('Failed to create session');
+    });
+  });
+
+  describe('forkJobSession', () => {
+    it('should call session.fork with source session ID', async () => {
+      mockSessionFork.mockResolvedValue({
+        data: { id: 'forked-session-id' },
+      });
+      mockSessionPromptAsync.mockResolvedValue({ data: {} });
+
+      const newId = await forkJobSession(mockClient as any, 'source-session', {
+        sourceJobName: 'api-job',
+        newJobName: 'api-job-v2',
+        additionalPrompt: 'Continue the API work',
+      });
+
+      expect(newId).toBe('forked-session-id');
+      expect(mockSessionFork).toHaveBeenCalledWith({
+        path: { id: 'source-session' },
+        body: {},
+      });
+    });
+
+    it('should send context prompt to forked session when additionalPrompt provided', async () => {
+      mockSessionFork.mockResolvedValue({
+        data: { id: 'forked-session-id' },
+      });
+      mockSessionPromptAsync.mockResolvedValue({ data: {} });
+
+      await forkJobSession(mockClient as any, 'source-session', {
+        sourceJobName: 'db-schema',
+        newJobName: 'db-schema-v2',
+        additionalPrompt: 'Add indexes',
+      });
+
+      expect(mockSessionPromptAsync).toHaveBeenCalledWith({
+        path: { id: 'forked-session-id' },
+        body: {
+          parts: [{
+            type: 'text',
+            text: expect.stringContaining('Forked from job "db-schema" as "db-schema-v2"'),
+          }],
+        },
+      });
+    });
+
+    it('should include additional prompt in context message', async () => {
+      mockSessionFork.mockResolvedValue({
+        data: { id: 'forked-session-id' },
+      });
+      mockSessionPromptAsync.mockResolvedValue({ data: {} });
+
+      await forkJobSession(mockClient as any, 'source-session', {
+        sourceJobName: 'src',
+        newJobName: 'dst',
+        additionalPrompt: 'Focus on error handling',
+      });
+
+      expect(mockSessionPromptAsync).toHaveBeenCalledWith(
+        expect.objectContaining({
+          body: {
+            parts: [{
+              type: 'text',
+              text: expect.stringContaining('Focus on error handling'),
+            }],
+          },
+        }),
+      );
+    });
+
+    it('should not send prompt when additionalPrompt is not provided', async () => {
+      mockSessionFork.mockResolvedValue({
+        data: { id: 'forked-session-id' },
+      });
+
+      const newId = await forkJobSession(mockClient as any, 'source-session', {
+        sourceJobName: 'src',
+        newJobName: 'dst',
+      });
+
+      expect(newId).toBe('forked-session-id');
+      expect(mockSessionPromptAsync).not.toHaveBeenCalled();
+    });
+
+    it('should pass agent and model to sendPrompt when provided', async () => {
+      mockSessionFork.mockResolvedValue({
+        data: { id: 'forked-session-id' },
+      });
+      mockSessionPromptAsync.mockResolvedValue({ data: {} });
+
+      const model = { providerID: 'anthropic', modelID: 'claude-sonnet-4-20250514' };
+      await forkJobSession(mockClient as any, 'source-session', {
+        sourceJobName: 'src',
+        newJobName: 'dst',
+        additionalPrompt: 'Continue',
+        agent: 'build',
+        model,
+      });
+
+      expect(mockSessionPromptAsync).toHaveBeenCalledWith({
+        path: { id: 'forked-session-id' },
+        body: {
+          parts: [{ type: 'text', text: expect.any(String) }],
+          agent: 'build',
+          model,
+        },
+      });
+    });
+
+    it('should throw when fork call fails', async () => {
+      mockSessionFork.mockResolvedValue({
+        data: undefined,
+        error: { message: 'fork not supported' },
+      });
+
+      await expect(
+        forkJobSession(mockClient as any, 'source-session', {
+          sourceJobName: 'src',
+          newJobName: 'dst',
+        }),
+      ).rejects.toThrow('Failed to fork session');
     });
   });
 });
