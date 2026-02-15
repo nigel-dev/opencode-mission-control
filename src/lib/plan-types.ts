@@ -19,6 +19,16 @@ export interface CheckpointContext {
   touchSetPatterns?: string[];
 }
 
+export type AuditAction = 'skip_job' | 'add_job' | 'reorder_jobs' | 'fork_session' | 'relay_finding' | 'fix_prompted';
+
+export interface AuditLogEntry {
+  timestamp: string;
+  action: AuditAction;
+  jobName?: string;
+  details: Record<string, unknown>;
+  userApproved?: boolean;
+}
+
 export type JobStatus =
   | 'queued'
   | 'waiting_deps'
@@ -43,13 +53,14 @@ export interface PlanSpec {
   jobs: JobSpec[];
   integrationBranch: string;
   integrationWorktree?: string;
-  baseCommit: string; // SHA of main when plan started
+  baseCommit: string;
   createdAt: string;
   completedAt?: string;
   prUrl?: string;
   checkpoint?: CheckpointType | null;
   checkpointContext?: CheckpointContext | null;
   launchSessionID?: string;
+  auditLog?: AuditLogEntry[];
 }
 
 export interface JobSpec {
@@ -70,6 +81,10 @@ export interface JobSpec {
   symlinkDirs?: string[];
   commands?: string[];
   mode?: 'vanilla' | 'plan' | 'ralph' | 'ulw';
+  relayPatterns?: string[];
+  port?: number;
+  serverUrl?: string;
+  launchSessionID?: string;
 }
 
 export const VALID_PLAN_TRANSITIONS: Record<PlanStatus, PlanStatus[]> = {

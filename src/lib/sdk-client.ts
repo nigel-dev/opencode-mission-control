@@ -103,3 +103,43 @@ export async function createSessionAndPrompt(
   await sendPrompt(client, sessionId, prompt, agent, model);
   return sessionId;
 }
+
+export interface ForkSessionOptions {
+  sourceJobName: string;
+  newJobName: string;
+  additionalPrompt?: string;
+  agent?: string;
+  model?: { providerID: string; modelID: string };
+}
+
+export async function forkJobSession(
+  client: OpencodeClient,
+  sourceSessionId: string,
+  options: ForkSessionOptions,
+): Promise<string> {
+  const forkResult = await client.session.fork({
+    path: { id: sourceSessionId },
+    body: {},
+  });
+
+  if (!forkResult.data) {
+    throw new Error(
+      `Failed to fork session: ${forkResult.error ? JSON.stringify(forkResult.error) : 'unknown error'}`,
+    );
+  }
+
+  const newSessionId = forkResult.data.id;
+
+  if (options.additionalPrompt) {
+    const contextPrompt = `Forked from job "${options.sourceJobName}" as "${options.newJobName}".\n\nAdditional context: ${options.additionalPrompt}`;
+    await sendPrompt(
+      client,
+      newSessionId,
+      contextPrompt,
+      options.agent,
+      options.model,
+    );
+  }
+
+  return newSessionId;
+}

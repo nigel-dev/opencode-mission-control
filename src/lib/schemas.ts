@@ -55,6 +55,16 @@ export const JobStatusSchema = z.enum([
   'canceled',
 ]);
 
+export const AuditActionSchema = z.enum(['skip_job', 'add_job', 'reorder_jobs', 'fork_session', 'relay_finding', 'fix_prompted']);
+
+export const AuditLogEntrySchema = z.object({
+  timestamp: z.string(),
+  action: AuditActionSchema,
+  jobName: z.string().optional(),
+  details: z.record(z.string(), z.unknown()),
+  userApproved: z.boolean().optional(),
+});
+
 export const JobSpecSchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -75,6 +85,8 @@ export const JobSpecSchema = z.object({
   mode: z.enum(['vanilla', 'plan', 'ralph', 'ulw']).optional(),
   port: z.number().optional(),
   serverUrl: z.string().optional(),
+  relayPatterns: z.array(z.string()).optional(),
+  launchSessionID: z.string().optional(),
 });
 
 export const FailureKindSchema = z.enum(['touchset', 'merge_conflict', 'test_failure', 'job_failed']);
@@ -103,6 +115,7 @@ export const PlanSpecSchema = z.object({
   checkpointContext: CheckpointContextSchema.nullable().optional(),
   ghAuthenticated: z.boolean().optional(),
   launchSessionID: z.string().optional(),
+  auditLog: z.array(AuditLogEntrySchema).optional(),
 });
 
 export const WorktreeSetupSchema = z.object({
@@ -132,6 +145,7 @@ export const MCConfigSchema = z.object({
   portRangeStart: z.number().optional(),
   portRangeEnd: z.number().optional(),
   serverPassword: z.string().optional(),
+  fixBeforeRollbackTimeout: z.number().optional(),
   omo: OmoConfigSchema,
 });
 
