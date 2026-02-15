@@ -3,6 +3,7 @@ import { join } from 'path';
 import { homedir } from 'os';
 import { tmpdir } from 'os';
 import type { MCConfig } from '../../src/lib/config';
+import { PermissionPolicy } from '../../src/lib/permission-policy';
 
 vi.mock('../../src/lib/paths', () => ({
   getDataDir: vi.fn(),
@@ -199,7 +200,10 @@ describe('config', () => {
       await saveConfig(originalConfig);
       const loaded = await loadConfig();
 
-      expect(loaded).toEqual(originalConfig);
+      expect(loaded).toEqual({
+        ...originalConfig,
+        defaultPermissionPolicy: PermissionPolicy.getDefaultPolicy(),
+      });
     });
 
     it('should update config on subsequent saves', async () => {

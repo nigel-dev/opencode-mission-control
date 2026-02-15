@@ -2,9 +2,11 @@ import { EventEmitter } from 'events';
 import { getRunningJobs, updateJob, type Job } from './job-state.js';
 import { isPaneRunning, capturePane, captureExitStatus } from './tmux.js';
 import { loadConfig } from './config.js';
-import { readReport, type AgentReport } from './reports.js';
+import { readReport } from './reports.js';
 import { createJobClient } from './sdk-client.js';
 import { QuestionRelay, type PermissionRequest } from './question-relay.js';
+import { loadPlan } from './plan-state.js';
+import { PermissionPolicy, type PermissionPolicyConfig } from './permission-policy.js';
 import type { OpencodeClient } from '@opencode-ai/sdk';
 
 type JobEventType = 'complete' | 'failed' | 'blocked' | 'needs_review' | 'awaiting_input' | 'agent_report';
@@ -299,15 +301,7 @@ export class JobMonitor extends EventEmitter {
       }
 
       case 'permission.updated': {
-        const permission: PermissionRequest = {
-          id: event.properties?.id || event.id || 'unknown',
-          type: this.inferPermissionType(event),
-          path: event.properties?.path || event.path,
-          description: event.properties?.description || event.description || 'Unknown permission request',
-        };
-
-        const accumulator = this.getOrCreateEventAccumulator(job.id);
-        await this.questionRelay.handlePermissionRequest(job, permission, accumulator.currentFile);
+        void this.handlePermissionUpdate(job, event);
         break;
       }
     }
@@ -315,22 +309,115 @@ export class JobMonitor extends EventEmitter {
 
   private inferPermissionType(event: any): PermissionRequest['type'] {
     const eventData = event.properties || event;
-    const typeHint = eventData.type || eventData.permissionType || '';
+    const metadata = eventData.metadata ?? {};
+    const typeHint = String(eventData.type || eventData.permissionType || metadata.type || '').toLowerCase();
 
-    if (typeHint.includes('file') || typeHint.includes('write') || typeHint.includes('edit')) {
-      return 'file_operation';
-    }
-    if (typeHint.includes('shell') || typeHint.includes('command') || typeHint.includes('exec')) {
-      return 'shell_command';
-    }
-    if (typeHint.includes('network') || typeHint.includes('http') || typeHint.includes('fetch')) {
-      return 'network';
-    }
     if (typeHint.includes('mcp') || typeHint.includes('tool')) {
       return 'mcp';
     }
+    if (typeHint.includes('network') || typeHint.includes('http') || typeHint.includes('fetch') || typeHint.includes('web')) {
+      return 'network';
+    }
+    if (typeHint.includes('shell') || typeHint.includes('command') || typeHint.includes('exec') || typeHint.includes('bash')) {
+      return 'shell_command';
+    }
+    if (typeHint.includes('file') || typeHint.includes('write') || typeHint.includes('edit') || typeHint === 'read') {
+      return 'file_operation';
+    }
 
     return 'other';
+  }
+
+  private extractString(value: unknown): string | undefined {
+    return typeof value === 'string' && value.length > 0 ? value : undefined;
+  }
+
+  private extractPermissionPath(event: any): string | undefined {
+    const eventData = event.properties || event;
+    const metadata = eventData.metadata;
+
+    const directPath = this.extractString(eventData.path)
+      ?? this.extractString(eventData.file)
+      ?? this.extractString(event.path);
+    if (directPath) {
+      return directPath;
+    }
+
+    if (metadata && typeof metadata === 'object') {
+      const metadataPath = (metadata as Record<string, unknown>).path;
+      return this.extractString(metadataPath);
+    }
+
+    return undefined;
+  }
+
+  private buildPermissionRequest(event: any): PermissionRequest {
+    const eventData = event.properties || event;
+    const rawType = this.extractString(eventData.type) || this.extractString(eventData.permissionType) || 'unknown';
+    const path = this.extractPermissionPath(event);
+    const description = this.extractString(eventData.description)
+      || this.extractString(eventData.title)
+      || this.extractString(event.description)
+      || 'Unknown permission request';
+
+    return {
+      id: this.extractString(eventData.id) || this.extractString(event.id) || 'unknown',
+      type: this.inferPermissionType(event),
+      path,
+      target: path,
+      action: this.extractString(eventData.title) || rawType,
+      rawType,
+      description,
+    };
+  }
+
+  private async resolvePolicyForJob(job: Job): Promise<PermissionPolicy> {
+    const config = await loadConfig();
+    const globalPolicy = config.defaultPermissionPolicy;
+
+    let planPolicy: PermissionPolicyConfig | undefined;
+    let jobPolicy: PermissionPolicyConfig | undefined;
+
+    if (job.planId) {
+      const plan = await loadPlan();
+      if (plan && plan.id === job.planId) {
+        planPolicy = plan.permissionPolicy;
+        jobPolicy = plan.jobs.find((planJob) => planJob.name === job.name)?.permissionPolicy;
+      }
+    }
+
+    return PermissionPolicy.resolvePolicy({
+      jobPolicy,
+      planPolicy,
+      globalPolicy,
+    });
+  }
+
+  private async handlePermissionUpdate(job: Job, event: any): Promise<void> {
+    try {
+      const permission = this.buildPermissionRequest(event);
+      const accumulator = this.getOrCreateEventAccumulator(job.id);
+      const policy = await this.resolvePolicyForJob(job);
+      const decision = policy.evaluate(permission, { worktreePath: job.worktreePath });
+      const decisionLog = policy.getDecisionLog();
+      const lastLog = decisionLog[decisionLog.length - 1];
+      const reason = lastLog?.reason ?? 'Permission decision from policy';
+
+      if (decision === 'auto-approve') {
+        await this.questionRelay.respondToPermission(job, permission.id, true, `Auto-approved by permission policy: ${reason}`);
+        return;
+      }
+
+      if (decision === 'deny') {
+        await this.questionRelay.respondToPermission(job, permission.id, false, `Denied by permission policy: ${reason}`);
+        console.warn(`[Monitor] Permission denied by policy for job ${job.name}: ${permission.description}`);
+        return;
+      }
+
+      await this.questionRelay.handlePermissionRequest(job, permission, accumulator.currentFile);
+    } catch (error) {
+      console.error(`[Monitor] Failed to process permission update for job ${job.name}:`, error);
+    }
   }
 
   private isServeModeJob(job: Job): boolean {
