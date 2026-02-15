@@ -136,6 +136,7 @@ mock.module('../../src/lib/prompt-file', () => ({
   writePromptFile: vi.fn(async (worktreePath: string, _prompt: string) => `${worktreePath}/.mc-prompt.txt`),
   cleanupPromptFile: vi.fn(() => {}),
   writeLauncherScript: vi.fn(async (worktreePath: string) => `${worktreePath}/.mc-launch.sh`),
+  writeServeLauncherScript: vi.fn(async (worktreePath: string) => `${worktreePath}/.mc-launch.sh`),
   cleanupLauncherScript: vi.fn(() => {}),
 }));
 

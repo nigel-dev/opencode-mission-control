@@ -186,6 +186,9 @@ describe('config', () => {
         autoCommit: true,
         testTimeout: 600000,
         mergeStrategy: 'squash',
+        useServeMode: true,
+        portRangeStart: 14100,
+        portRangeEnd: 14199,
         omo: {
           enabled: true,
           defaultMode: 'ulw',

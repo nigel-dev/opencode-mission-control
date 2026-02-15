@@ -9,6 +9,8 @@ import * as worktreeSetup from '../../src/lib/worktree-setup';
 import * as omo from '../../src/lib/omo';
 import * as planCopier from '../../src/lib/plan-copier';
 import * as modelTracker from '../../src/lib/model-tracker';
+import * as portAllocator from '../../src/lib/port-allocator';
+import * as sdkClient from '../../src/lib/sdk-client';
 
 vi.mock('crypto', () => ({
   randomUUID: vi.fn(() => 'test-uuid-1234'),
@@ -33,6 +35,12 @@ let mockWriteLauncherScript: any;
 let mockDetectOMO: any;
 let mockCopyPlansToWorktree: any;
 let mockResolvePostCreateHook: any;
+let mockAllocatePort: any;
+let mockReleasePort: any;
+let mockWaitForServer: any;
+let mockCreateSessionAndPrompt: any;
+let mockWriteServeLauncherScript: any;
+let mockGetRunningJobs: any;
 
 const mockContext = {
   sessionID: 'test-session',
@@ -94,6 +102,14 @@ describe('mc_launch', () => {
     mockCopyPlansToWorktree = vi.spyOn(planCopier, 'copyPlansToWorktree').mockImplementation(() => Promise.resolve(undefined) as any);
     mockResolvePostCreateHook = vi.spyOn(worktreeSetup, 'resolvePostCreateHook').mockImplementation(() => ({ symlinkDirs: ['.opencode'] } as any));
     vi.spyOn(modelTracker, 'getCurrentModel').mockReturnValue(undefined);
+    mockAllocatePort = vi.spyOn(portAllocator, 'allocatePort').mockImplementation(() => Promise.resolve(14100) as any);
+    mockReleasePort = vi.spyOn(portAllocator, 'releasePort').mockImplementation(() => Promise.resolve(undefined) as any);
+    mockWaitForServer = vi.spyOn(sdkClient, 'waitForServer').mockImplementation(() => Promise.resolve({ session: {} } as any));
+    mockCreateSessionAndPrompt = vi.spyOn(sdkClient, 'createSessionAndPrompt').mockImplementation(() => Promise.resolve('sdk-session-1') as any);
+    mockWriteServeLauncherScript = vi.spyOn(promptFile, 'writeServeLauncherScript').mockImplementation(() => Promise.resolve('/tmp/mc-worktrees/test-job/.mc-launch.sh') as any);
+    mockGetRunningJobs = vi.spyOn(jobState, 'getRunningJobs').mockImplementation(() => Promise.resolve([]) as any);
+    vi.spyOn(tmux, 'killSession').mockImplementation(() => Promise.resolve(undefined) as any);
+    vi.spyOn(tmux, 'killWindow').mockImplementation(() => Promise.resolve(undefined) as any);
     setupDefaultMocks();
   });
 
@@ -574,6 +590,207 @@ describe('mc_launch', () => {
       expect(result).toContain('launched successfully');
       expect(mockAddJob).toHaveBeenCalledWith(
         expect.objectContaining({ status: 'running' }),
+      );
+    });
+  });
+
+  describe('serve mode', () => {
+    beforeEach(() => {
+      mockLoadConfig.mockResolvedValue({
+        defaultPlacement: 'session',
+        pollInterval: 10000,
+        idleThreshold: 300000,
+        worktreeBasePath: '/tmp/mc-worktrees',
+        useServeMode: true,
+        portRangeStart: 14100,
+        portRangeEnd: 14199,
+        omo: { enabled: false, defaultMode: 'vanilla' },
+      });
+    });
+
+    it('should allocate port and use serve launcher', async () => {
+      await mc_launch.execute(
+        { name: 'serve-job', prompt: 'Do task' },
+        mockContext,
+      );
+
+      expect(mockAllocatePort).toHaveBeenCalled();
+      expect(mockWriteServeLauncherScript).toHaveBeenCalledWith(
+        '/tmp/mc-worktrees/test-job',
+        14100,
+        undefined,
+      );
+    });
+
+    it('should not call TUI writeLauncherScript or writePromptFile', async () => {
+      await mc_launch.execute(
+        { name: 'serve-job', prompt: 'Do task' },
+        mockContext,
+      );
+
+      expect(mockWritePromptFile).not.toHaveBeenCalled();
+      expect(mockWriteLauncherScript).not.toHaveBeenCalled();
+    });
+
+    it('should wait for server and send prompt via SDK', async () => {
+      await mc_launch.execute(
+        { name: 'serve-job', prompt: 'Do task' },
+        mockContext,
+      );
+
+      expect(mockWaitForServer).toHaveBeenCalledWith(14100, {
+        password: undefined,
+      });
+      expect(mockCreateSessionAndPrompt).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.stringContaining('Do task'),
+      );
+    });
+
+    it('should store port and serverUrl on job record', async () => {
+      await mc_launch.execute(
+        { name: 'serve-job', prompt: 'Do task' },
+        mockContext,
+      );
+
+      expect(mockAddJob).toHaveBeenCalledWith(
+        expect.objectContaining({
+          port: 14100,
+          serverUrl: 'http://127.0.0.1:14100',
+        }),
+      );
+    });
+
+    it('should include port info in output', async () => {
+      const result = await mc_launch.execute(
+        { name: 'serve-job', prompt: 'Do task' },
+        mockContext,
+      );
+
+      expect(result).toContain('Port:      14100');
+      expect(result).toContain('Server:    http://127.0.0.1:14100');
+    });
+
+    it('should pass serverPassword to serve launcher and waitForServer', async () => {
+      mockLoadConfig.mockResolvedValue({
+        defaultPlacement: 'session',
+        pollInterval: 10000,
+        idleThreshold: 300000,
+        worktreeBasePath: '/tmp/mc-worktrees',
+        useServeMode: true,
+        portRangeStart: 14100,
+        portRangeEnd: 14199,
+        serverPassword: 'my-secret',
+        omo: { enabled: false, defaultMode: 'vanilla' },
+      });
+
+      await mc_launch.execute(
+        { name: 'serve-job', prompt: 'Do task' },
+        mockContext,
+      );
+
+      expect(mockWriteServeLauncherScript).toHaveBeenCalledWith(
+        '/tmp/mc-worktrees/test-job',
+        14100,
+        'my-secret',
+      );
+      expect(mockWaitForServer).toHaveBeenCalledWith(14100, {
+        password: 'my-secret',
+      });
+    });
+
+    it('should not use sendKeys for OMO modes in serve mode', async () => {
+      mockLoadConfig.mockResolvedValue({
+        defaultPlacement: 'session',
+        pollInterval: 10000,
+        idleThreshold: 300000,
+        worktreeBasePath: '/tmp/mc-worktrees',
+        useServeMode: true,
+        portRangeStart: 14100,
+        portRangeEnd: 14199,
+        omo: { enabled: true, defaultMode: 'ulw' },
+      });
+      mockDetectOMO.mockResolvedValue({ detected: true, configSource: 'local', sisyphusPath: './.sisyphus' });
+
+      await mc_launch.execute(
+        { name: 'serve-job', prompt: 'Do task', mode: 'ulw' },
+        mockContext,
+      );
+
+      expect(mockSendKeys).not.toHaveBeenCalled();
+    });
+
+    it('should cleanup on waitForServer failure', async () => {
+      mockWaitForServer.mockRejectedValue(new Error('Server timeout'));
+
+      await expect(
+        mc_launch.execute(
+          { name: 'serve-job', prompt: 'Do task' },
+          mockContext,
+        ),
+      ).rejects.toThrow('Failed to start serve session');
+
+      expect(mockReleasePort).toHaveBeenCalledWith(14100);
+      expect(mockRemoveWorktree).toHaveBeenCalled();
+    });
+
+    it('should cleanup on port allocation failure', async () => {
+      mockAllocatePort.mockRejectedValue(new Error('No ports'));
+
+      await expect(
+        mc_launch.execute(
+          { name: 'serve-job', prompt: 'Do task' },
+          mockContext,
+        ),
+      ).rejects.toThrow('Failed to allocate port');
+
+      expect(mockRemoveWorktree).toHaveBeenCalled();
+    });
+  });
+
+  describe('TUI mode fallback', () => {
+    it('should use TUI path when useServeMode is false', async () => {
+      mockLoadConfig.mockResolvedValue({
+        defaultPlacement: 'session',
+        pollInterval: 10000,
+        idleThreshold: 300000,
+        worktreeBasePath: '/tmp/mc-worktrees',
+        useServeMode: false,
+        omo: { enabled: false, defaultMode: 'vanilla' },
+      });
+
+      await mc_launch.execute(
+        { name: 'tui-job', prompt: 'Do task' },
+        mockContext,
+      );
+
+      expect(mockAllocatePort).not.toHaveBeenCalled();
+      expect(mockWriteServeLauncherScript).not.toHaveBeenCalled();
+      expect(mockWaitForServer).not.toHaveBeenCalled();
+      expect(mockWritePromptFile).toHaveBeenCalled();
+      expect(mockWriteLauncherScript).toHaveBeenCalled();
+    });
+
+    it('should not store port on job when in TUI mode', async () => {
+      mockLoadConfig.mockResolvedValue({
+        defaultPlacement: 'session',
+        pollInterval: 10000,
+        idleThreshold: 300000,
+        worktreeBasePath: '/tmp/mc-worktrees',
+        useServeMode: false,
+        omo: { enabled: false, defaultMode: 'vanilla' },
+      });
+
+      await mc_launch.execute(
+        { name: 'tui-job', prompt: 'Do task' },
+        mockContext,
+      );
+
+      expect(mockAddJob).toHaveBeenCalledWith(
+        expect.objectContaining({
+          port: undefined,
+          serverUrl: undefined,
+        }),
       );
     });
   });

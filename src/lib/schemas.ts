@@ -17,6 +17,8 @@ export const JobSchema = z.object({
   exitCode: z.number().optional(),
   planId: z.string().optional(),
   launchSessionID: z.string().optional(),
+  port: z.number().optional(),
+  serverUrl: z.string().optional(),
 });
 
 export const JobStateSchema = z.object({
@@ -71,6 +73,8 @@ export const JobSpecSchema = z.object({
   symlinkDirs: z.array(z.string()).optional(),
   commands: z.array(z.string()).optional(),
   mode: z.enum(['vanilla', 'plan', 'ralph', 'ulw']).optional(),
+  port: z.number().optional(),
+  serverUrl: z.string().optional(),
 });
 
 export const FailureKindSchema = z.enum(['touchset', 'merge_conflict', 'test_failure', 'job_failed']);
@@ -124,6 +128,10 @@ export const MCConfigSchema = z.object({
   mergeStrategy: z.enum(['squash', 'ff-only', 'merge']).optional(),
   worktreeSetup: WorktreeSetupSchema.optional(),
   allowUnsafeCommands: z.boolean().optional(),
+  useServeMode: z.boolean().optional(),
+  portRangeStart: z.number().optional(),
+  portRangeEnd: z.number().optional(),
+  serverPassword: z.string().optional(),
   omo: OmoConfigSchema,
 });
 

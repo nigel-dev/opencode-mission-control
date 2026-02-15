@@ -1,6 +1,7 @@
 import { tool, type ToolDefinition } from '@opencode-ai/plugin';
 import { getJobByName, updateJob } from '../lib/job-state';
 import { killSession, killWindow } from '../lib/tmux';
+import { releasePort } from '../lib/port-allocator';
 
 export const mc_kill: ToolDefinition = tool({
   description: 'Stop a running job',
@@ -44,7 +45,16 @@ export const mc_kill: ToolDefinition = tool({
       );
     }
 
-    // 4. Update job status to 'stopped'
+    // 4. Release port if allocated
+    if (job.port) {
+      try {
+        await releasePort(job.port);
+      } catch {
+        // Non-fatal: port will be reclaimed on next allocation scan
+      }
+    }
+
+    // 5. Update job status to 'stopped'
     try {
       await updateJob(job.id, {
         status: 'stopped',
