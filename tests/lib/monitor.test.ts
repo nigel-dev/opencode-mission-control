@@ -538,13 +538,46 @@ describe('JobMonitor', () => {
        monitor.stop();
      });
 
-     it('should not emit events if pane is still running', async () => {
+      it('should not emit events if pane is still running', async () => {
+        const mockJob: Job = {
+          id: 'job-1',
+          name: 'Test Job',
+          worktreePath: '/path/to/worktree',
+          branch: 'main',
+          tmuxTarget: 'mc-test',
+          placement: 'session',
+          status: 'running',
+          prompt: 'Test prompt',
+          mode: 'vanilla',
+          createdAt: new Date().toISOString(),
+        };
+
+        mockGetRunningJobs.mockResolvedValue([mockJob]);
+        mockIsPaneRunning.mockResolvedValue(true);
+        mockCapturePane.mockResolvedValue(STREAMING_OUTPUT);
+        mockCaptureExitStatus.mockResolvedValue(undefined);
+
+        const monitor = new JobMonitor();
+        const completeHandler = mock();
+        monitor.on('complete', completeHandler);
+
+        monitor.start();
+        await new Promise(resolve => setTimeout(resolve, 50));
+
+        expect(completeHandler).not.toHaveBeenCalled();
+
+        monitor.stop();
+      });
+   });
+
+   describe('dual-mode monitoring', () => {
+     it('should use tmux monitoring for TUI-mode jobs (no port)', async () => {
        const mockJob: Job = {
-         id: 'job-1',
-         name: 'Test Job',
+         id: 'job-tui',
+         name: 'TUI Job',
          worktreePath: '/path/to/worktree',
          branch: 'main',
-         tmuxTarget: 'mc-test',
+         tmuxTarget: 'mc-tui',
          placement: 'session',
          status: 'running',
          prompt: 'Test prompt',
@@ -553,20 +586,119 @@ describe('JobMonitor', () => {
        };
 
        mockGetRunningJobs.mockResolvedValue([mockJob]);
-       mockIsPaneRunning.mockResolvedValue(true);
-       mockCapturePane.mockResolvedValue(STREAMING_OUTPUT);
-       mockCaptureExitStatus.mockResolvedValue(undefined);
+       mockIsPaneRunning.mockResolvedValue(false);
+       mockCaptureExitStatus.mockResolvedValue(0);
+       mockUpdateJob.mockResolvedValue(undefined);
 
        const monitor = new JobMonitor();
-       const completeHandler = mock();
-       monitor.on('complete', completeHandler);
-
        monitor.start();
+
        await new Promise(resolve => setTimeout(resolve, 50));
 
-       expect(completeHandler).not.toHaveBeenCalled();
+       expect(mockIsPaneRunning).toHaveBeenCalledWith('mc-tui');
+       expect(mockUpdateJob).toHaveBeenCalledWith('job-tui', {
+         status: 'completed',
+         completedAt: expect.any(String),
+       });
 
        monitor.stop();
      });
-  });
+
+     it('should skip tmux monitoring for serve-mode jobs (with port)', async () => {
+       const mockJob: Job = {
+         id: 'job-serve',
+         name: 'Serve Job',
+         worktreePath: '/path/to/worktree',
+         branch: 'main',
+         tmuxTarget: 'mc-serve',
+         placement: 'session',
+         status: 'running',
+         prompt: 'Test prompt',
+         mode: 'vanilla',
+         createdAt: new Date().toISOString(),
+         port: 8080,
+       };
+
+       mockGetRunningJobs.mockResolvedValue([mockJob]);
+
+       const monitor = new JobMonitor();
+       monitor.start();
+
+       await new Promise(resolve => setTimeout(resolve, 50));
+
+       expect(mockIsPaneRunning).not.toHaveBeenCalled();
+
+       monitor.stop();
+     });
+
+     it('should handle mixed TUI and serve-mode jobs', async () => {
+       const tuiJob: Job = {
+         id: 'job-tui',
+         name: 'TUI Job',
+         worktreePath: '/path/tui',
+         branch: 'main',
+         tmuxTarget: 'mc-tui',
+         placement: 'session',
+         status: 'running',
+         prompt: 'TUI prompt',
+         mode: 'vanilla',
+         createdAt: new Date().toISOString(),
+       };
+
+       const serveJob: Job = {
+         id: 'job-serve',
+         name: 'Serve Job',
+         worktreePath: '/path/serve',
+         branch: 'main',
+         tmuxTarget: 'mc-serve',
+         placement: 'session',
+         status: 'running',
+         prompt: 'Serve prompt',
+         mode: 'vanilla',
+         createdAt: new Date().toISOString(),
+         port: 8080,
+       };
+
+       mockGetRunningJobs.mockResolvedValue([tuiJob, serveJob]);
+       mockIsPaneRunning.mockResolvedValue(true);
+       mockCapturePane.mockResolvedValue(STREAMING_OUTPUT);
+
+       const monitor = new JobMonitor();
+       monitor.start();
+
+       await new Promise(resolve => setTimeout(resolve, 50));
+
+       expect(mockIsPaneRunning).toHaveBeenCalledWith('mc-tui');
+       expect(mockIsPaneRunning).not.toHaveBeenCalledWith('mc-serve');
+
+       monitor.stop();
+     });
+
+     it('should detect serve-mode job when port is defined', async () => {
+       const serveJob: Job = {
+         id: 'job-serve',
+         name: 'Serve Job',
+         worktreePath: '/path/to/worktree',
+         branch: 'main',
+         tmuxTarget: 'mc-serve',
+         placement: 'session',
+         status: 'running',
+         prompt: 'Test prompt',
+         mode: 'vanilla',
+         createdAt: new Date().toISOString(),
+         port: 8080,
+       };
+
+       mockGetRunningJobs.mockResolvedValue([serveJob]);
+
+       const monitor = new JobMonitor();
+       monitor.start();
+
+       await new Promise(resolve => setTimeout(resolve, 50));
+
+       expect(mockIsPaneRunning).not.toHaveBeenCalled();
+
+       monitor.stop();
+     });
+   });
 });
