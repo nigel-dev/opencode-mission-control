@@ -25,6 +25,7 @@ const DEFAULT_CONFIG: MCConfig = {
   useServeMode: true,
   portRangeStart: 14100,
   portRangeEnd: 14199,
+  fixBeforeRollbackTimeout: 120000,
   omo: {
     enabled: false,
     defaultMode: 'vanilla',

@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
 import type { MCConfig } from './config';
-import type { PlanSpec, JobSpec, PlanStatus, CheckpointType, CheckpointContext } from './plan-types';
+import type { PlanSpec, JobSpec, PlanStatus, CheckpointType, CheckpointContext, AuditLogEntry } from './plan-types';
 import { loadPlan, savePlan, updatePlanJob, updatePlanFields, clearPlan, validateGhAuth } from './plan-state';
 import { getDefaultBranch } from './git';
 import { createIntegrationBranch, deleteIntegrationBranch } from './integration';
@@ -26,6 +26,8 @@ import {
   sendKeys,
   setPaneDiedHook,
 } from './tmux';
+import { JobComms, type RelayContext } from './job-comms';
+import { forkJobSession, waitForServer } from './sdk-client';
 
 type PlanSpecWithAuth = PlanSpec & { ghAuthenticated?: boolean };
 
@@ -174,17 +176,21 @@ export class Orchestrator {
   private jobsLaunchedCount = 0;
   private approvedForMerge = new Set<string>();
   private firstJobCompleted = false;
+  private jobComms: JobComms = new JobComms();
+  private pendingReplanActions: Map<string, () => Promise<void>> = new Map();
 
   private getMergeTrainConfig(): {
     testCommand?: string;
     testTimeout?: number;
     mergeStrategy?: 'squash' | 'ff-only' | 'merge';
     setupCommands?: string[];
+    fixBeforeRollbackTimeout?: number;
   } {
     const config = this.config as MCConfig & {
       testCommand?: string;
       testTimeout?: number;
       mergeStrategy?: 'squash' | 'ff-only' | 'merge';
+      fixBeforeRollbackTimeout?: number;
       worktreeSetup?: {
         commands?: string[];
       };
@@ -194,6 +200,7 @@ export class Orchestrator {
       testTimeout: config.testTimeout,
       mergeStrategy: config.mergeStrategy,
       setupCommands: config.worktreeSetup?.commands,
+      fixBeforeRollbackTimeout: config.fixBeforeRollbackTimeout,
     };
   }
 
@@ -1181,6 +1188,211 @@ If your work needs human review before it can proceed: mc_report(status: "needs_
     await deleteIntegrationBranch(plan.id);
     await clearPlan();
     this.unsubscribeFromMonitorEvents();
+  }
+
+  async skipJob(jobName: string, reason?: string): Promise<void> {
+    const plan = await loadPlan();
+    if (!plan) {
+      throw new Error('No active plan');
+    }
+
+    const jobIndex = plan.jobs.findIndex((j) => j.name === jobName);
+    if (jobIndex === -1) {
+      throw new Error(`Job "${jobName}" not found in plan`);
+    }
+
+    const job = plan.jobs[jobIndex];
+    const requiresApproval = plan.mode === 'supervisor' || plan.mode === 'copilot';
+
+    if (requiresApproval && !this.pendingReplanActions.has(`skip-${jobName}`)) {
+      this.pendingReplanActions.set(`skip-${jobName}`, async () => {
+        await this.executeSkipJob(plan, job, reason);
+        this.pendingReplanActions.delete(`skip-${jobName}`);
+      });
+      this.showToast('Mission Control', `Approval required to skip job "${jobName}"`, 'warning');
+      return;
+    }
+
+    await this.executeSkipJob(plan, job, reason);
+  }
+
+  private async executeSkipJob(plan: PlanSpec, job: JobSpec, reason?: string): Promise<void> {
+    await updatePlanJob(plan.id, job.name, { status: 'canceled' });
+    this.jobComms.unregisterJob(job.name);
+
+    const auditEntry: AuditLogEntry = {
+      timestamp: new Date().toISOString(),
+      action: 'skip_job',
+      jobName: job.name,
+      details: { reason: reason ?? 'No reason provided' },
+      userApproved: plan.mode !== 'autopilot',
+    };
+
+    await this.appendAuditLog(plan.id, auditEntry);
+    this.showToast('Mission Control', `Job "${job.name}" skipped`, 'info');
+    await this.reconcile();
+  }
+
+  async addJob(jobSpec: Omit<JobSpec, 'id' | 'status'>, options?: { forkFrom?: string }): Promise<void> {
+    const plan = await loadPlan();
+    if (!plan) {
+      throw new Error('No active plan');
+    }
+
+    const requiresApproval = plan.mode === 'supervisor' || plan.mode === 'copilot';
+
+    if (requiresApproval && !this.pendingReplanActions.has(`add-${jobSpec.name}`)) {
+      this.pendingReplanActions.set(`add-${jobSpec.name}`, async () => {
+        await this.executeAddJob(plan, jobSpec, options);
+        this.pendingReplanActions.delete(`add-${jobSpec.name}`);
+      });
+      this.showToast('Mission Control', `Approval required to add job "${jobSpec.name}"`, 'warning');
+      return;
+    }
+
+    await this.executeAddJob(plan, jobSpec, options);
+  }
+
+  private async executeAddJob(
+    plan: PlanSpec,
+    jobSpec: Omit<JobSpec, 'id' | 'status'>,
+    options?: { forkFrom?: string },
+  ): Promise<void> {
+    const newJob: JobSpec = {
+      ...jobSpec,
+      id: randomUUID(),
+      status: 'queued',
+    };
+
+    if (options?.forkFrom) {
+      const sourceJob = plan.jobs.find((j) => j.name === options.forkFrom);
+      if (sourceJob?.port && sourceJob?.launchSessionID) {
+        try {
+          const client = await waitForServer(sourceJob.port, { timeoutMs: 10000 });
+          await forkJobSession(client, sourceJob.launchSessionID, {
+            sourceJobName: sourceJob.name,
+            newJobName: newJob.name,
+            additionalPrompt: newJob.prompt,
+          });
+          newJob.port = sourceJob.port;
+          newJob.launchSessionID = sourceJob.launchSessionID;
+        } catch {
+        }
+      }
+    }
+
+    plan.jobs.push(newJob);
+    await savePlan(plan);
+    this.jobComms.registerJob(newJob);
+
+    const auditEntry: AuditLogEntry = {
+      timestamp: new Date().toISOString(),
+      action: 'add_job',
+      jobName: newJob.name,
+      details: { forkFrom: options?.forkFrom },
+      userApproved: plan.mode !== 'autopilot',
+    };
+
+    await this.appendAuditLog(plan.id, auditEntry);
+    this.showToast('Mission Control', `Job "${newJob.name}" added to plan`, 'info');
+    await this.reconcile();
+  }
+
+  async reorderJobs(newOrder: string[]): Promise<void> {
+    const plan = await loadPlan();
+    if (!plan) {
+      throw new Error('No active plan');
+    }
+
+    if (newOrder.length !== plan.jobs.length) {
+      throw new Error('New order must contain all jobs');
+    }
+
+    const currentNames = new Set(plan.jobs.map((j) => j.name));
+    const newNames = new Set(newOrder);
+    if (![...currentNames].every((name) => newNames.has(name))) {
+      throw new Error('New order contains unknown job names');
+    }
+
+    const requiresApproval = plan.mode === 'supervisor' || plan.mode === 'copilot';
+
+    if (requiresApproval && !this.pendingReplanActions.has('reorder')) {
+      this.pendingReplanActions.set('reorder', async () => {
+        await this.executeReorderJobs(plan, newOrder);
+        this.pendingReplanActions.delete('reorder');
+      });
+      this.showToast('Mission Control', 'Approval required to reorder jobs', 'warning');
+      return;
+    }
+
+    await this.executeReorderJobs(plan, newOrder);
+  }
+
+  private async executeReorderJobs(plan: PlanSpec, newOrder: string[]): Promise<void> {
+    const jobMap = new Map(plan.jobs.map((j) => [j.name, j]));
+    const reorderedJobs = newOrder.map((name) => jobMap.get(name)!);
+
+    for (let i = 0; i < reorderedJobs.length; i++) {
+      reorderedJobs[i].mergeOrder = i;
+    }
+
+    plan.jobs = reorderedJobs;
+    await savePlan(plan);
+
+    const auditEntry: AuditLogEntry = {
+      timestamp: new Date().toISOString(),
+      action: 'reorder_jobs',
+      details: { newOrder },
+      userApproved: plan.mode !== 'autopilot',
+    };
+
+    await this.appendAuditLog(plan.id, auditEntry);
+    this.showToast('Mission Control', 'Jobs reordered', 'info');
+    await this.reconcile();
+  }
+
+  private async appendAuditLog(planId: string, entry: AuditLogEntry): Promise<void> {
+    const plan = await loadPlan();
+    if (!plan || plan.id !== planId) {
+      return;
+    }
+
+    const auditLog = plan.auditLog ?? [];
+    auditLog.push(entry);
+    await updatePlanFields(planId, { auditLog });
+  }
+
+  relayFinding(fromJob: string, toJob: string, context: RelayContext): void {
+    this.jobComms.relayFinding(fromJob, toJob, context);
+    this.showToast('Mission Control', `Finding relayed from "${fromJob}" to "${toJob}"`, 'info');
+  }
+
+  async approveReplanAction(actionId: string): Promise<void> {
+    const action = this.pendingReplanActions.get(actionId);
+    if (!action) {
+      throw new Error(`No pending replan action with ID "${actionId}"`);
+    }
+    await action();
+  }
+
+  getPendingReplanActions(): Array<{ id: string; description: string }> {
+    return Array.from(this.pendingReplanActions.entries()).map(([id, _]) => ({
+      id,
+      description: this.getReplanDescription(id),
+    }));
+  }
+
+  private getReplanDescription(actionId: string): string {
+    if (actionId.startsWith('skip-')) {
+      return `Skip job "${actionId.slice(5)}"`;
+    }
+    if (actionId.startsWith('add-')) {
+      return `Add job "${actionId.slice(4)}"`;
+    }
+    if (actionId === 'reorder') {
+      return 'Reorder jobs';
+    }
+    return actionId;
   }
 
   async resumePlan(): Promise<void> {

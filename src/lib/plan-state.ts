@@ -120,6 +120,7 @@ export interface PlanFieldUpdates {
   checkpointContext?: CheckpointContext | null;
   completedAt?: string;
   prUrl?: string;
+  auditLog?: PlanSpec['auditLog'];
 }
 
 /**

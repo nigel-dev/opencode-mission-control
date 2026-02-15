@@ -4,6 +4,7 @@ import type { JobSpec } from './plan-types';
 import { gitCommand } from './git';
 import { getIntegrationWorktree } from './integration';
 import { extractConflicts } from './utils';
+import { createJobClient, sendPrompt, waitForServer } from './sdk-client';
 
 export type MergeResult =
   | { success: true; mergedAt: string; testReport: MergeTestReport }
@@ -35,9 +36,11 @@ type MergeTrainConfig = {
   testTimeout?: number;
   mergeStrategy?: 'squash' | 'ff-only' | 'merge';
   setupCommands?: string[];
+  fixBeforeRollbackTimeout?: number;
 };
 
 const DEFAULT_TEST_TIMEOUT_MS = 600000;
+const DEFAULT_FIX_BEFORE_ROLLBACK_TIMEOUT_MS = 120000;
 
 const INSTALL_COMMAND_BY_LOCKFILE = [
   { file: 'bun.lockb', command: 'bun install --frozen-lockfile' },
@@ -564,6 +567,37 @@ export class MergeTrain {
     }
 
     if (!testResult.success) {
+      const fixTimeout = this.config?.fixBeforeRollbackTimeout ?? DEFAULT_FIX_BEFORE_ROLLBACK_TIMEOUT_MS;
+      const isServeMode = job.port !== undefined;
+
+      if (isServeMode && fixTimeout > 0) {
+        const fixPrompt = this.buildFixPrompt(job.name, testCommand, testResult.output);
+        const fixPrompted = await this.promptAgentForFix(job, fixPrompt);
+
+        if (fixPrompted) {
+          await this.sleep(fixTimeout);
+
+          const retestResult = await runTestCommand(this.integrationWorktree, testCommand, timeoutMs);
+
+          if (retestResult.success) {
+            return {
+              success: true,
+              mergedAt: new Date().toISOString(),
+              testReport: {
+                status: 'passed',
+                command: testCommand,
+                output: retestResult.output || undefined,
+                setup: {
+                  status: dependencySetupResult.status,
+                  commands: dependencySetupResult.commands,
+                  output: dependencySetupResult.output || undefined,
+                },
+              },
+            };
+          }
+        }
+      }
+
       await rollbackMergeToHead(this.integrationWorktree, headBeforeStr);
       return {
         success: false,
@@ -608,5 +642,36 @@ export class MergeTrain {
     }
 
     return results;
+  }
+
+  private buildFixPrompt(jobName: string, testCommand: string, testOutput: string): string {
+    return `[AUTO-GENERATED] Test Failure in Merge Train
+
+Job "${jobName}" failed during merge train testing.
+
+Test Command: ${testCommand}
+
+Test Output:
+${testOutput.slice(0, 2000)}
+
+Please fix the failing tests. You have a limited time window to apply fixes before the merge is rolled back. Focus on the most critical failures first.`;
+  }
+
+  private async promptAgentForFix(job: JobSpec, prompt: string): Promise<boolean> {
+    if (!job.port || !job.launchSessionID) {
+      return false;
+    }
+
+    try {
+      const client = await waitForServer(job.port, { timeoutMs: 10000 });
+      await sendPrompt(client, job.launchSessionID, prompt);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 }
