@@ -189,6 +189,7 @@ describe('config', () => {
         useServeMode: true,
         portRangeStart: 14100,
         portRangeEnd: 14199,
+        fixBeforeRollbackTimeout: 120000,
         omo: {
           enabled: true,
           defaultMode: 'ulw',
