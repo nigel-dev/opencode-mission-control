@@ -3,12 +3,14 @@ import type { Job } from '../../src/lib/job-state';
 import * as jobState from '../../src/lib/job-state';
 import * as tmux from '../../src/lib/tmux';
 import * as worktree from '../../src/lib/worktree';
+import * as orchestratorSingleton from '../../src/lib/orchestrator-singleton';
 
 const { mc_status } = await import('../../src/tools/status');
 
 let mockGetJobByName: Mock;
 let mockCapturePane: Mock;
 let mockIsInManagedWorktree: Mock;
+let mockGetSharedMonitor: Mock;
 
 const mockContext = {
   sessionID: 'test-session',
@@ -40,9 +42,12 @@ function createMockJob(overrides?: Partial<Job>): Job {
 describe('mc_status', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockGetJobByName = vi.spyOn(jobState, 'getJobByName').mockImplementation(() => undefined as any);
-    mockCapturePane = vi.spyOn(tmux, 'capturePane').mockImplementation(() => '' as any);
-    mockIsInManagedWorktree = vi.spyOn(worktree, 'isInManagedWorktree').mockImplementation(() => false as any);
+    mockGetJobByName = vi.spyOn(jobState, 'getJobByName').mockImplementation(() => undefined as any) as unknown as Mock;
+    mockCapturePane = vi.spyOn(tmux, 'capturePane').mockImplementation(() => '' as any) as unknown as Mock;
+    mockIsInManagedWorktree = vi.spyOn(worktree, 'isInManagedWorktree').mockImplementation(() => false as any) as unknown as Mock;
+    mockGetSharedMonitor = vi.spyOn(orchestratorSingleton, 'getSharedMonitor').mockReturnValue({
+      getEventAccumulator: vi.fn().mockReturnValue(undefined),
+    } as any) as unknown as Mock;
   });
 
   describe('tool definition', () => {
@@ -285,6 +290,95 @@ describe('mc_status', () => {
 
       expect(result).toContain('Status: failed');
       expect(result).toContain('Exit Code: 1');
+    });
+  });
+
+  describe('serve-mode telemetry', () => {
+    it('should include serve-mode telemetry section for jobs with port', async () => {
+      const serveModeJob = createMockJob({
+        port: 8080,
+        serverUrl: 'http://localhost:8080',
+      });
+
+      mockGetJobByName.mockResolvedValue(serveModeJob);
+      mockCapturePane.mockResolvedValue('');
+      mockIsInManagedWorktree.mockResolvedValue({ isManaged: true });
+      mockGetSharedMonitor.mockReturnValue({
+        getEventAccumulator: vi.fn().mockReturnValue({
+          filesEdited: ['src/index.ts', 'src/utils.ts'],
+          currentTool: 'streaming',
+          currentFile: 'src/index.ts',
+          lastActivityAt: Date.now(),
+          eventCount: 42,
+        }),
+      });
+
+      const result = await mc_status.execute({ name: 'test-job' }, mockContext);
+
+      expect(result).toContain('Serve Mode Telemetry:');
+      expect(result).toContain('Session State: streaming');
+      expect(result).toContain('Current File: src/index.ts');
+      expect(result).toContain('Files Edited: 2');
+      expect(result).toContain('src/index.ts');
+      expect(result).toContain('src/utils.ts');
+      expect(result).toContain('Events Accumulated: 42');
+      expect(result).toContain('Port: 8080');
+      expect(result).toContain('Server URL: http://localhost:8080');
+    });
+
+    it('should handle serve-mode job with no accumulated events', async () => {
+      const serveModeJob = createMockJob({
+        port: 8080,
+      });
+
+      mockGetJobByName.mockResolvedValue(serveModeJob);
+      mockCapturePane.mockResolvedValue('');
+      mockIsInManagedWorktree.mockResolvedValue({ isManaged: true });
+      mockGetSharedMonitor.mockReturnValue({
+        getEventAccumulator: vi.fn().mockReturnValue(undefined),
+      });
+
+      const result = await mc_status.execute({ name: 'test-job' }, mockContext);
+
+      expect(result).toContain('Port: 8080');
+      expect(result).not.toContain('Serve Mode Telemetry:');
+    });
+
+    it('should preserve TUI-mode output format for jobs without port', async () => {
+      const tuiJob = createMockJob();
+
+      mockGetJobByName.mockResolvedValue(tuiJob);
+      mockCapturePane.mockResolvedValue('TUI output');
+      mockIsInManagedWorktree.mockResolvedValue({ isManaged: true });
+
+      const result = await mc_status.execute({ name: 'test-job' }, mockContext);
+
+      expect(result).not.toContain('Serve Mode Telemetry:');
+      expect(result).not.toContain('Port:');
+      expect(result).toContain('Recent Output (last 10 lines):');
+      expect(result).toContain('TUI output');
+    });
+
+    it('should show idle state when no current tool', async () => {
+      const serveModeJob = createMockJob({
+        port: 8080,
+      });
+
+      mockGetJobByName.mockResolvedValue(serveModeJob);
+      mockCapturePane.mockResolvedValue('');
+      mockIsInManagedWorktree.mockResolvedValue({ isManaged: true });
+      mockGetSharedMonitor.mockReturnValue({
+        getEventAccumulator: vi.fn().mockReturnValue({
+          filesEdited: [],
+          lastActivityAt: Date.now(),
+          eventCount: 0,
+        }),
+      });
+
+      const result = await mc_status.execute({ name: 'test-job' }, mockContext);
+
+      expect(result).toContain('Session State: idle');
+      expect(result).toContain('Files Edited: 0');
     });
   });
 });
