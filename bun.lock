@@ -6,6 +6,7 @@
       "name": "opencode-mission-control",
       "dependencies": {
         "@opencode-ai/plugin": "^1.0.85",
+        "@opencode-ai/sdk": "^1.1.53",
         "zod": "^4.3.6",
       },
       "devDependencies": {
