@@ -36,7 +36,7 @@ export type ToastCallback = (
   variant: ToastVariant,
   duration: number,
 ) => void;
-export type NotifyCallback = (message: string) => void;
+export type NotifyCallback = (message: string, targetSessionID?: string) => void;
 
 const TERMINAL_PLAN_STATUSES: PlanStatus[] = ['completed', 'failed', 'canceled'];
 
@@ -165,6 +165,7 @@ export class Orchestrator {
   private reconcilePending = false;
   private activePlanId: string | null = null;
   private planModelSnapshot: string | undefined;
+  private planLaunchSessionID: string | undefined;
   private planPlacement: 'session' | 'window' | null = null;
   private subscriptionsActive = false;
   private checkpoint: CheckpointType | null = null;
@@ -223,9 +224,9 @@ export class Orchestrator {
     this.toastCallback(title, message, variant, durations[variant]);
   }
 
-  private notify(message: string): void {
+  private notify(message: string, targetSessionID?: string): void {
     if (!this.notifyCallback) return;
-    this.notifyCallback(message);
+    this.notifyCallback(message, targetSessionID ?? this.planLaunchSessionID);
   }
 
   private formatTestReportSummary(testReport?: MergeTestReport): string | null {
@@ -356,6 +357,7 @@ export class Orchestrator {
 
     this.activePlanId = plan.id;
     this.planPlacement = spec.placement ?? null;
+    this.planLaunchSessionID = spec.launchSessionID;
     this.mergeTrain = new MergeTrain(plan.integrationWorktree, this.getMergeTrainConfig());
     this.subscribeToMonitorEvents();
     this.startReconciler();
@@ -878,6 +880,7 @@ If your work needs human review before it can proceed: mc_report(status: "needs_
         mode,
         createdAt: new Date().toISOString(),
         planId,
+        launchSessionID: this.planLaunchSessionID,
       });
 
       await updatePlanJob(planId, job.name, {
@@ -1068,6 +1071,7 @@ If your work needs human review before it can proceed: mc_report(status: "needs_
         mode,
         createdAt: new Date().toISOString(),
         planId: plan.id,
+        launchSessionID: this.planLaunchSessionID,
       });
 
       await updatePlanJob(plan.id, job.name, {
@@ -1196,6 +1200,7 @@ If your work needs human review before it can proceed: mc_report(status: "needs_
 
     this.activePlanId = plan.id;
     this.planPlacement = plan.placement ?? null;
+    this.planLaunchSessionID = plan.launchSessionID;
     this.mergeTrain = new MergeTrain(plan.integrationWorktree!, this.getMergeTrainConfig());
 
     const runningJobs = (await getRunningJobs()).filter((job) => job.planId === plan.id);

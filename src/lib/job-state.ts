@@ -10,6 +10,16 @@ import { atomicWrite } from './utils';
 export type Job = z.infer<typeof JobSchema>;
 export type JobState = z.infer<typeof JobStateSchema>;
 
+export function migrateV2ToV3(state: Record<string, unknown>): JobState {
+  const jobs = (state.jobs as Job[]) ?? [];
+  const migrated = {
+    version: 3 as const,
+    jobs: jobs.map((job) => ({ ...job, launchSessionID: job.launchSessionID ?? undefined })),
+    updatedAt: (state.updatedAt as string) ?? new Date().toISOString(),
+  };
+  return JobStateSchema.parse(migrated);
+}
+
 export function migrateJobState(state: Record<string, unknown>): JobState {
   const version = (state.version as number) ?? 1;
 
@@ -20,7 +30,12 @@ export function migrateJobState(state: Record<string, unknown>): JobState {
       jobs: jobs.map((job) => ({ ...job, planId: job.planId ?? undefined })),
       updatedAt: (state.updatedAt as string) ?? new Date().toISOString(),
     };
-    return JobStateSchema.parse(migrated);
+    // Continue to v3 migration
+    return migrateV2ToV3(migrated as unknown as Record<string, unknown>);
+  }
+
+  if (version < 3) {
+    return migrateV2ToV3(state);
   }
 
   return JobStateSchema.parse(state);
@@ -61,7 +76,7 @@ export async function loadJobState(): Promise<JobState> {
 
   if (!exists) {
     return {
-      version: 2,
+      version: 3,
       jobs: [],
       updatedAt: new Date().toISOString(),
     };
@@ -70,7 +85,7 @@ export async function loadJobState(): Promise<JobState> {
   try {
     const content = await file.text();
     const parsed = JSON.parse(content);
-    if (!parsed.version || parsed.version < 2) {
+    if (!parsed.version || parsed.version < 3) {
       return migrateJobState(parsed);
     }
     return JobStateSchema.parse(parsed);
@@ -86,7 +101,7 @@ export async function saveJobState(state: JobState): Promise<void> {
   const filePath = await getStateFilePath();
   const updatedState: JobState = {
     ...state,
-    version: 2,
+    version: 3,
     updatedAt: new Date().toISOString(),
   };
 

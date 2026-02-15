@@ -124,6 +124,7 @@ export const mc_plan: ToolDefinition = tool({
       integrationBranch: `mc/integration-${planId}`,
       baseCommit,
       createdAt: new Date().toISOString(),
+      launchSessionID: context?.sessionID,
     };
 
     // 8. Handle mode

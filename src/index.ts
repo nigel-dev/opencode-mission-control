@@ -175,9 +175,9 @@ export const MissionControl: Plugin = async ({ client }) => {
 
   let notifyPending: Promise<void> = Promise.resolve();
   if (!isJobAgent) {
-    setSharedNotifyCallback((message: string) => {
+    setSharedNotifyCallback((message: string, targetSessionID?: string) => {
       notifyPending = notifyPending.then(async () => {
-        const sessionID = await getActiveSessionID();
+        const sessionID = targetSessionID ?? await getActiveSessionID();
         if (!sessionID || !sessionID.startsWith('ses')) return;
         await client.session.prompt({
           path: { id: sessionID },
