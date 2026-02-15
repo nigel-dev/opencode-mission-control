@@ -10,6 +10,9 @@ export interface PermissionRequest {
   type: 'file_operation' | 'shell_command' | 'network' | 'mcp' | 'other';
   path?: string;
   description: string;
+  action?: string;
+  target?: string;
+  rawType?: string;
 }
 
 /**
@@ -217,6 +220,20 @@ export class QuestionRelay {
     }
 
     return result;
+  }
+
+  async respondToPermission(
+    job: Job,
+    permissionId: string,
+    approved: boolean,
+    message?: string,
+  ): Promise<void> {
+    if (!job.port) {
+      return;
+    }
+
+    const client = this.getClient(job.port);
+    await this.replyToPermission(client, permissionId, approved, message);
   }
 
   /**

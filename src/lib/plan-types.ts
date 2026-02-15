@@ -1,3 +1,5 @@
+import type { PermissionPolicyConfig } from './permission-policy';
+
 export type PlanStatus =
   | 'pending'
   | 'running'
@@ -61,6 +63,7 @@ export interface PlanSpec {
   checkpointContext?: CheckpointContext | null;
   launchSessionID?: string;
   auditLog?: AuditLogEntry[];
+  permissionPolicy?: PermissionPolicyConfig;
 }
 
 export interface JobSpec {
@@ -85,6 +88,7 @@ export interface JobSpec {
   port?: number;
   serverUrl?: string;
   launchSessionID?: string;
+  permissionPolicy?: PermissionPolicyConfig;
 }
 
 export const VALID_PLAN_TRANSITIONS: Record<PlanStatus, PlanStatus[]> = {

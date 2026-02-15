@@ -3,6 +3,7 @@ import { homedir } from 'os';
 import { z } from 'zod';
 import { getDataDir } from './paths';
 import { MCConfigSchema, PartialMCConfigSchema } from './schemas';
+import { PermissionPolicy } from './permission-policy';
 import { atomicWrite } from './utils';
 
 export type WorktreeSetup = {
@@ -26,6 +27,7 @@ const DEFAULT_CONFIG: MCConfig = {
   portRangeStart: 14100,
   portRangeEnd: 14199,
   fixBeforeRollbackTimeout: 120000,
+  defaultPermissionPolicy: PermissionPolicy.getDefaultPolicy(),
   omo: {
     enabled: false,
     defaultMode: 'vanilla',

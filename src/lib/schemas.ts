@@ -65,6 +65,23 @@ export const AuditLogEntrySchema = z.object({
   userApproved: z.boolean().optional(),
 });
 
+export const PermissionPolicyDecisionSchema = z.enum(['auto-approve', 'deny', 'ask-user']);
+
+export const PermissionPolicyScopeSchema = z.object({
+  insideWorktree: PermissionPolicyDecisionSchema,
+  outsideWorktree: PermissionPolicyDecisionSchema,
+});
+
+export const PermissionPolicySchema = z.object({
+  permissions: z.object({
+    fileEdit: PermissionPolicyScopeSchema,
+    shellCommand: PermissionPolicyScopeSchema,
+    networkAccess: PermissionPolicyDecisionSchema,
+    installPackages: PermissionPolicyDecisionSchema,
+    mcpTools: PermissionPolicyDecisionSchema,
+  }),
+});
+
 export const JobSpecSchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -87,6 +104,7 @@ export const JobSpecSchema = z.object({
   serverUrl: z.string().optional(),
   relayPatterns: z.array(z.string()).optional(),
   launchSessionID: z.string().optional(),
+  permissionPolicy: PermissionPolicySchema.optional(),
 });
 
 export const FailureKindSchema = z.enum(['touchset', 'merge_conflict', 'test_failure', 'job_failed']);
@@ -116,6 +134,7 @@ export const PlanSpecSchema = z.object({
   ghAuthenticated: z.boolean().optional(),
   launchSessionID: z.string().optional(),
   auditLog: z.array(AuditLogEntrySchema).optional(),
+  permissionPolicy: PermissionPolicySchema.optional(),
 });
 
 export const WorktreeSetupSchema = z.object({
@@ -146,6 +165,7 @@ export const MCConfigSchema = z.object({
   portRangeEnd: z.number().optional(),
   serverPassword: z.string().optional(),
   fixBeforeRollbackTimeout: z.number().optional(),
+  defaultPermissionPolicy: PermissionPolicySchema.optional(),
   omo: OmoConfigSchema,
 });
 
