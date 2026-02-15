@@ -18,7 +18,7 @@ import { detectOMO } from '../lib/omo';
 import { copyPlansToWorktree } from '../lib/plan-copier';
 import { resolvePostCreateHook } from '../lib/worktree-setup';
 import { writePromptFile, cleanupPromptFile, writeLauncherScript, cleanupLauncherScript, writeServeLauncherScript } from '../lib/prompt-file';
-import { getCurrentModel } from '../lib/model-tracker';
+import { getCurrentModel, getCurrentModelInfo } from '../lib/model-tracker';
 import { allocatePort, releasePort } from '../lib/port-allocator';
 import { waitForServer, createSessionAndPrompt } from '../lib/sdk-client';
 
@@ -301,7 +301,8 @@ export const mc_launch: ToolDefinition = tool({
           planFile: args.planFile,
           autoCommit: config.autoCommit,
         });
-        await createSessionAndPrompt(client, fullPrompt);
+        const modelInfo = getCurrentModelInfo(context?.sessionID);
+        await createSessionAndPrompt(client, fullPrompt, undefined, modelInfo);
       } catch (error) {
         await releasePort(allocatedPort).catch(() => {});
         try {

@@ -644,6 +644,8 @@ describe('mc_launch', () => {
       expect(mockCreateSessionAndPrompt).toHaveBeenCalledWith(
         expect.anything(),
         expect.stringContaining('Do task'),
+        undefined,
+        undefined,
       );
     });
 
