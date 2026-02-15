@@ -216,7 +216,7 @@ describe('plan-types', () => {
   });
 
   describe('migrateJobState', () => {
-    it('should migrate v1 state to v2', () => {
+    it('should migrate v1 state to v3', () => {
       const v1State = {
         version: 1,
         jobs: [
@@ -238,9 +238,10 @@ describe('plan-types', () => {
 
       const migrated = migrateJobState(v1State);
 
-      expect(migrated.version).toBe(2);
+      expect(migrated.version).toBe(3);
       expect(migrated.jobs).toHaveLength(1);
       expect(migrated.jobs[0].planId).toBeUndefined();
+      expect(migrated.jobs[0].launchSessionID).toBeUndefined();
       expect(migrated.jobs[0].id).toBe('job-1');
     });
 
@@ -265,11 +266,11 @@ describe('plan-types', () => {
 
       const migrated = migrateJobState(noVersionState);
 
-      expect(migrated.version).toBe(2);
+      expect(migrated.version).toBe(3);
       expect(migrated.jobs).toHaveLength(1);
     });
 
-    it('should pass through v2 state unchanged', () => {
+    it('should migrate v2 state to v3', () => {
       const v2State = {
         version: 2,
         jobs: [
@@ -292,15 +293,16 @@ describe('plan-types', () => {
 
       const migrated = migrateJobState(v2State);
 
-      expect(migrated.version).toBe(2);
+      expect(migrated.version).toBe(3);
       expect(migrated.jobs[0].planId).toBe('plan-1');
+      expect(migrated.jobs[0].launchSessionID).toBeUndefined();
     });
 
     it('should handle empty jobs array', () => {
       const emptyState = { version: 1, jobs: [], updatedAt: '2024-01-01T00:00:00Z' };
       const migrated = migrateJobState(emptyState);
 
-      expect(migrated.version).toBe(2);
+      expect(migrated.version).toBe(3);
       expect(migrated.jobs).toEqual([]);
     });
 
@@ -308,7 +310,7 @@ describe('plan-types', () => {
       const noTimestamp = { jobs: [] };
       const migrated = migrateJobState(noTimestamp);
 
-      expect(migrated.version).toBe(2);
+      expect(migrated.version).toBe(3);
       expect(migrated.updatedAt).toBeDefined();
     });
   });
