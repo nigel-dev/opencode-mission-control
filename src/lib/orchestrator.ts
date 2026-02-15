@@ -1167,6 +1167,11 @@ If your work needs human review before it can proceed: mc_report(status: "needs_
       return;
     }
 
+    // Unsubscribe from monitor events BEFORE killing jobs to prevent
+    // completion/failure handlers from racing with plan cleanup.
+    this.unsubscribeFromMonitorEvents();
+    this.activePlanId = null;
+
     const runningJobs = (await getRunningJobs()).filter((job) => job.planId === plan.id);
     for (const job of runningJobs) {
       try {
@@ -1187,7 +1192,6 @@ If your work needs human review before it can proceed: mc_report(status: "needs_
 
     await deleteIntegrationBranch(plan.id);
     await clearPlan();
-    this.unsubscribeFromMonitorEvents();
   }
 
   async skipJob(jobName: string, reason?: string): Promise<void> {
