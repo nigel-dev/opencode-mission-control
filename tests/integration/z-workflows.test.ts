@@ -106,6 +106,7 @@ mock.module('../../src/lib/tmux', () => ({
   sessionExists: vi.fn(async () => true),
   windowExists: vi.fn(async () => true),
   getPanePid: vi.fn(async () => 12345),
+  captureExitStatus: vi.fn(async () => undefined),
 }));
 
 mock.module('../../src/lib/config', () => ({
