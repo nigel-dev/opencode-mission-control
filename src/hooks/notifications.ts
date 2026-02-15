@@ -17,7 +17,93 @@ interface SetupNotificationsOptions {
   isSubagent: () => Promise<boolean>;
 }
 
+interface SessionTitleState {
+  originalTitle: string;
+  annotations: Map<string, string>; // jobName → status text ("done", "failed", "needs input")
+}
 
+const titleState = new Map<string, SessionTitleState>();
+
+function extractSessionTitle(response: unknown): string | undefined {
+  if (!response || typeof response !== 'object') return undefined;
+  const obj = response as Record<string, unknown>;
+
+  // SDK may wrap in { data: { ... } } or return flat
+  if (obj.data && typeof obj.data === 'object') {
+    const data = obj.data as Record<string, unknown>;
+    if (typeof data.title === 'string') return data.title;
+  }
+
+  if (typeof obj.title === 'string') return obj.title;
+
+  return undefined;
+}
+
+function buildAnnotatedTitle(state: SessionTitleState): string {
+  if (state.annotations.size === 0) return state.originalTitle;
+  if (state.annotations.size === 1) {
+    const [[jobName, statusText]] = [...state.annotations.entries()];
+    return `${jobName} ${statusText}`;
+  }
+  return `${state.annotations.size} jobs need attention`;
+}
+
+export async function annotateSessionTitle(
+  client: Client,
+  sessionID: string,
+  jobName: string,
+  statusText: string,
+): Promise<void> {
+  if (!sessionID || !sessionID.startsWith('ses')) return;
+
+  try {
+    if (!titleState.has(sessionID)) {
+      const session = await client.session.get({ path: { id: sessionID } });
+      const originalTitle = extractSessionTitle(session) ?? '';
+      titleState.set(sessionID, {
+        originalTitle,
+        annotations: new Map(),
+      });
+    }
+
+    const state = titleState.get(sessionID)!;
+    state.annotations.set(jobName, statusText);
+    const annotatedTitle = buildAnnotatedTitle(state);
+
+    await client.session.update({
+      path: { id: sessionID },
+      body: { title: annotatedTitle },
+    });
+  } catch {
+    // Fire-and-forget: don't block on title update failures
+  }
+}
+
+export async function resetSessionTitle(client: Client, sessionID: string): Promise<void> {
+  const state = titleState.get(sessionID);
+  if (!state) return;
+
+  const originalTitle = state.originalTitle;
+  titleState.delete(sessionID);
+
+  try {
+    await client.session.update({
+      path: { id: sessionID },
+      body: { title: originalTitle },
+    });
+  } catch {
+    // Fire-and-forget: don't block on title reset failures
+  }
+}
+
+export function hasAnnotation(sessionID: string): boolean {
+  return titleState.has(sessionID);
+}
+
+// Exposed for testing only
+export function _getTitleStateForTesting(): Map<string, SessionTitleState> {
+  return titleState;
+}
 
 async function sendMessage(client: Client, sessionID: string, text: string): Promise<void> {
   await client.session.prompt({
@@ -82,6 +168,16 @@ export function setupNotifications(options: SetupNotificationsOptions): void {
 
     await sendMessage(client, sessionID, message);
     sent.add(dedupKey);
+
+    const titleAnnotationMap: Partial<Record<NotificationEvent, string>> = {
+      complete: 'done',
+      failed: 'failed',
+      awaiting_input: 'needs input',
+    };
+    const statusText = titleAnnotationMap[event];
+    if (statusText) {
+      await annotateSessionTitle(client, sessionID, job.name, statusText);
+    }
   };
 
   const enqueue = (event: NotificationEvent, job: Job): void => {
