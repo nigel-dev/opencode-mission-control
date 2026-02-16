@@ -1,6 +1,6 @@
 import { tool, type ToolDefinition } from '@opencode-ai/plugin';
 import { getJobByName } from '../lib/job-state';
-import { isInsideTmux, createWindow, getCurrentSession } from '../lib/tmux';
+import { isInsideTmux, createWindow, getCurrentSession, setWindowOption } from '../lib/tmux';
 
 export const mc_attach: ToolDefinition = tool({
   description: 'Get instructions for attaching to a job\'s terminal',
@@ -36,6 +36,12 @@ export const mc_attach: ToolDefinition = tool({
           workdir: job.worktreePath,
           command: attachCommand,
         });
+
+        try {
+          await setWindowOption(`${currentSession}:${windowName}`, '@mc_job_id', job.id);
+        } catch {
+          // Best-effort: tagging failure should not block attach
+        }
 
         return `Opened TUI for job '${job.name}' in new tmux window`;
       } else {

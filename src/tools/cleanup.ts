@@ -1,7 +1,7 @@
 import { tool, type ToolDefinition } from '@opencode-ai/plugin';
 import { getJobByName, removeJob, getRunningJobs, loadJobState } from '../lib/job-state';
 import { removeWorktree } from '../lib/worktree';
-import { killSession, sessionExists } from '../lib/tmux';
+import { killSession, sessionExists, killTaggedWindows } from '../lib/tmux';
 import { gitCommand } from '../lib/git';
 import { removeReport } from '../lib/reports';
 import { releasePort } from '../lib/port-allocator';
@@ -58,6 +58,8 @@ async function cleanupJobs(
       if (job.placement === 'session' && await sessionExists(job.tmuxTarget)) {
         try { await killSession(job.tmuxTarget); } catch {}
       }
+
+      try { await killTaggedWindows(job.id); } catch {}
 
       if (job.port) {
         try { await releasePort(job.port); } catch {}

@@ -117,6 +117,58 @@ export async function createWindow(opts: {
 }
 
 /**
+ * Set a user option on a tmux window for ownership tracking
+ */
+export async function setWindowOption(target: string, option: string, value: string): Promise<void> {
+  try {
+    const proc = spawn(["tmux", "set-option", "-w", "-t", target, option, value], { stderr: "pipe" });
+    const exitCode = await proc.exited;
+    if (exitCode !== 0) {
+      throw new Error(`tmux set-option failed with exit code ${exitCode}`);
+    }
+  } catch (error) {
+    throw new Error(
+      `Failed to set tmux window option: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+}
+
+/**
+ * Find and kill all tmux windows tagged with a specific job ID
+ */
+export async function killTaggedWindows(jobId: string): Promise<number> {
+  try {
+    const proc = spawn(
+      ["tmux", "list-windows", "-a", "-F", "#{session_name}:#{window_index} #{@mc_job_id}"],
+      { stderr: "pipe" },
+    );
+    const output = await new Response(proc.stdout).text();
+    const exitCode = await proc.exited;
+    if (exitCode !== 0) {
+      return 0;
+    }
+
+    let killed = 0;
+    for (const line of output.trim().split('\n')) {
+      if (!line.trim()) continue;
+      const [target, taggedId] = line.split(' ', 2);
+      if (taggedId === jobId && target) {
+        try {
+          const killProc = spawn(["tmux", "kill-window", "-t", target], { stderr: "pipe" });
+          await killProc.exited;
+          killed++;
+        } catch {
+          // Best-effort: window may already be gone
+        }
+      }
+    }
+    return killed;
+  } catch {
+    return 0;
+  }
+}
+
+/**
  * Check if a tmux session exists
  */
 export async function sessionExists(name: string): Promise<boolean> {
