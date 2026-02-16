@@ -267,7 +267,17 @@ export class JobMonitor extends EventEmitter {
     const eventType = event.type || event.event;
 
     switch (eventType) {
-      case 'session.status':
+      case 'session.status': {
+        const statusPayload = event.properties?.status;
+        if (statusPayload?.type === 'idle') {
+          const now = new Date().toISOString();
+          this.cleanupSSEForJob(job.id);
+          await updateJob(job.id, { status: 'completed', completedAt: now });
+          this.emit('complete', { ...job, status: 'completed', completedAt: now });
+        }
+        break;
+      }
+
       case 'session.idle': {
         const now = new Date().toISOString();
         this.cleanupSSEForJob(job.id);
