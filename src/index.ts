@@ -27,6 +27,7 @@ import { mc_plan_cancel } from './tools/plan-cancel';
 import { mc_plan_approve } from './tools/plan-approve';
 import { mc_report } from './tools/report';
 import { mc_overview } from './tools/overview';
+import { mc_answer } from './tools/answer';
 
 interface SessionWithID {
   id?: string;
@@ -252,7 +253,7 @@ export const MissionControl: Plugin = async ({ client }) => {
     },
     tool: isJobAgent 
       ? { mc_report, mc_status } as any
-      : { mc_launch, mc_jobs, mc_status, mc_diff, mc_pr, mc_merge, mc_sync, mc_cleanup, mc_kill, mc_attach, mc_capture, mc_plan, mc_plan_status, mc_plan_cancel, mc_plan_approve, mc_report, mc_overview },
+      : { mc_launch, mc_jobs, mc_status, mc_diff, mc_pr, mc_merge, mc_sync, mc_cleanup, mc_kill, mc_attach, mc_capture, mc_plan, mc_plan_status, mc_plan_cancel, mc_plan_approve, mc_report, mc_overview, mc_answer },
     event: async ({ event }) => {
       const sessionID = extractSessionIDFromEvent(event);
       if (sessionID) {

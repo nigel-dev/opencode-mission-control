@@ -4,13 +4,21 @@ import { isPaneRunning, capturePane, captureExitStatus } from './tmux.js';
 import { loadConfig } from './config.js';
 import { readReport } from './reports.js';
 import { createJobClient } from './sdk-client.js';
-import { QuestionRelay, type PermissionRequest } from './question-relay.js';
+import {
+  QuestionRelay,
+  type PermissionRequest,
+  type PendingQuestion,
+  addPendingQuestion,
+  removePendingQuestion,
+  buildQuestionRelayMessage,
+  clearPendingQuestionsForJob,
+  buildTaskSummary,
+} from './question-relay.js';
 import { loadPlan } from './plan-state.js';
 import { PermissionPolicy, type PermissionPolicyConfig } from './permission-policy.js';
 import type { OpencodeClient } from '@opencode-ai/sdk';
 
-type JobEventType = 'complete' | 'failed' | 'blocked' | 'needs_review' | 'awaiting_input' | 'agent_report';
-type JobEventHandler = (job: Job) => void;
+type JobEventType = 'complete' | 'failed' | 'blocked' | 'needs_review' | 'awaiting_input' | 'agent_report' | 'question';
 
 interface IdleTracker {
   lastOutputHash: string;
@@ -144,9 +152,10 @@ export class JobMonitor extends EventEmitter {
       this.sseSubscriptions.delete(jobId);
       this.questionRelay.cleanup(jobId);
     }
+    clearPendingQuestionsForJob(jobId);
   }
 
-  on(event: JobEventType, handler: JobEventHandler): this {
+  on(event: JobEventType, handler: (job: Job, ...extra: unknown[]) => void): this {
     return super.on(event, handler);
   }
 
@@ -212,9 +221,34 @@ export class JobMonitor extends EventEmitter {
       reconnectAttempts: 0,
     });
 
+    this.backfillPendingQuestions(job, client).catch(() => {});
+
     this.processSSEStream(job, client, abortController).catch((error) => {
       console.error(`[Monitor] SSE stream error for job ${job.name}:`, error);
     });
+  }
+
+  private async backfillPendingQuestions(job: Job, client: OpencodeClient): Promise<void> {
+    if (!job.remoteSessionID) return;
+
+    try {
+      const result = await client.session.messages({ path: { id: job.remoteSessionID } });
+      const messages = (result.data ?? result) as Array<{ parts?: Array<Record<string, unknown>> }>;
+      if (!Array.isArray(messages)) return;
+
+      for (const msg of messages) {
+        for (const part of msg.parts ?? []) {
+          if (part.type === 'tool' && part.tool === 'question') {
+            const state = part.state as { status?: string } | undefined;
+            if (state?.status === 'running') {
+              this.handleQuestionToolUpdate(job, part);
+            }
+          }
+        }
+      }
+    } catch {
+      // Non-fatal: backfill failure shouldn't block SSE subscription
+    }
   }
 
   private async processSSEStream(
@@ -295,6 +329,10 @@ export class JobMonitor extends EventEmitter {
       }
 
       case 'message.part.updated': {
+        const part = event.properties?.part;
+        if (part?.type === 'tool' && part.tool === 'question') {
+          this.handleQuestionToolUpdate(job, part);
+        }
         this.updateEventAccumulator(job.id, { currentTool: 'streaming' });
         break;
       }
@@ -314,6 +352,47 @@ export class JobMonitor extends EventEmitter {
         void this.handlePermissionUpdate(job, event);
         break;
       }
+    }
+  }
+
+  private handleQuestionToolUpdate(job: Job, part: any): void {
+    const state = part.state;
+    if (!state) return;
+
+    if (state.status === 'running') {
+      const input = state.input ?? {};
+      const questions = (input.questions ?? []) as Array<{
+        question?: string;
+        header?: string;
+        options?: Array<{ label: string; description?: string }>;
+        multiple?: boolean;
+      }>;
+
+      if (questions.length === 0) return;
+      if (!job.remoteSessionID || !job.port) return;
+
+      const first = questions[0];
+      const pending: PendingQuestion = {
+        jobId: job.id,
+        jobName: job.name,
+        taskSummary: buildTaskSummary(job.prompt),
+        partId: part.id,
+        callID: part.callID,
+        remoteSessionID: job.remoteSessionID,
+        port: job.port,
+        question: first.question ?? '',
+        options: first.options ?? [],
+        header: first.header,
+        multiple: first.multiple,
+        detectedAt: Date.now(),
+      };
+
+      const isNew = addPendingQuestion(pending);
+      if (isNew) {
+        this.emit('question', job, pending);
+      }
+    } else if (state.status === 'completed' || state.status === 'error') {
+      removePendingQuestion(job.id, part.id);
     }
   }
 

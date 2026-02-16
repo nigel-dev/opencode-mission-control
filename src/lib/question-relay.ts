@@ -1,6 +1,149 @@
 import type { OpencodeClient } from '@opencode-ai/sdk';
 import type { Job } from './job-state.js';
-import { createJobClient } from './sdk-client.js';
+import { createJobClient, sendPrompt } from './sdk-client.js';
+
+/**
+ * A pending mcp_question from a serve-mode job's agent.
+ * Keyed by `{jobId}:{partId}` for dedup.
+ */
+export interface PendingQuestion {
+  jobId: string;
+  jobName: string;
+  taskSummary: string;
+  partId: string;
+  callID: string;
+  remoteSessionID: string;
+  port: number;
+  question: string;
+  options: Array<{ label: string; description?: string }>;
+  header?: string;
+  multiple?: boolean;
+  detectedAt: number;
+}
+
+/**
+ * In-memory store for pending questions across all jobs.
+ */
+const pendingQuestions = new Map<string, PendingQuestion>();
+
+function pendingKey(jobId: string, partId: string): string {
+  return `${jobId}:${partId}`;
+}
+
+/**
+ * Register a pending question detected from an SSE event.
+ * Returns true if this is a new question (not a duplicate).
+ */
+export function addPendingQuestion(question: PendingQuestion): boolean {
+  const key = pendingKey(question.jobId, question.partId);
+  if (pendingQuestions.has(key)) {
+    return false;
+  }
+  pendingQuestions.set(key, question);
+  return true;
+}
+
+/**
+ * Remove a pending question (tool completed or errored).
+ */
+export function removePendingQuestion(jobId: string, partId: string): boolean {
+  return pendingQuestions.delete(pendingKey(jobId, partId));
+}
+
+/**
+ * Get all pending questions for a specific job.
+ */
+export function getPendingQuestionsForJob(jobId: string): PendingQuestion[] {
+  const result: PendingQuestion[] = [];
+  for (const [key, q] of pendingQuestions) {
+    if (key.startsWith(`${jobId}:`)) {
+      result.push(q);
+    }
+  }
+  return result;
+}
+
+/**
+ * Get a specific pending question by job name (for mc_answer tool).
+ */
+export function findPendingQuestionByJobName(jobName: string): PendingQuestion | undefined {
+  for (const q of pendingQuestions.values()) {
+    if (q.jobName === jobName) {
+      return q;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Clear all pending questions for a job (cleanup).
+ */
+export function clearPendingQuestionsForJob(jobId: string): void {
+  for (const key of pendingQuestions.keys()) {
+    if (key.startsWith(`${jobId}:`)) {
+      pendingQuestions.delete(key);
+    }
+  }
+}
+
+/**
+ * Get count of all pending questions.
+ */
+export function getPendingQuestionCount(): number {
+  return pendingQuestions.size;
+}
+
+/**
+ * Answer a pending question by sending a user message to the job's session.
+ * This unblocks the agent waiting on the mcp_question tool call.
+ */
+export async function answerPendingQuestion(
+  question: PendingQuestion,
+  response: string,
+  password?: string,
+): Promise<void> {
+  const client = createJobClient(question.port, password);
+  await sendPrompt(client, question.remoteSessionID, response);
+  pendingQuestions.delete(pendingKey(question.jobId, question.partId));
+}
+
+/**
+ * Build a notification message for relaying a question to the launching session.
+ */
+export function buildQuestionRelayMessage(question: PendingQuestion): string {
+  const parts: string[] = [
+    `❓ Job "${question.jobName}" is asking a question.`,
+    `Task: ${question.taskSummary}`,
+    '',
+    'IMPORTANT: You MUST use mcp_question to present this question to the user with the EXACT same options below,',
+    `plus one final option labeled "Attach to job" with description "Open the job's terminal to see full context before answering".`,
+    `If the user picks "Attach to job", run mc_attach(name: "${question.jobName}") instead of mc_answer.`,
+    `Otherwise, use mc_answer(name: "${question.jobName}", response: "<user's choice>") to send their answer back.`,
+    '',
+  ];
+
+  if (question.header) {
+    parts.push(`Header: ${question.header}`);
+  }
+
+  parts.push(`Question: ${question.question}`);
+
+  if (question.options.length > 0) {
+    parts.push('');
+    parts.push('Options (pass these exactly to mcp_question):');
+    for (const opt of question.options) {
+      const desc = opt.description ? ` — ${opt.description}` : '';
+      parts.push(`  - ${opt.label}${desc}`);
+    }
+  }
+
+  if (question.multiple) {
+    parts.push('');
+    parts.push('(Allow multiple selections)');
+  }
+
+  return parts.join('\n');
+}
 
 /**
  * Permission request from an SSE event

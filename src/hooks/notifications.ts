@@ -2,12 +2,13 @@ import type { PluginInput } from '@opencode-ai/plugin';
 import type { Job } from '../lib/job-state';
 import { readReport } from '../lib/reports';
 import { formatElapsed } from '../lib/utils';
+import { type PendingQuestion, buildQuestionRelayMessage } from '../lib/question-relay';
 
 type Client = PluginInput['client'];
-type NotificationEvent = 'complete' | 'failed' | 'blocked' | 'needs_review' | 'awaiting_input';
+type NotificationEvent = 'complete' | 'failed' | 'blocked' | 'needs_review' | 'awaiting_input' | 'question';
 
 interface JobMonitorLike {
-  on(event: NotificationEvent, handler: (job: Job) => void): void;
+  on(event: NotificationEvent, handler: (job: Job, ...extra: unknown[]) => void): void;
 }
 
 interface SetupNotificationsOptions {
@@ -105,12 +106,12 @@ export function _getTitleStateForTesting(): Map<string, SessionTitleState> {
   return titleState;
 }
 
-async function sendMessage(client: Client, sessionID: string, text: string): Promise<void> {
+async function sendMessage(client: Client, sessionID: string, text: string, expectReply = false): Promise<void> {
   await client.session.prompt({
     path: { id: sessionID },
     body: {
-      noReply: true,
-      parts: [{ type: 'text' as const, text, ignored: true }],
+      noReply: !expectReply,
+      parts: [{ type: 'text' as const, text, ...(!expectReply && { ignored: true }) }],
     },
   });
 }
@@ -130,9 +131,12 @@ export function setupNotifications(options: SetupNotificationsOptions): void {
   const sent = new Set<string>();
   let pending: Promise<void> = Promise.resolve();
 
-  const notify = async (event: NotificationEvent, job: Job): Promise<void> => {
+  const notify = async (event: NotificationEvent, job: Job, extra?: unknown): Promise<void> => {
     const report = event === 'blocked' || event === 'needs_review' ? await readReport(job.id) : null;
-    const dedupKey = getDedupKey(event, job, report?.timestamp);
+    const questionData = event === 'question' ? extra as PendingQuestion | undefined : undefined;
+    const dedupKey = event === 'question' && questionData
+      ? `question:${job.id}:${questionData.partId}`
+      : getDedupKey(event, job, report?.timestamp);
     if (sent.has(dedupKey)) {
       return;
     }
@@ -152,7 +156,9 @@ export function setupNotifications(options: SetupNotificationsOptions): void {
     const duration = formatElapsed(job.createdAt);
     let message = '';
 
-    if (event === 'complete') {
+    if (event === 'question' && questionData) {
+      message = buildQuestionRelayMessage(questionData);
+    } else if (event === 'complete') {
       message = `🟢 Job '${job.name}' completed in ${duration}. Branch: ${job.branch}. Next: run mc_diff(name: '${job.name}') to review changes, then mc_pr or mc_merge.`;
     } else if (event === 'failed') {
       message = `🔴 Job '${job.name}' failed after ${duration}. Branch: ${job.branch}. Next: run mc_capture(name: '${job.name}') for logs, then mc_attach(name: '${job.name}') to investigate.`;
@@ -166,22 +172,56 @@ export function setupNotifications(options: SetupNotificationsOptions): void {
       message = `👀 Job '${job.name}' needs review (${duration} elapsed). Branch: ${job.branch}.${detail} Next: run mc_diff(name: '${job.name}') and mc_capture(name: '${job.name}') before approving next steps.`;
     }
 
-    await sendMessage(client, sessionID, message);
-    sent.add(dedupKey);
+    let sessionLabel = sessionID;
+    try {
+      const sessionInfo = await client.session.get({ path: { id: sessionID } });
+      const data = (sessionInfo as any)?.data ?? sessionInfo;
+      sessionLabel = data?.title ?? data?.slug ?? sessionID;
+    } catch {
+      // Fall back to raw session ID
+    }
 
     const titleAnnotationMap: Partial<Record<NotificationEvent, string>> = {
       complete: 'done',
       failed: 'failed',
       awaiting_input: 'needs input',
+      question: 'has question',
     };
     const statusText = titleAnnotationMap[event];
     if (statusText) {
       await annotateSessionTitle(client, sessionID, job.name, statusText);
     }
+
+    const toastMap: Partial<Record<NotificationEvent, { variant: 'info' | 'success' | 'warning' | 'error'; title: string }>> = {
+      complete: { variant: 'success', title: `Job "${job.name}" completed` },
+      failed: { variant: 'error', title: `Job "${job.name}" failed` },
+      blocked: { variant: 'warning', title: `Job "${job.name}" is blocked` },
+      awaiting_input: { variant: 'warning', title: `Job "${job.name}" needs input` },
+      needs_review: { variant: 'info', title: `Job "${job.name}" needs review` },
+      question: { variant: 'warning', title: `Job "${job.name}" has a question` },
+    };
+    const toast = toastMap[event];
+    if (toast) {
+      try {
+        await client.tui.showToast({
+          body: {
+            title: toast.title,
+            message: `Switch to session "${sessionLabel}" to respond`,
+            variant: toast.variant,
+            duration: event === 'question' ? 10000 : 5000,
+          },
+        });
+      } catch {
+        // Toast may not be available in all environments
+      }
+    }
+
+    await sendMessage(client, sessionID, message, event === 'question');
+    sent.add(dedupKey);
   };
 
-  const enqueue = (event: NotificationEvent, job: Job): void => {
-    pending = pending.then(() => notify(event, job)).catch(() => {});
+  const enqueue = (event: NotificationEvent, job: Job, extra?: unknown): void => {
+    pending = pending.then(() => notify(event, job, extra)).catch(() => {});
   };
 
   monitor.on('complete', (job) => enqueue('complete', job));
@@ -189,4 +229,5 @@ export function setupNotifications(options: SetupNotificationsOptions): void {
   monitor.on('blocked', (job) => enqueue('blocked', job));
   monitor.on('needs_review', (job) => enqueue('needs_review', job));
   monitor.on('awaiting_input', (job) => enqueue('awaiting_input', job));
+  monitor.on('question', (job, questionData) => enqueue('question', job, questionData));
 }
