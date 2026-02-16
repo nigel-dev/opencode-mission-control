@@ -209,6 +209,7 @@ export const mc_launch: ToolDefinition = tool({
     const useServeMode = config.useServeMode === true;
     let allocatedPort: number | undefined;
     let serverUrl: string | undefined;
+    let remoteSessionId: string | undefined;
 
     if (useServeMode) {
       // === SERVE MODE ===
@@ -302,7 +303,7 @@ export const mc_launch: ToolDefinition = tool({
           autoCommit: config.autoCommit,
         });
         const modelInfo = getCurrentModelInfo(context?.sessionID);
-        await createSessionAndPrompt(client, fullPrompt, undefined, modelInfo);
+        remoteSessionId = await createSessionAndPrompt(client, fullPrompt, undefined, modelInfo);
       } catch (error) {
         await releasePort(allocatedPort).catch(() => {});
         try {
@@ -434,6 +435,7 @@ export const mc_launch: ToolDefinition = tool({
       launchSessionID: context?.sessionID,
       port: allocatedPort,
       serverUrl,
+      remoteSessionID: remoteSessionId,
     };
 
     await addJob(job);

@@ -19,6 +19,7 @@ export const JobSchema = z.object({
   launchSessionID: z.string().optional(),
   port: z.number().optional(),
   serverUrl: z.string().optional(),
+  remoteSessionID: z.string().optional(),
 });
 
 export const JobStateSchema = z.object({

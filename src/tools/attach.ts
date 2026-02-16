@@ -22,7 +22,8 @@ export const mc_attach: ToolDefinition = tool({
       if (isInsideTmux()) {
         // Create new tmux window with opencode attach command
         const windowName = `mc-${job.name}`;
-        const attachCommand = `opencode attach ${job.serverUrl} --dir ${job.worktreePath}`;
+        const sessionFlag = job.remoteSessionID ? ` --session ${job.remoteSessionID}` : '';
+        const attachCommand = `opencode attach ${job.serverUrl} --dir ${job.worktreePath}${sessionFlag}`;
         const currentSession = getCurrentSession();
 
         if (!currentSession) {
