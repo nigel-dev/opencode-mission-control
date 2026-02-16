@@ -107,6 +107,8 @@ mock.module('../../src/lib/tmux', () => ({
   windowExists: vi.fn(async () => true),
   getPanePid: vi.fn(async () => 12345),
   captureExitStatus: vi.fn(async () => undefined),
+  setWindowOption: vi.fn(async () => {}),
+  killTaggedWindows: vi.fn(async () => 0),
 }));
 
 mock.module('../../src/lib/config', () => ({
