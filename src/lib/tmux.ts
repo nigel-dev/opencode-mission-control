@@ -154,6 +154,8 @@ export async function killTaggedWindows(jobId: string): Promise<number> {
       const [target, taggedId] = line.split(' ', 2);
       if (taggedId === jobId && target) {
         try {
+          const pids = await getPaneProcesses(target);
+          await killPaneProcesses(pids);
           const killProc = spawn(["tmux", "kill-window", "-t", target], { stderr: "pipe" });
           await killProc.exited;
           killed++;
@@ -199,14 +201,66 @@ export async function windowExists(
 }
 
 /**
- * Kill a tmux session
+ * Get PIDs of all panes within a tmux target (session or window).
+ * Returns an array of PIDs. Best-effort — returns empty on failure.
+ */
+async function getPaneProcesses(target: string): Promise<number[]> {
+  try {
+    const proc = spawn(
+      ["tmux", "list-panes", "-t", target, "-F", "#{pane_pid}"],
+      { stderr: "pipe" },
+    );
+    const output = await new Response(proc.stdout).text();
+    const exitCode = await proc.exited;
+    if (exitCode !== 0) return [];
+
+    return output
+      .trim()
+      .split('\n')
+      .map((line) => parseInt(line.trim(), 10))
+      .filter((pid) => !isNaN(pid) && pid > 0);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Kill processes running inside tmux panes before destroying them.
+ * Sends SIGTERM first, waits briefly, then SIGKILL for survivors.
+ * This prevents orphaned processes (e.g., opencode ignoring SIGHUP from tmux).
+ */
+async function killPaneProcesses(pids: number[]): Promise<void> {
+  if (pids.length === 0) return;
+
+  for (const pid of pids) {
+    try { process.kill(pid, 'SIGTERM'); } catch {}
+  }
+
+  await new Promise((resolve) => setTimeout(resolve, 500));
+
+  for (const pid of pids) {
+    try { process.kill(pid, 'SIGKILL'); } catch {}
+  }
+}
+
+/**
+ * Kill a tmux session.
+ * Kills pane processes first to prevent orphans — opencode ignores SIGHUP
+ * from tmux, so kill-session alone leaves zombie processes consuming CPU.
  */
 export async function killSession(name: string): Promise<void> {
+  const pids = await getPaneProcesses(name);
+  const killedProcesses = pids.length > 0;
+  await killPaneProcesses(pids);
+
   try {
     const proc = spawn(["tmux", "kill-session", "-t", name], { stderr: "pipe" });
     const exitCode = await proc.exited;
     if (exitCode !== 0) {
-      throw new Error(`tmux kill-session failed with exit code ${exitCode}`);
+      // Tolerate failure only if we killed pane processes (session may have auto-closed)
+      if (!killedProcesses) {
+        throw new Error(`tmux kill-session failed with exit code ${exitCode}`);
+      }
     }
   } catch (error) {
     throw new Error(
@@ -216,18 +270,25 @@ export async function killSession(name: string): Promise<void> {
 }
 
 /**
- * Kill a window in a tmux session
+ * Kill a window in a tmux session.
+ * First kills pane processes to prevent orphans (see killSession).
  */
 export async function killWindow(
   session: string,
   window: string
 ): Promise<void> {
+  const target = `${session}:${window}`;
+  const pids = await getPaneProcesses(target);
+  const killedProcesses = pids.length > 0;
+  await killPaneProcesses(pids);
+
   try {
-    const target = `${session}:${window}`;
     const proc = spawn(["tmux", "kill-window", "-t", target], { stderr: "pipe" });
     const exitCode = await proc.exited;
     if (exitCode !== 0) {
-      throw new Error(`tmux kill-window failed with exit code ${exitCode}`);
+      if (!killedProcesses) {
+        throw new Error(`tmux kill-window failed with exit code ${exitCode}`);
+      }
     }
   } catch (error) {
     throw new Error(
