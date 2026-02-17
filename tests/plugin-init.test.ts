@@ -122,7 +122,7 @@ describe('plugin initialization', () => {
   });
 
   describe('command center context', () => {
-    it('tool object has all 18 tools', async () => {
+    it('tool object has all 19 tools', async () => {
       mockState.isManaged = false;
       vi.spyOn(worktree, 'isInManagedWorktree').mockResolvedValue({ isManaged: false });
       

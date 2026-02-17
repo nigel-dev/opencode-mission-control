@@ -4,7 +4,9 @@ import {
   annotateSessionTitle,
   resetSessionTitle,
   hasAnnotation,
+  ensureMCPrefix,
   _getTitleStateForTesting,
+  _getMCPrefixedSessionsForTesting,
 } from '../../src/hooks/notifications';
 import type { Job } from '../../src/lib/job-state';
 
@@ -29,6 +31,7 @@ describe('notifications hook', () => {
 
   beforeEach(() => {
     _getTitleStateForTesting().clear();
+    _getMCPrefixedSessionsForTesting().clear();
 
     mockMonitor = {
       handlers: new Map(),
@@ -403,7 +406,7 @@ describe('notifications hook', () => {
 
       expect(mockClient.session.update).toHaveBeenCalledWith({
         path: { id: 'ses_launcher' },
-        body: { title: 'feature-auth done' },
+        body: { title: '✅ Original Title' },
       });
     });
 
@@ -435,7 +438,7 @@ describe('notifications hook', () => {
 
       expect(mockClient.session.update).toHaveBeenCalledWith({
         path: { id: 'ses_launcher' },
-        body: { title: 'fix-bug failed' },
+        body: { title: '❌ Original Title' },
       });
     });
 
@@ -466,7 +469,7 @@ describe('notifications hook', () => {
 
       expect(mockClient.session.update).toHaveBeenCalledWith({
         path: { id: 'ses_launcher' },
-        body: { title: 'setup-db needs input' },
+        body: { title: '❓ Original Title' },
       });
     });
 
@@ -518,11 +521,11 @@ describe('notifications hook', () => {
       const lastCall = calls[calls.length - 1][0];
       expect(lastCall).toEqual({
         path: { id: 'ses_launcher' },
-        body: { title: '2 jobs need attention' },
+        body: { title: '🔔 Original Title' },
       });
     });
 
-    it('should not annotate title for blocked events', async () => {
+    it('should annotate title for blocked events', async () => {
       setupNotifications({
         client: mockClient as any,
         monitor: mockMonitor as any,
@@ -547,7 +550,10 @@ describe('notifications hook', () => {
       mockMonitor.handlers.get('blocked')![0](job);
       await new Promise((resolve) => setTimeout(resolve, 50));
 
-      expect(mockClient.session.update).not.toHaveBeenCalled();
+      expect(mockClient.session.update).toHaveBeenCalledWith({
+        path: { id: 'ses_launcher' },
+        body: { title: '🚧 Original Title' },
+      });
     });
 
     it('should not annotate title when sessionID is undefined', async () => {
@@ -624,6 +630,107 @@ describe('notifications hook', () => {
       await annotateSessionTitle(mockClient as any, 'ses_err', 'my-job', 'done');
       await expect(resetSessionTitle(mockClient as any, 'ses_err')).resolves.toBeUndefined();
       expect(hasAnnotation('ses_err')).toBe(false);
+    });
+  });
+
+  describe('[MC] prefix', () => {
+    it('should prefix session title with [MC] on first call', async () => {
+      await ensureMCPrefix(mockClient as any, 'ses_mc1');
+
+      expect(mockClient.session.get).toHaveBeenCalledWith({ path: { id: 'ses_mc1' } });
+      expect(mockClient.session.update).toHaveBeenCalledWith({
+        path: { id: 'ses_mc1' },
+        body: { title: '[MC] Original Title' },
+      });
+    });
+
+    it('should be idempotent — second call is a no-op', async () => {
+      await ensureMCPrefix(mockClient as any, 'ses_mc2');
+      await ensureMCPrefix(mockClient as any, 'ses_mc2');
+
+      expect(mockClient.session.update).toHaveBeenCalledTimes(1);
+    });
+
+    it('should not prefix when sessionID is undefined', async () => {
+      await ensureMCPrefix(mockClient as any, undefined);
+
+      expect(mockClient.session.get).not.toHaveBeenCalled();
+      expect(mockClient.session.update).not.toHaveBeenCalled();
+    });
+
+    it('should not prefix when sessionID is invalid', async () => {
+      await ensureMCPrefix(mockClient as any, 'not-a-session');
+
+      expect(mockClient.session.get).not.toHaveBeenCalled();
+      expect(mockClient.session.update).not.toHaveBeenCalled();
+    });
+
+    it('should not double-prefix when title already starts with [MC]', async () => {
+      mockClient.session.get.mockResolvedValueOnce({ data: { title: '[MC] Already Prefixed' } });
+      await ensureMCPrefix(mockClient as any, 'ses_mc3');
+
+      expect(mockClient.session.update).not.toHaveBeenCalled();
+    });
+
+    it('should include [MC] in annotated titles when session is prefixed', async () => {
+      await ensureMCPrefix(mockClient as any, 'ses_mc4');
+      mockClient.session.update.mockClear();
+
+      await annotateSessionTitle(mockClient as any, 'ses_mc4', 'my-job', 'complete');
+
+      expect(mockClient.session.update).toHaveBeenCalledWith({
+        path: { id: 'ses_mc4' },
+        body: { title: '[MC] \u2705 Original Title' },
+      });
+    });
+
+    it('should include [MC] in multi-annotation titles', async () => {
+      await ensureMCPrefix(mockClient as any, 'ses_mc5');
+      mockClient.session.update.mockClear();
+
+      await annotateSessionTitle(mockClient as any, 'ses_mc5', 'job-a', 'complete');
+      await annotateSessionTitle(mockClient as any, 'ses_mc5', 'job-b', 'failed');
+
+      const calls = mockClient.session.update.mock.calls;
+      const lastCall = calls[calls.length - 1][0];
+      expect(lastCall).toEqual({
+        path: { id: 'ses_mc5' },
+        body: { title: '[MC] \uD83D\uDD14 Original Title' },
+      });
+    });
+
+    it('should preserve [MC] prefix on title reset', async () => {
+      await ensureMCPrefix(mockClient as any, 'ses_mc6');
+      await annotateSessionTitle(mockClient as any, 'ses_mc6', 'my-job', 'complete');
+      mockClient.session.update.mockClear();
+
+      await resetSessionTitle(mockClient as any, 'ses_mc6');
+
+      expect(mockClient.session.update).toHaveBeenCalledWith({
+        path: { id: 'ses_mc6' },
+        body: { title: '[MC] Original Title' },
+      });
+    });
+
+    it('should re-render with [MC] when annotations already exist', async () => {
+      await annotateSessionTitle(mockClient as any, 'ses_mc7', 'my-job', 'failed');
+      mockClient.session.update.mockClear();
+
+      await ensureMCPrefix(mockClient as any, 'ses_mc7');
+
+      expect(mockClient.session.update).toHaveBeenCalledWith({
+        path: { id: 'ses_mc7' },
+        body: { title: '[MC] \u274C Original Title' },
+      });
+    });
+
+    it('should strip [MC] from fetched title when storing originalTitle', async () => {
+      mockClient.session.get.mockResolvedValue({ data: { title: '[MC] My Session' } });
+
+      await annotateSessionTitle(mockClient as any, 'ses_mc8', 'my-job', 'complete');
+
+      const state = _getTitleStateForTesting().get('ses_mc8');
+      expect(state?.originalTitle).toBe('My Session');
     });
   });
 });

@@ -7,6 +7,20 @@ import { type PendingQuestion, buildQuestionRelayMessage } from '../lib/question
 type Client = PluginInput['client'];
 type NotificationEvent = 'complete' | 'failed' | 'blocked' | 'needs_review' | 'awaiting_input' | 'question';
 
+// Tracks when we last annotated a title per session. Resets are suppressed
+// for a cooldown period because sendMessage triggers chat.message hooks
+// asynchronously, which would immediately undo the annotation we just set.
+const TITLE_RESET_COOLDOWN_MS = 5_000;
+const lastAnnotationTime = new Map<string, number>();
+
+const mcPrefixedSessions = new Set<string>();
+
+export function isTitleResetSuppressed(sessionID: string): boolean {
+  const t = lastAnnotationTime.get(sessionID);
+  if (!t) return false;
+  return Date.now() - t < TITLE_RESET_COOLDOWN_MS;
+}
+
 interface JobMonitorLike {
   on(event: NotificationEvent, handler: (job: Job, ...extra: unknown[]) => void): void;
 }
@@ -40,13 +54,24 @@ function extractSessionTitle(response: unknown): string | undefined {
   return undefined;
 }
 
-function buildAnnotatedTitle(state: SessionTitleState): string {
-  if (state.annotations.size === 0) return state.originalTitle;
+const STATUS_ICONS: Record<string, string> = {
+  complete: '✅',
+  failed: '❌',
+  blocked: '🚧',
+  needs_review: '👀',
+  awaiting_input: '❓',
+  question: '❓',
+};
+
+function buildAnnotatedTitle(state: SessionTitleState, sessionID: string): string {
+  const mcPrefix = mcPrefixedSessions.has(sessionID) ? '[MC] ' : '';
+  if (state.annotations.size === 0) return `${mcPrefix}${state.originalTitle}`;
   if (state.annotations.size === 1) {
-    const [[jobName, statusText]] = [...state.annotations.entries()];
-    return `${jobName} ${statusText}`;
+    const [[, status]] = [...state.annotations.entries()];
+    const icon = STATUS_ICONS[status] ?? '🔔';
+    return `${mcPrefix}${icon} ${state.originalTitle}`;
   }
-  return `${state.annotations.size} jobs need attention`;
+  return `${mcPrefix}🔔 ${state.originalTitle}`;
 }
 
 export async function annotateSessionTitle(
@@ -60,7 +85,10 @@ export async function annotateSessionTitle(
   try {
     if (!titleState.has(sessionID)) {
       const session = await client.session.get({ path: { id: sessionID } });
-      const originalTitle = extractSessionTitle(session) ?? '';
+      let originalTitle = extractSessionTitle(session) ?? '';
+      if (originalTitle.startsWith('[MC] ')) {
+        originalTitle = originalTitle.slice(5);
+      }
       titleState.set(sessionID, {
         originalTitle,
         annotations: new Map(),
@@ -69,12 +97,13 @@ export async function annotateSessionTitle(
 
     const state = titleState.get(sessionID)!;
     state.annotations.set(jobName, statusText);
-    const annotatedTitle = buildAnnotatedTitle(state);
+    const annotatedTitle = buildAnnotatedTitle(state, sessionID);
 
     await client.session.update({
       path: { id: sessionID },
       body: { title: annotatedTitle },
     });
+    lastAnnotationTime.set(sessionID, Date.now());
   } catch {
     // Fire-and-forget: don't block on title update failures
   }
@@ -84,13 +113,14 @@ export async function resetSessionTitle(client: Client, sessionID: string): Prom
   const state = titleState.get(sessionID);
   if (!state) return;
 
-  const originalTitle = state.originalTitle;
+  const mcPrefix = mcPrefixedSessions.has(sessionID) ? '[MC] ' : '';
+  const resetTitle = `${mcPrefix}${state.originalTitle}`;
   titleState.delete(sessionID);
 
   try {
     await client.session.update({
       path: { id: sessionID },
-      body: { title: originalTitle },
+      body: { title: resetTitle },
     });
   } catch {
     // Fire-and-forget: don't block on title reset failures
@@ -101,9 +131,41 @@ export function hasAnnotation(sessionID: string): boolean {
   return titleState.has(sessionID);
 }
 
+export async function ensureMCPrefix(client: Client, sessionID: string | undefined): Promise<void> {
+  if (!sessionID || !sessionID.startsWith('ses')) return;
+  if (mcPrefixedSessions.has(sessionID)) return;
+
+  mcPrefixedSessions.add(sessionID);
+
+  try {
+    if (titleState.has(sessionID)) {
+      const state = titleState.get(sessionID)!;
+      const annotatedTitle = buildAnnotatedTitle(state, sessionID);
+      await client.session.update({
+        path: { id: sessionID },
+        body: { title: annotatedTitle },
+      });
+    } else {
+      const session = await client.session.get({ path: { id: sessionID } });
+      const currentTitle = extractSessionTitle(session) ?? '';
+      if (currentTitle.startsWith('[MC]')) return;
+
+      await client.session.update({
+        path: { id: sessionID },
+        body: { title: `[MC] ${currentTitle}` },
+      });
+    }
+  } catch {
+  }
+}
+
 // Exposed for testing only
 export function _getTitleStateForTesting(): Map<string, SessionTitleState> {
   return titleState;
+}
+
+export function _getMCPrefixedSessionsForTesting(): Set<string> {
+  return mcPrefixedSessions;
 }
 
 async function sendMessage(client: Client, sessionID: string, text: string, expectReply = false): Promise<void> {
@@ -181,15 +243,11 @@ export function setupNotifications(options: SetupNotificationsOptions): void {
       // Fall back to raw session ID
     }
 
-    const titleAnnotationMap: Partial<Record<NotificationEvent, string>> = {
-      complete: 'done',
-      failed: 'failed',
-      awaiting_input: 'needs input',
-      question: 'has question',
-    };
-    const statusText = titleAnnotationMap[event];
-    if (statusText) {
-      await annotateSessionTitle(client, sessionID, job.name, statusText);
+    const annotatedEvents: NotificationEvent[] = [
+      'complete', 'failed', 'blocked', 'needs_review', 'awaiting_input', 'question',
+    ];
+    if (annotatedEvents.includes(event)) {
+      await annotateSessionTitle(client, sessionID, job.name, event);
     }
 
     const toastMap: Partial<Record<NotificationEvent, { variant: 'info' | 'success' | 'warning' | 'error'; title: string }>> = {

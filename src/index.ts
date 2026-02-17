@@ -2,7 +2,7 @@ import type { Plugin } from '@opencode-ai/plugin';
 import { getSharedMonitor, setSharedNotifyCallback, getSharedNotifyCallback, setSharedOrchestrator } from './lib/orchestrator-singleton';
 import { getCompactionContext, getJobCompactionContext } from './hooks/compaction';
 import { shouldShowAutoStatus, getAutoStatusMessage } from './hooks/auto-status';
-import { setupNotifications, hasAnnotation, resetSessionTitle } from './hooks/notifications';
+import { setupNotifications, hasAnnotation, resetSessionTitle, isTitleResetSuppressed, ensureMCPrefix } from './hooks/notifications';
 import { registerCommands, createCommandHandler } from './commands';
 import { isTmuxAvailable } from './lib/tmux';
 import { loadPlan } from './lib/plan-state';
@@ -222,23 +222,30 @@ export const MissionControl: Plugin = async ({ client }) => {
     'command.execute.before': (input: { command: string; sessionID: string; arguments: string }, output: { parts: unknown[] }) => {
       if (isValidSessionID(input.sessionID)) {
         activeSessionID = input.sessionID;
-        if (hasAnnotation(input.sessionID)) {
+        if (hasAnnotation(input.sessionID) && !isTitleResetSuppressed(input.sessionID)) {
           resetSessionTitle(client, input.sessionID).catch(() => {});
         }
       }
       return createCommandHandler(client)(input, output);
     },
-    'tool.execute.before': async (input: { sessionID?: string; [key: string]: unknown }) => {
+    'tool.execute.before': async (input: { tool: string; sessionID: string; callID: string }) => {
       if (input.sessionID && isValidSessionID(input.sessionID)) {
         activeSessionID = input.sessionID;
-        if (hasAnnotation(input.sessionID)) {
+        if (hasAnnotation(input.sessionID) && !isTitleResetSuppressed(input.sessionID)) {
           resetSessionTitle(client, input.sessionID).catch(() => {});
         }
+      }
+      if (input.tool?.startsWith('mc_')) {
+        const sessionID = input.sessionID ?? await getActiveSessionID();
+        ensureMCPrefix(client, sessionID).catch(() => {});
       }
     },
     'chat.message': async (input) => {
       if (input.sessionID && isValidSessionID(input.sessionID)) {
         activeSessionID = input.sessionID;
+        if (hasAnnotation(input.sessionID) && !isTitleResetSuppressed(input.sessionID)) {
+          resetSessionTitle(client, input.sessionID).catch(() => {});
+        }
       }
       if (input.model) {
         setCurrentModel(input.model, input.sessionID);
