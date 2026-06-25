@@ -30,7 +30,7 @@
   "devDependencies": {
     "@types/bun": "latest",
     "semantic-release": "^25.0.3",
-    "typescript": "^5.0.0"
+    "typescript": "^6.0.0"
   },
   "author": "Nigel Bazzeghin <nbazzeghin@gmail.com>",
   "license": "MIT",
