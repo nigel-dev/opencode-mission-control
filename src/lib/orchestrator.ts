@@ -910,7 +910,9 @@ If your work needs human review before it can proceed: mc_report(status: "needs_
             await killWindow(session, window);
           }
         }
-      } catch {}
+      } catch (err) {
+      console.warn("[orchestrator] cleanup step failed:", err);
+    }
 
       if (worktreePath) {
         await removeWorktree(worktreePath, true).catch(() => {});
@@ -1100,7 +1102,9 @@ If your work needs human review before it can proceed: mc_report(status: "needs_
             await killWindow(session, window);
           }
         }
-      } catch {}
+      } catch (err) {
+      console.warn("[orchestrator] cleanup step failed:", err);
+    }
 
       throw new Error(
         `Failed to relaunch job "${jobName}" for correction: ${error instanceof Error ? error.message : String(error)}`,
@@ -1187,7 +1191,9 @@ If your work needs human review before it can proceed: mc_report(status: "needs_
           status: 'stopped',
           completedAt: new Date().toISOString(),
         });
-      } catch {}
+      } catch (err) {
+      console.warn("[orchestrator] cleanup step failed:", err);
+    }
     }
 
     await deleteIntegrationBranch(plan.id);
@@ -1280,8 +1286,9 @@ If your work needs human review before it can proceed: mc_report(status: "needs_
           });
           newJob.port = sourceJob.port;
           newJob.launchSessionID = sourceJob.launchSessionID;
-        } catch {
-        }
+        } catch (err) {
+      console.warn("[orchestrator] operation failed:", err);
+    }
       }
     }
 
