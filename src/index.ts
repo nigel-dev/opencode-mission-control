@@ -236,10 +236,19 @@ export default Plugin.define({
       await registerCommands(ctx);
     }
 
+    // Bind the plugin's location into mc_report. V2 tool execution does not
+    // expose the session directory, and `opencode run` executes plugins in the
+    // shared background service whose process.cwd() is not the job worktree.
+    const reportTool = {
+      ...mc_report,
+      execute: (input: Parameters<typeof mc_report.execute>[0]) =>
+        mc_report.execute(input, cwd),
+    };
+
     // Register tools
     await ctx.tool.transform((editor) => {
       if (isJobAgent) {
-        editor.add(mc_report);
+        editor.add(reportTool);
         editor.add(mc_status);
       } else {
         editor.add(mc_launch);
@@ -257,7 +266,7 @@ export default Plugin.define({
         editor.add(mc_plan_status);
         editor.add(mc_plan_cancel);
         editor.add(mc_plan_approve);
-        editor.add(mc_report);
+        editor.add(reportTool);
         editor.add(mc_overview);
         editor.add(mc_answer);
       }

@@ -821,7 +821,9 @@ If your work needs human review before it can proceed: mc_report(status: "needs_
       }
       promptFilePath = await writePromptFile(worktreePath, jobPrompt);
       const model = this.planModelSnapshot ?? getCurrentModel();
-      const launcherPath = await writeLauncherScript(worktreePath, promptFilePath, model);
+      const launcherPath = await writeLauncherScript(worktreePath, promptFilePath, model, {
+        run: mode === 'vanilla',
+      });
 
       const initialCommand = `bash '${launcherPath}'`;
       if (placement === 'session') {
@@ -1011,7 +1013,9 @@ If your work needs human review before it can proceed: mc_report(status: "needs_
     try {
       promptFilePath = await writePromptFile(worktreePath, fullPrompt);
       const model = this.planModelSnapshot ?? getCurrentModel();
-      const launcherPath = await writeLauncherScript(worktreePath, promptFilePath, model);
+      const launcherPath = await writeLauncherScript(worktreePath, promptFilePath, model, {
+        run: mode === 'vanilla',
+      });
 
       const initialCommand = `bash '${launcherPath}'`;
       if (placement === 'session') {

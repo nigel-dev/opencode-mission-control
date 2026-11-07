@@ -34,11 +34,18 @@ export async function writeLauncherScript(
   worktreePath: string,
   promptFilePath: string,
   model?: string,
+  options: { run?: boolean } = {},
 ): Promise<string> {
   const launcherPath = join(worktreePath, LAUNCHER_FILENAME);
   const opencodeBin = resolveOpencodePath();
   const modelFlag = model ? ` -m "${model}"` : '';
-  const script = `#!/bin/bash\nexec ${opencodeBin}${modelFlag} --prompt "$(cat '${promptFilePath}')"\n`;
+  // V2 has no top-level `--model` flag for the interactive TUI; `-m` only
+  // exists on the non-interactive `run` subcommand. Use `run` when the job
+  // does not need an interactive TUI (vanilla plan jobs), otherwise use the
+  // TUI with its configured default model.
+  const script = options.run
+    ? `#!/bin/bash\nexec ${opencodeBin} run${modelFlag} "$(cat '${promptFilePath}')"\n`
+    : `#!/bin/bash\nexec ${opencodeBin} --prompt "$(cat '${promptFilePath}')"\n`;
   await writeFile(launcherPath, script, { mode: 0o755 });
   return launcherPath;
 }

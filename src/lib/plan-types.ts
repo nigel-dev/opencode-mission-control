@@ -64,6 +64,7 @@ export interface PlanSpec {
   launchSessionID?: string;
   auditLog?: AuditLogEntry[];
   permissionPolicy?: PermissionPolicyConfig;
+  ghAuthenticated?: boolean;
 }
 
 export interface JobSpec {
@@ -93,7 +94,7 @@ export interface JobSpec {
 
 export const VALID_PLAN_TRANSITIONS: Record<PlanStatus, PlanStatus[]> = {
   pending: ['running', 'failed', 'canceled'],
-  running: ['paused', 'merging', 'failed', 'canceled'],
+  running: ['paused', 'merging', 'creating_pr', 'completed', 'failed', 'canceled'],
   paused: ['running', 'failed', 'canceled'],
   merging: ['running', 'paused', 'creating_pr', 'failed', 'canceled'],
   creating_pr: ['completed', 'failed', 'canceled'],

@@ -12,8 +12,8 @@ export interface AgentReport {
   timestamp: string;
 }
 
-async function getReportsDir(): Promise<string> {
-  const dataDir = await getDataDir();
+async function getReportsDir(cwd?: string): Promise<string> {
+  const dataDir = await getDataDir(cwd);
   const reportsDir = join(dataDir, '..', 'reports');
   const fs = await import('fs');
   fs.mkdirSync(reportsDir, { recursive: true });
@@ -24,8 +24,8 @@ function getReportFilePath(reportsDir: string, jobId: string): string {
   return join(reportsDir, `${jobId}.json`);
 }
 
-export async function writeReport(report: AgentReport): Promise<void> {
-  const reportsDir = await getReportsDir();
+export async function writeReport(report: AgentReport, cwd?: string): Promise<void> {
+  const reportsDir = await getReportsDir(cwd);
   const filePath = getReportFilePath(reportsDir, report.jobId);
   const tempPath = `${filePath}.tmp`;
   const data = JSON.stringify(report, null, 2);
@@ -34,8 +34,8 @@ export async function writeReport(report: AgentReport): Promise<void> {
   fs.renameSync(tempPath, filePath);
 }
 
-export async function readReport(jobId: string): Promise<AgentReport | null> {
-  const reportsDir = await getReportsDir();
+export async function readReport(jobId: string, cwd?: string): Promise<AgentReport | null> {
+  const reportsDir = await getReportsDir(cwd);
   const filePath = getReportFilePath(reportsDir, jobId);
   const file = Bun.file(filePath);
   const exists = await file.exists();

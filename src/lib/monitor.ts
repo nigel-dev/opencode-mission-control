@@ -663,7 +663,13 @@ export class JobMonitor extends EventEmitter {
           const now = new Date().toISOString();
 
           const exitCode = await captureExitStatus(job.tmuxTarget);
-          const isFailed = exitCode !== undefined && exitCode !== 0;
+          const report = await readReport(job.id);
+          const reportedComplete =
+            report?.status === 'completed' || report?.status === 'needs_review';
+          // If the pane vanished without an exit status (tmux server died or
+          // the launcher failed to start), do not assume success. Only a clean
+          // exit code or an explicit completion report counts as completed.
+          const isFailed = exitCode !== undefined ? exitCode !== 0 : !reportedComplete;
 
           if (isFailed) {
             await updateJob(job.id, { status: 'failed', completedAt: now });
