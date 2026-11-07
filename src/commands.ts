@@ -125,7 +125,7 @@ async function runDirectCommand(
       return;
   }
 
-  await ctx.session.synthetic({ sessionID, text: content });
+  await ctx.session.synthetic({ sessionID, text: content, resume: false });
 }
 
 export async function registerCommands(ctx: Client): Promise<void> {
@@ -143,6 +143,7 @@ export async function registerCommands(ctx: Client): Promise<void> {
             await ctx.session.synthetic({
               sessionID: input.sessionID,
               text: `Error: ${message || 'Unknown error'}`,
+              resume: false,
             });
           }
         },

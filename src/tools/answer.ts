@@ -51,7 +51,7 @@ export const mc_answer = {
       detectedAt: Date.now(),
     };
 
-    await answerPendingQuestion(question, args.response, config.serverPassword);
+    await answerPendingQuestion(question, args.response, question.serverPassword ?? config.serverPassword);
 
     return { content: `Answer sent to job "${args.name}": "${args.response}"` };
   },

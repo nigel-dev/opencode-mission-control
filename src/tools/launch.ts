@@ -185,9 +185,16 @@ export const mc_launch = {
     let allocatedPort: number | undefined;
     let serverUrl: string | undefined;
     let remoteSessionId: string | undefined;
+    let serverPassword: string | undefined;
 
     if (useServeMode) {
       // === SERVE MODE ===
+      // V2's `opencode serve` always requires auth: when no password is
+      // configured it generates a random one and only prints it to its own
+      // stdout. Generate a known per-job password so the launcher and every
+      // client that later connects to this server can authenticate.
+      serverPassword = config.serverPassword ?? randomUUID().replace(/-/g, '');
+
       // Allocate port
       try {
         const activeJobs = await getRunningJobs();
@@ -211,7 +218,7 @@ export const mc_launch = {
         launcherPath = await writeServeLauncherScript(
           worktreePath,
           allocatedPort,
-          config.serverPassword,
+          serverPassword,
         );
       } catch (error) {
         await releasePort(allocatedPort).catch(() => {});
@@ -269,7 +276,7 @@ export const mc_launch = {
       // Wait for server and send prompt via SDK
       try {
         const client = await waitForServer(allocatedPort, {
-          password: config.serverPassword,
+          password: serverPassword,
         });
         const fullPrompt = buildFullPrompt({
           prompt: args.prompt,
@@ -410,6 +417,7 @@ export const mc_launch = {
       launchSessionID: context?.sessionID,
       port: allocatedPort,
       serverUrl,
+      serverPassword,
       remoteSessionID: remoteSessionId,
     };
 

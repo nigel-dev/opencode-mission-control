@@ -153,7 +153,7 @@ async function sendMessage(client: Client, sessionID: string, text: string, expe
   if (expectReply) {
     await client.session.prompt({ sessionID, text });
   } else {
-    await client.session.synthetic({ sessionID, text });
+    await client.session.synthetic({ sessionID, text, resume: false });
   }
 }
 

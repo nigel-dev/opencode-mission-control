@@ -221,7 +221,7 @@ export class JobMonitor extends EventEmitter {
     }
 
     const abortController = new AbortController();
-    const client = createJobClient(job.port);
+    const client = createJobClient(job.port, job.serverPassword);
 
     this.sseSubscriptions.set(job.id, {
       abortController,
@@ -230,10 +230,48 @@ export class JobMonitor extends EventEmitter {
     });
 
     this.backfillPendingQuestions(job, client).catch(() => {});
+    this.backfillPendingPermissions(job, client).catch(() => {});
+    this.reconcileJobOutcome(job).catch(() => {});
 
     this.processSSEStream(job, client, abortController).catch((error) => {
       console.error(`[Monitor] SSE stream error for job ${job.name}:`, error);
     });
+  }
+
+  private async backfillPendingPermissions(job: Job, client: OpencodeClient): Promise<void> {
+    if (!job.remoteSessionID) return;
+
+    try {
+      const pending = await client.permission.list({ sessionID: job.remoteSessionID });
+      for (const request of pending) {
+        await this.handlePermissionUpdate(job, request);
+      }
+    } catch {
+      // Non-fatal: the live event stream may still deliver the request
+    }
+  }
+
+  private async reconcileJobOutcome(job: Job): Promise<void> {
+    if (!job.remoteSessionID || !job.port) return;
+
+    try {
+      const client = createJobClient(job.port, job.serverPassword);
+      const session = await client.session.get({ sessionID: job.remoteSessionID });
+
+      if (session.outcome === 'succeeded') {
+        await this.completeJob(job);
+        return;
+      }
+
+      if (session.outcome === 'failed' || session.outcome === 'interrupted') {
+        const now = new Date().toISOString();
+        this.cleanupSSEForJob(job.id);
+        await updateJob(job.id, { status: 'failed', completedAt: now });
+        this.emit('failed', { ...job, status: 'failed', completedAt: now });
+      }
+    } catch {
+      // Non-fatal: the SSE stream remains the primary completion signal
+    }
   }
 
   private async backfillPendingQuestions(job: Job, client: OpencodeClient): Promise<void> {
@@ -334,6 +372,11 @@ export class JobMonitor extends EventEmitter {
         break;
       }
 
+      case 'session.execution.succeeded': {
+        await this.completeJob(job);
+        break;
+      }
+
       case 'session.execution.failed': {
         const now = new Date().toISOString();
         this.cleanupSSEForJob(job.id);
@@ -406,6 +449,7 @@ export class JobMonitor extends EventEmitter {
         callID: part.id,
         remoteSessionID: job.remoteSessionID,
         port: job.port,
+        serverPassword: job.serverPassword,
         question: first.question ?? '',
         options: first.options ?? [],
         header: first.header,
@@ -448,16 +492,35 @@ export class JobMonitor extends EventEmitter {
 
   private extractPermissionPath(data: PermissionAskedData): string | undefined {
     const firstResource = data.resources?.[0];
-    if (this.extractString(firstResource)) {
+    if (typeof firstResource === 'string' && this.looksLikePath(firstResource)) {
       return firstResource;
     }
 
     const metadata = data.metadata;
     if (metadata && typeof metadata === 'object') {
-      return this.extractString((metadata as Record<string, unknown>).path);
+      const metadataPath = this.extractString((metadata as Record<string, unknown>).path);
+      if (metadataPath) {
+        return metadataPath;
+      }
     }
 
     return undefined;
+  }
+
+  private looksLikePath(value: string): boolean {
+    // V2 `resources` carries the command string for shell permissions and the
+    // target path for file permissions. Only treat whitespace-free strings
+    // containing a path separator (or a home/relative prefix) as paths.
+    if (/\s/.test(value)) {
+      return false;
+    }
+    return (
+      value.startsWith('/') ||
+      value.startsWith('./') ||
+      value.startsWith('../') ||
+      value.startsWith('~') ||
+      value.includes('/')
+    );
   }
 
   private buildPermissionRequest(data: PermissionAskedData): PermissionRequest {
@@ -579,6 +642,7 @@ export class JobMonitor extends EventEmitter {
       try {
         if (this.isServeModeJob(job)) {
           await this.subscribeToSSE(job);
+          await this.reconcileJobOutcome(job);
           continue;
         }
 

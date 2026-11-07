@@ -194,7 +194,7 @@ export default Plugin.define({
         notifyPending = notifyPending.then(async () => {
           const sessionID = targetSessionID ?? await getActiveSessionID();
           if (!sessionID || !isValidSessionID(sessionID)) return;
-          await ctx.session.synthetic({ sessionID, text: message }).catch(() => {});
+          await ctx.session.synthetic({ sessionID, text: message, resume: false }).catch(() => {});
         }).catch(() => {});
       });
     }

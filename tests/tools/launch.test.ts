@@ -618,7 +618,10 @@ describe('mc_launch', () => {
       expect(mockWriteServeLauncherScript).toHaveBeenCalledWith(
         '/tmp/mc-worktrees/test-job',
         14100,
-        undefined,
+        'testuuid1234',
+      );
+      expect(mockAddJob).toHaveBeenCalledWith(
+        expect.objectContaining({ port: 14100, serverPassword: 'testuuid1234' }),
       );
     });
 
@@ -639,7 +642,7 @@ describe('mc_launch', () => {
       );
 
       expect(mockWaitForServer).toHaveBeenCalledWith(14100, {
-        password: undefined,
+        password: 'testuuid1234',
       });
       expect(mockCreateSessionAndPrompt).toHaveBeenCalledWith(
         expect.anything(),
