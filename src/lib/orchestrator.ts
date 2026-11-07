@@ -2,7 +2,7 @@ import { randomUUID } from 'crypto';
 import type { MCConfig } from './config';
 import type { PlanSpec, JobSpec, PlanStatus, CheckpointType, CheckpointContext, AuditLogEntry } from './plan-types';
 import { loadPlan, savePlan, updatePlanJob, updatePlanFields, clearPlan, validateGhAuth } from './plan-state';
-import { getDefaultBranch } from './git';
+import { getDefaultBranch, gitCommand } from './git';
 import { createIntegrationBranch, deleteIntegrationBranch } from './integration';
 import { MergeTrain, checkMergeability, type MergeTestReport, validateTouchSet } from './merge-train';
 import { addJob, getRunningJobs, updateJob, loadJobState, removeJob, type Job } from './job-state';
@@ -1194,6 +1194,16 @@ If your work needs human review before it can proceed: mc_report(status: "needs_
       } catch {}
     }
 
+    const state = await loadJobState();
+    const planJobs = state.jobs.filter((job) => job.planId === plan.id);
+    for (const job of planJobs) {
+      if (job.worktreePath) {
+        await removeWorktree(job.worktreePath, true).catch(() => {});
+      }
+      if (job.branch) {
+        await gitCommand(['branch', '-D', job.branch]).catch(() => {});
+      }
+    }
     await deleteIntegrationBranch(plan.id);
     await clearPlan();
   }
