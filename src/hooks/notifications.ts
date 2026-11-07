@@ -1,10 +1,11 @@
-import type { PluginInput } from '@opencode-ai/plugin';
+import type { Plugin } from '@opencode/plugin';
 import type { Job } from '../lib/job-state';
 import { readReport } from '../lib/reports';
 import { formatElapsed } from '../lib/utils';
 import { type PendingQuestion, buildQuestionRelayMessage } from '../lib/question-relay';
+import { showToast } from '../rpc';
 
-type Client = PluginInput['client'];
+type Client = Plugin.Context;
 type NotificationEvent = 'complete' | 'failed' | 'blocked' | 'needs_review' | 'awaiting_input' | 'question';
 
 // Tracks when we last annotated a title per session. Resets are suppressed
@@ -39,19 +40,10 @@ interface SessionTitleState {
 
 const titleState = new Map<string, SessionTitleState>();
 
-function extractSessionTitle(response: unknown): string | undefined {
-  if (!response || typeof response !== 'object') return undefined;
-  const obj = response as Record<string, unknown>;
-
-  // SDK may wrap in { data: { ... } } or return flat
-  if (obj.data && typeof obj.data === 'object') {
-    const data = obj.data as Record<string, unknown>;
-    if (typeof data.title === 'string') return data.title;
-  }
-
-  if (typeof obj.title === 'string') return obj.title;
-
-  return undefined;
+function extractSessionTitle(session: unknown): string | undefined {
+  if (!session || typeof session !== 'object') return undefined;
+  const title = (session as { title?: unknown }).title;
+  return typeof title === 'string' ? title : undefined;
 }
 
 const STATUS_ICONS: Record<string, string> = {
@@ -84,7 +76,7 @@ export async function annotateSessionTitle(
 
   try {
     if (!titleState.has(sessionID)) {
-      const session = await client.session.get({ path: { id: sessionID } });
+      const session = await client.session.get({ sessionID });
       let originalTitle = extractSessionTitle(session) ?? '';
       if (originalTitle.startsWith('[MC] ')) {
         originalTitle = originalTitle.slice(5);
@@ -99,10 +91,7 @@ export async function annotateSessionTitle(
     state.annotations.set(jobName, statusText);
     const annotatedTitle = buildAnnotatedTitle(state, sessionID);
 
-    await client.session.update({
-      path: { id: sessionID },
-      body: { title: annotatedTitle },
-    });
+    await client.session.update({ sessionID, title: annotatedTitle });
     lastAnnotationTime.set(sessionID, Date.now());
   } catch {
     // Fire-and-forget: don't block on title update failures
@@ -118,10 +107,7 @@ export async function resetSessionTitle(client: Client, sessionID: string): Prom
   titleState.delete(sessionID);
 
   try {
-    await client.session.update({
-      path: { id: sessionID },
-      body: { title: resetTitle },
-    });
+    await client.session.update({ sessionID, title: resetTitle });
   } catch {
     // Fire-and-forget: don't block on title reset failures
   }
@@ -141,21 +127,16 @@ export async function ensureMCPrefix(client: Client, sessionID: string | undefin
     if (titleState.has(sessionID)) {
       const state = titleState.get(sessionID)!;
       const annotatedTitle = buildAnnotatedTitle(state, sessionID);
-      await client.session.update({
-        path: { id: sessionID },
-        body: { title: annotatedTitle },
-      });
+      await client.session.update({ sessionID, title: annotatedTitle });
     } else {
-      const session = await client.session.get({ path: { id: sessionID } });
+      const session = await client.session.get({ sessionID });
       const currentTitle = extractSessionTitle(session) ?? '';
       if (currentTitle.startsWith('[MC]')) return;
 
-      await client.session.update({
-        path: { id: sessionID },
-        body: { title: `[MC] ${currentTitle}` },
-      });
+      await client.session.update({ sessionID, title: `[MC] ${currentTitle}` });
     }
   } catch {
+    // Fire-and-forget: don't block on title prefix failures
   }
 }
 
@@ -169,13 +150,11 @@ export function _getMCPrefixedSessionsForTesting(): Set<string> {
 }
 
 async function sendMessage(client: Client, sessionID: string, text: string, expectReply = false): Promise<void> {
-  await client.session.prompt({
-    path: { id: sessionID },
-    body: {
-      noReply: !expectReply,
-      parts: [{ type: 'text' as const, text, ...(!expectReply && { ignored: true }) }],
-    },
-  });
+  if (expectReply) {
+    await client.session.prompt({ sessionID, text });
+  } else {
+    await client.session.synthetic({ sessionID, text });
+  }
 }
 
 function getDedupKey(event: NotificationEvent, job: Job, reportTimestamp?: string): string {
@@ -236,9 +215,8 @@ export function setupNotifications(options: SetupNotificationsOptions): void {
 
     let sessionLabel = sessionID;
     try {
-      const sessionInfo = await client.session.get({ path: { id: sessionID } });
-      const data = (sessionInfo as any)?.data ?? sessionInfo;
-      sessionLabel = data?.title ?? data?.slug ?? sessionID;
+      const sessionInfo = await client.session.get({ sessionID });
+      sessionLabel = sessionInfo?.title ?? sessionID;
     } catch {
       // Fall back to raw session ID
     }
@@ -260,18 +238,12 @@ export function setupNotifications(options: SetupNotificationsOptions): void {
     };
     const toast = toastMap[event];
     if (toast) {
-      try {
-        await client.tui.showToast({
-          body: {
-            title: toast.title,
-            message: `Switch to session "${sessionLabel}" to respond`,
-            variant: toast.variant,
-            duration: event === 'question' ? 10000 : 5000,
-          },
-        });
-      } catch {
-        // Toast may not be available in all environments
-      }
+      await showToast({
+        title: toast.title,
+        message: `Switch to session "${sessionLabel}" to respond`,
+        variant: toast.variant,
+        duration: event === 'question' ? 10000 : 5000,
+      });
     }
 
     await sendMessage(client, sessionID, message, event === 'question');

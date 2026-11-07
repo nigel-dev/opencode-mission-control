@@ -1,4 +1,4 @@
-import { tool, type ToolDefinition } from '@opencode-ai/plugin';
+import { z } from 'zod';
 import { getJobByName, type Job } from '../lib/job-state';
 import { capturePane } from '../lib/tmux';
 import { isInManagedWorktree } from '../lib/worktree';
@@ -50,12 +50,13 @@ async function getGitStatus(
 
 
 
-export const mc_status: ToolDefinition = tool({
+export const mc_status = {
+  name: 'mc_status',
   description: 'Get detailed status of a specific job',
-  args: {
-    name: tool.schema.string().describe('Job name'),
-  },
-  async execute(args) {
+  input: z.object({
+    name: z.string().describe('Job name'),
+  }).strict(),
+  async execute(args: { name: string }) {
     // 1. Find job by name
     const job = await getJobByName(args.name);
     if (!job) {
@@ -164,6 +165,6 @@ export const mc_status: ToolDefinition = tool({
       '---',
     ];
 
-    return lines.join('\n');
+    return { content: lines.join('\n') };
   },
-});
+};

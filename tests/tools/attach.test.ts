@@ -38,7 +38,7 @@ describe('mc_attach', () => {
     });
 
     it('should have name arg', () => {
-      expect(mc_attach.args.name).toBeDefined();
+      expect(mc_attach.input.shape.name).toBeDefined();
     });
   });
 
@@ -71,10 +71,10 @@ describe('mc_attach', () => {
 
       const result = await mc_attach.execute({ name: 'feature-auth' }, mockContext);
 
-      expect(result).toContain('To attach to job "feature-auth":');
-      expect(result).toContain('# Session mode:');
-      expect(result).toContain('tmux attach -t mc-feature-auth');
-      expect(result).toContain('# To detach: Ctrl+B, D');
+      expect(result.content).toContain('To attach to job "feature-auth":');
+      expect(result.content).toContain('# Session mode:');
+      expect(result.content).toContain('tmux attach -t mc-feature-auth');
+      expect(result.content).toContain('# To detach: Ctrl+B, D');
     });
   });
 
@@ -97,10 +97,10 @@ describe('mc_attach', () => {
 
       const result = await mc_attach.execute({ name: 'feature-api' }, mockContext);
 
-      expect(result).toContain('To attach to job "feature-api":');
-      expect(result).toContain('# Window mode (select window in current session):');
-      expect(result).toContain('tmux select-window -t main-session:feature-api');
-      expect(result).toContain('# To detach: Ctrl+B, D');
+      expect(result.content).toContain('To attach to job "feature-api":');
+      expect(result.content).toContain('# Window mode (select window in current session):');
+      expect(result.content).toContain('tmux select-window -t main-session:feature-api');
+      expect(result.content).toContain('# To detach: Ctrl+B, D');
     });
   });
 
@@ -121,7 +121,7 @@ describe('mc_attach', () => {
 
       mockGetJobByName.mockResolvedValue(jobSession);
       const resultSession = await mc_attach.execute({ name: 'test-session' }, mockContext);
-      expect(resultSession).toContain('# To detach: Ctrl+B, D');
+      expect(resultSession.content).toContain('# To detach: Ctrl+B, D');
 
       const jobWindow: Job = {
         id: 'job-2',
@@ -138,7 +138,7 @@ describe('mc_attach', () => {
 
       mockGetJobByName.mockResolvedValue(jobWindow);
       const resultWindow = await mc_attach.execute({ name: 'test-window' }, mockContext);
-      expect(resultWindow).toContain('# To detach: Ctrl+B, D');
+      expect(resultWindow.content).toContain('# To detach: Ctrl+B, D');
     });
   });
 
@@ -172,7 +172,7 @@ describe('mc_attach', () => {
         workdir: '/tmp/mc-worktrees/serve-job',
         command: 'opencode attach http://localhost:8080 --dir /tmp/mc-worktrees/serve-job',
       });
-      expect(result).toBe("Opened TUI for job 'serve-job' in new tmux window");
+      expect(result.content).toBe("Opened TUI for job 'serve-job' in new tmux window");
     });
   });
 
@@ -201,7 +201,7 @@ describe('mc_attach', () => {
       const result = await mc_attach.execute({ name: 'serve-job' }, mockContext);
 
       expect(mockCreateWindow).not.toHaveBeenCalled();
-      expect(result).toBe('Run: opencode attach http://localhost:8080');
+      expect(result.content).toBe('Run: opencode attach http://localhost:8080');
     });
   });
 
@@ -229,7 +229,7 @@ describe('mc_attach', () => {
       const result = await mc_attach.execute({ name: 'serve-job' }, mockContext);
 
       expect(mockCreateWindow).not.toHaveBeenCalled();
-      expect(result).toBe('Run: opencode attach http://localhost:8080');
+      expect(result.content).toBe('Run: opencode attach http://localhost:8080');
     });
   });
 });

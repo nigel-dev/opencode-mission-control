@@ -1,4 +1,4 @@
-import type { OpencodeClient } from '@opencode-ai/sdk';
+import type { OpencodeClient } from './sdk-client.js';
 import type { Job } from './job-state.js';
 import { createJobClient, sendPrompt } from './sdk-client.js';
 
@@ -346,10 +346,10 @@ export class QuestionRelay {
 
     if (result.autoApproved) {
       // Auto-approve the permission
-      if (job.port) {
+      if (job.port && job.remoteSessionID) {
         try {
           const client = this.getClient(job.port);
-          await this.replyToPermission(client, permission.id, true);
+          await this.replyToPermission(client, job.remoteSessionID, permission.id, true);
         } catch (error) {
           console.error(`[QuestionRelay] Failed to auto-approve permission for job ${job.name}:`, error);
         }
@@ -371,12 +371,12 @@ export class QuestionRelay {
     approved: boolean,
     message?: string,
   ): Promise<void> {
-    if (!job.port) {
+    if (!job.port || !job.remoteSessionID) {
       return;
     }
 
     const client = this.getClient(job.port);
-    await this.replyToPermission(client, permissionId, approved, message);
+    await this.replyToPermission(client, job.remoteSessionID, permissionId, approved, message);
   }
 
   /**
@@ -387,8 +387,8 @@ export class QuestionRelay {
     permission: PermissionRequest,
     currentFile?: string,
   ): Promise<void> {
-    if (!job.launchSessionID || !job.port) {
-      console.warn(`[QuestionRelay] Cannot relay: missing launchSessionID or port for job ${job.name}`);
+    if (!job.launchSessionID || !job.remoteSessionID || !job.port) {
+      console.warn(`[QuestionRelay] Cannot relay: missing launchSessionID, remoteSessionID or port for job ${job.name}`);
       return;
     }
 
@@ -404,15 +404,12 @@ export class QuestionRelay {
     try {
       const client = this.getClient(job.port);
       await client.session.prompt({
-        path: { id: job.launchSessionID },
-        body: {
-          parts: [{ type: 'text', text: prompt }],
-          noReply: false,
-        },
+        sessionID: job.launchSessionID,
+        text: prompt,
       });
 
       // Set up auto-response timeout
-      this.setupAutoResponse(job.id, permission.id, client);
+      this.setupAutoResponse(job.id, permission.id, job.remoteSessionID, client);
     } catch (error) {
       console.error(`[QuestionRelay] Failed to relay question for job ${job.name}:`, error);
     }
@@ -424,6 +421,7 @@ export class QuestionRelay {
   private setupAutoResponse(
     jobId: string,
     permissionId: string,
+    sessionID: string,
     client: OpencodeClient,
   ): void {
     // Clear any existing timeout for this permission
@@ -435,7 +433,7 @@ export class QuestionRelay {
     // Set new timeout
     const timeoutId = setTimeout(async () => {
       try {
-        await this.replyToPermission(client, permissionId, true, this.config.defaultResponse);
+        await this.replyToPermission(client, sessionID, permissionId, true, this.config.defaultResponse);
         console.log(`[QuestionRelay] Auto-responded to permission ${permissionId} for job ${jobId}`);
       } catch (error) {
         console.error(`[QuestionRelay] Failed to auto-respond for job ${jobId}:`, error);
@@ -452,30 +450,18 @@ export class QuestionRelay {
    */
   private async replyToPermission(
     client: OpencodeClient,
+    sessionID: string,
     permissionId: string,
     approved: boolean,
     message?: string,
   ): Promise<void> {
-    // Note: The actual SDK endpoint for replying to permissions may vary
-    // This is a placeholder based on typical SDK patterns
-    // The SDK might have client.permission.reply or similar
     try {
-      // Using a generic approach - actual implementation depends on SDK
-      const response = await fetch(`${(client as any).baseUrl}/permission/${permissionId}/reply`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...((client as any).headers || {}),
-        },
-        body: JSON.stringify({
-          approved,
-          message: message || (approved ? 'Approved' : 'Denied'),
-        }),
+      await client.permission.reply({
+        sessionID,
+        requestID: permissionId,
+        decision: approved ? "once" : "reject",
+        message: message || (approved ? "Approved" : "Denied"),
       });
-
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${await response.text()}`);
-      }
     } catch (error) {
       console.error(`[QuestionRelay] Failed to reply to permission ${permissionId}:`, error);
       throw error;
@@ -498,7 +484,7 @@ export class QuestionRelay {
       this.pendingResponses.delete(key);
     }
 
-    if (!job.port) {
+    if (!job.port || !job.remoteSessionID) {
       return;
     }
 
@@ -524,7 +510,7 @@ export class QuestionRelay {
 
     try {
       const client = this.getClient(job.port);
-      await this.replyToPermission(client, permissionId, approved, message);
+      await this.replyToPermission(client, job.remoteSessionID, permissionId, approved, message);
     } catch (error) {
       console.error(`[QuestionRelay] Failed to send user response for job ${job.name}:`, error);
     }

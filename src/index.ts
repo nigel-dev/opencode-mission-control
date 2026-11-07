@@ -1,15 +1,16 @@
-import type { Plugin } from '@opencode-ai/plugin';
+import { Plugin } from '@opencode/plugin';
 import { getSharedMonitor, setSharedNotifyCallback, getSharedNotifyCallback, setSharedOrchestrator } from './lib/orchestrator-singleton';
 import { getCompactionContext, getJobCompactionContext } from './hooks/compaction';
 import { shouldShowAutoStatus, getAutoStatusMessage } from './hooks/auto-status';
 import { setupNotifications, hasAnnotation, resetSessionTitle, isTitleResetSuppressed, ensureMCPrefix } from './hooks/notifications';
-import { registerCommands, createCommandHandler } from './commands';
+import { registerCommands } from './commands';
 import { isTmuxAvailable } from './lib/tmux';
 import { loadPlan } from './lib/plan-state';
 import { Orchestrator } from './lib/orchestrator';
 import { loadConfig } from './lib/config';
-import { setCurrentModel, setConfigFallbackModel } from './lib/model-tracker';
+import { setCurrentModelFromSDK, setConfigFallbackModel } from './lib/model-tracker';
 import { isInManagedWorktree } from './lib/worktree';
+import { missionControlRpc, setToastEmitter, showToast } from './rpc';
 import { mc_launch } from './tools/launch';
 import { mc_jobs } from './tools/jobs';
 import { mc_status } from './tools/status';
@@ -46,6 +47,7 @@ function extractSessionIDFromEvent(event: unknown): string | undefined {
     sessionID?: string;
     sessionId?: string;
     session?: SessionWithID;
+    data?: { sessionID?: string; sessionId?: string };
     properties?: {
       sessionID?: string;
       info?: SessionWithID;
@@ -58,6 +60,15 @@ function extractSessionIDFromEvent(event: unknown): string | undefined {
 
   if (typeof candidate.sessionId === 'string' && isValidSessionID(candidate.sessionId)) {
     return candidate.sessionId;
+  }
+
+  if (candidate.data) {
+    if (typeof candidate.data.sessionID === 'string' && isValidSessionID(candidate.data.sessionID)) {
+      return candidate.data.sessionID;
+    }
+    if (typeof candidate.data.sessionId === 'string' && isValidSessionID(candidate.data.sessionId)) {
+      return candidate.data.sessionId;
+    }
   }
 
   if (candidate.properties) {
@@ -116,200 +127,214 @@ function extractSessionIDFromListResult(listResult: unknown): string | undefined
   return undefined;
 }
 
-let tmuxAvailable = false;
+export default Plugin.define({
+  id: 'opencode-mission-control',
+  async setup(ctx) {
+    // In V2 the plugin runs inside the OpenCode server, whose process cwd is not
+    // guaranteed to match the project. Use the plugin instance location instead.
+    const cwd = ctx.location?.directory ?? process.cwd();
+    const worktreeInfo = await isInManagedWorktree(cwd);
+    const isJobAgent = worktreeInfo.isManaged;
 
-export const MissionControl: Plugin = async ({ client }) => {
-  const cwd = process.cwd();
-  const worktreeInfo = await isInManagedWorktree(cwd);
-  const isJobAgent = worktreeInfo.isManaged;
-
-  tmuxAvailable = await isTmuxAvailable();
-  if (!tmuxAvailable) {
-    console.warn('[Mission Control] tmux is not installed or not in PATH. Job launching will be unavailable.');
-  }
-
-  const monitor = getSharedMonitor();
-  let activeSessionID: string | undefined;
-
-  const getActiveSessionID = async (): Promise<string | undefined> => {
-    if (activeSessionID) {
-      return activeSessionID;
+    const tmuxAvailable = await isTmuxAvailable();
+    if (!tmuxAvailable) {
+      console.warn('[Mission Control] tmux is not installed or not in PATH. Job launching will be unavailable.');
     }
 
-    try {
-      const listResult = await client.session.list();
-      activeSessionID = extractSessionIDFromListResult(listResult);
-      return activeSessionID;
-    } catch {
-      return undefined;
-    }
-  };
+    const monitor = getSharedMonitor();
+    let activeSessionID: string | undefined;
 
-  // Detect if we're a subagent spawned by another OpenCode session
-  let _isSubagentCached: boolean | null = null;
-  const isSubagent = async (): Promise<boolean> => {
-    if (_isSubagentCached !== null) return _isSubagentCached;
-    try {
-      const sessionID = await getActiveSessionID();
-      if (!sessionID) {
-        _isSubagentCached = false;
+    const getActiveSessionID = async (): Promise<string | undefined> => {
+      if (activeSessionID) {
+        return activeSessionID;
+      }
+
+      try {
+        const listResult = await ctx.session.list(
+          ctx.location?.directory ? { directory: ctx.location.directory } : undefined,
+        );
+        activeSessionID = extractSessionIDFromListResult(listResult);
+        return activeSessionID;
+      } catch {
+        return undefined;
+      }
+    };
+
+    // Detect if we're a subagent spawned by another OpenCode session
+    let isSubagentCached: boolean | null = null;
+    const isSubagent = async (): Promise<boolean> => {
+      if (isSubagentCached !== null) return isSubagentCached;
+      try {
+        const sessionID = await getActiveSessionID();
+        if (!sessionID) {
+          isSubagentCached = false;
+          return false;
+        }
+        const session = await ctx.session.get({ sessionID });
+        isSubagentCached = !!session?.parentID;
+        return isSubagentCached;
+      } catch {
+        isSubagentCached = false;
         return false;
       }
-      const session = await client.session.get({ path: { id: sessionID } });
-      const data = (session as any)?.data ?? session;
-      _isSubagentCached = !!(data?.parentID || data?.parentId);
-      return _isSubagentCached;
-    } catch {
-      _isSubagentCached = false;
-      return false;
+    };
+
+    if (!isJobAgent) {
+      setupNotifications({
+        client: ctx,
+        monitor,
+        getActiveSessionID,
+        isSubagent,
+      });
     }
-  };
 
-  if (!isJobAgent) {
-    setupNotifications({
-      client,
-      monitor,
-      getActiveSessionID,
-      isSubagent,
-    });
-  }
-
-  let notifyPending: Promise<void> = Promise.resolve();
-  if (!isJobAgent) {
-    setSharedNotifyCallback((message: string, targetSessionID?: string) => {
-      notifyPending = notifyPending.then(async () => {
-        const sessionID = targetSessionID ?? await getActiveSessionID();
-        if (!sessionID || !sessionID.startsWith('ses')) return;
-        await client.session.prompt({
-          path: { id: sessionID },
-          body: {
-            noReply: true,
-            parts: [{ type: 'text' as const, text: message }],
-          },
+    if (!isJobAgent) {
+      let notifyPending: Promise<void> = Promise.resolve();
+      setSharedNotifyCallback((message: string, targetSessionID?: string) => {
+        notifyPending = notifyPending.then(async () => {
+          const sessionID = targetSessionID ?? await getActiveSessionID();
+          if (!sessionID || !isValidSessionID(sessionID)) return;
+          await ctx.session.synthetic({ sessionID, text: message }).catch(() => {});
         }).catch(() => {});
-      }).catch(() => {});
-    });
-  }
-
-  if (!isJobAgent) {
-    monitor.start();
-  }
-
-  client.config.get().then((result) => {
-    const config = result.data;
-    if (config?.model) {
-      setConfigFallbackModel(config.model);
+      });
     }
-  }).catch(() => {});
 
-  if (!isJobAgent) {
-    loadPlan().then(async (plan) => {
-      if (plan && (plan.status === 'running' || plan.status === 'paused')) {
-        const config = await loadConfig();
-        const orchestrator = new Orchestrator(monitor, config, { notify: getSharedNotifyCallback() ?? undefined });
-        setSharedOrchestrator(orchestrator);
-        await orchestrator.resumePlan();
+    const rpcRegistration = await ctx.rpc.register(missionControlRpc, {});
+    setToastEmitter(async (options) => {
+      await rpcRegistration.events.emit('toast', {
+        title: options.title ?? 'Mission Control',
+        message: options.message,
+        variant: options.variant ?? 'info',
+        duration: options.duration ?? 5000,
+      });
+    });
+
+    if (!isJobAgent) {
+      monitor.start();
+    }
+
+    ctx.model.default().then((result) => {
+      const model = result.data;
+      if (model?.providerID && model?.modelID) {
+        setConfigFallbackModel(`${model.providerID}/${model.modelID}`);
       }
     }).catch(() => {});
-  }
 
-  return {
-    config: async (configInput: any) => {
-      if (!isJobAgent) {
-        registerCommands(configInput);
+    if (!isJobAgent) {
+      loadPlan().then(async (plan) => {
+        if (plan && (plan.status === 'running' || plan.status === 'paused')) {
+          const config = await loadConfig();
+          const orchestrator = new Orchestrator(monitor, config, { notify: getSharedNotifyCallback() ?? undefined });
+          setSharedOrchestrator(orchestrator);
+          await orchestrator.resumePlan();
+        }
+      }).catch(() => {});
+    }
+
+    // Register slash commands
+    if (!isJobAgent) {
+      await registerCommands(ctx);
+    }
+
+    // Register tools
+    await ctx.tool.transform((editor) => {
+      if (isJobAgent) {
+        editor.add(mc_report);
+        editor.add(mc_status);
+      } else {
+        editor.add(mc_launch);
+        editor.add(mc_jobs);
+        editor.add(mc_status);
+        editor.add(mc_diff);
+        editor.add(mc_pr);
+        editor.add(mc_merge);
+        editor.add(mc_sync);
+        editor.add(mc_cleanup);
+        editor.add(mc_kill);
+        editor.add(mc_attach);
+        editor.add(mc_capture);
+        editor.add(mc_plan);
+        editor.add(mc_plan_status);
+        editor.add(mc_plan_cancel);
+        editor.add(mc_plan_approve);
+        editor.add(mc_report);
+        editor.add(mc_overview);
+        editor.add(mc_answer);
       }
-    },
-    'command.execute.before': (input: { command: string; sessionID: string; arguments: string }, output: { parts: unknown[] }) => {
-      if (isValidSessionID(input.sessionID)) {
-        activeSessionID = input.sessionID;
-        if (hasAnnotation(input.sessionID) && !isTitleResetSuppressed(input.sessionID)) {
-          resetSessionTitle(client, input.sessionID).catch(() => {});
+    });
+
+    // Track session and reset annotated titles before tool execution
+    await ctx.tool.hook('execute.before', async (hook) => {
+      if (hook.sessionID && isValidSessionID(hook.sessionID)) {
+        activeSessionID = hook.sessionID;
+        if (hasAnnotation(hook.sessionID) && !isTitleResetSuppressed(hook.sessionID)) {
+          resetSessionTitle(ctx, hook.sessionID).catch(() => {});
         }
       }
-      return createCommandHandler(client)(input, output);
-    },
-    'tool.execute.before': async (input: { tool: string; sessionID: string; callID: string }) => {
+      if (hook.tool?.startsWith('mc_')) {
+        const sessionID = hook.sessionID ?? await getActiveSessionID();
+        ensureMCPrefix(ctx, sessionID).catch(() => {});
+      }
+    });
+
+    // Track session and reset annotated titles on prompt
+    await ctx.session.hook('prompt', async (input) => {
       if (input.sessionID && isValidSessionID(input.sessionID)) {
         activeSessionID = input.sessionID;
         if (hasAnnotation(input.sessionID) && !isTitleResetSuppressed(input.sessionID)) {
-          resetSessionTitle(client, input.sessionID).catch(() => {});
+          resetSessionTitle(ctx, input.sessionID).catch(() => {});
         }
       }
-      if (input.tool?.startsWith('mc_')) {
-        const sessionID = input.sessionID ?? await getActiveSessionID();
-        ensureMCPrefix(client, sessionID).catch(() => {});
-      }
-    },
-    'chat.message': async (input) => {
-      if (input.sessionID && isValidSessionID(input.sessionID)) {
-        activeSessionID = input.sessionID;
-        if (hasAnnotation(input.sessionID) && !isTitleResetSuppressed(input.sessionID)) {
-          resetSessionTitle(client, input.sessionID).catch(() => {});
-        }
-      }
-      if (input.model) {
-        setCurrentModel(input.model, input.sessionID);
-      }
-    },
-    'chat.params': async (input) => {
-      if (input.sessionID && isValidSessionID(input.sessionID)) {
-        activeSessionID = input.sessionID;
-      }
-      // chat.params fires for background LLM calls too (title gen, summarization)
-      // which use smaller models — do not track model here, chat.message is authoritative
-    },
-    tool: isJobAgent 
-      ? { mc_report, mc_status } as any
-      : { mc_launch, mc_jobs, mc_status, mc_diff, mc_pr, mc_merge, mc_sync, mc_cleanup, mc_kill, mc_attach, mc_capture, mc_plan, mc_plan_status, mc_plan_cancel, mc_plan_approve, mc_report, mc_overview, mc_answer },
-    event: async ({ event }) => {
-      const sessionID = extractSessionIDFromEvent(event);
-      if (sessionID) {
-        activeSessionID = sessionID;
-      }
+    });
 
-      if (event.type === 'message.updated') {
-        const messageEvent = event as {
-          properties?: {
-            info?: {
-              role?: string;
-              model?: { providerID: string; modelID: string };
-              providerID?: string;
-              modelID?: string;
-            };
-          };
-        };
-        const info = messageEvent.properties?.info;
-        if (info?.model) {
-          setCurrentModel(info.model, sessionID);
-        } else if (info?.providerID && info?.modelID) {
-          setCurrentModel({ providerID: info.providerID, modelID: info.modelID }, sessionID);
-        }
-      }
+    // Track the exact model used for each session (covers sessions where no
+    // model-selected event was observed, e.g. the first request after load).
+    await ctx.session.hook('context', (event) => {
+      setCurrentModelFromSDK(event.model, event.sessionID);
+    });
 
-      if (event.type === 'session.idle') {
-        const shouldShow = await shouldShowAutoStatus();
-        if (shouldShow) {
-          const message = await getAutoStatusMessage();
-          if (message) {
-            await client.tui.showToast({
-              body: {
-                title: 'Mission Control',
-                message,
-                variant: 'info',
-                duration: 8000,
-              },
-            }).catch(() => {});
+    // Track model + show auto-status via events
+    const abortController = new AbortController();
+    const subscription = (async () => {
+      for await (const event of ctx.event.subscribe({ signal: abortController.signal })) {
+        const sessionID = extractSessionIDFromEvent(event);
+        if (sessionID) {
+          activeSessionID = sessionID;
+        }
+
+        const type = (event as { type?: string }).type;
+
+        if (type === 'session.model.selected') {
+          const data = (event as { data?: { sessionID?: string; model?: { id: string; providerID: string } } }).data;
+          if (data?.model) {
+            setCurrentModelFromSDK(data.model, data.sessionID);
+          }
+        }
+
+        if (type === 'session.idle') {
+          const shouldShow = await shouldShowAutoStatus(cwd);
+          if (shouldShow) {
+            const message = await getAutoStatusMessage();
+            if (message) {
+              await showToast({ title: 'Mission Control', message, variant: 'info', duration: 8000 });
+            }
           }
         }
       }
-    },
-    // SDK uses proxies on hook output objects — must use in-place mutation
-    // (push/splice). Direct reassignment (e.g. output.context = [...]) is
-    // silently ignored. See: opencode Plugin.trigger() proxy semantics.
-    'experimental.session.compacting': async (_input, output) => {
-      output.context.push(await (isJobAgent ? getJobCompactionContext() : getCompactionContext()));
-    },
-  };
-};
+    })();
+    subscription.catch(() => {});
 
-export default MissionControl;
+    // Inject job context into compaction
+    await ctx.session.hook('compaction', async (event) => {
+      const context = await (isJobAgent
+        ? getJobCompactionContext(cwd)
+        : getCompactionContext());
+      event.system.push({ type: 'text' as const, text: context });
+    });
+
+    return () => {
+      abortController.abort();
+      setToastEmitter(null);
+    };
+  },
+});

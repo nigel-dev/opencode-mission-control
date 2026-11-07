@@ -1,13 +1,14 @@
-import { tool, type ToolDefinition } from '@opencode-ai/plugin';
+import { z } from 'zod';
 import { getJobByName } from '../lib/job-state';
 import { isInsideTmux, createWindow, getCurrentSession, setWindowOption } from '../lib/tmux';
 
-export const mc_attach: ToolDefinition = tool({
+export const mc_attach = {
+  name: 'mc_attach',
   description: 'Get instructions for attaching to a job\'s terminal',
-  args: {
-    name: tool.schema.string().describe('Job name'),
-  },
-  async execute(args) {
+  input: z.object({
+    name: z.string().describe('Job name'),
+  }).strict(),
+  async execute(args: { name: string }) {
     const job = await getJobByName(args.name);
 
     if (!job) {
@@ -27,7 +28,7 @@ export const mc_attach: ToolDefinition = tool({
         const currentSession = getCurrentSession();
 
         if (!currentSession) {
-          return `Run: opencode attach ${job.serverUrl}`;
+          return { content: `Run: opencode attach ${job.serverUrl}` };
         }
 
         await createWindow({
@@ -43,10 +44,10 @@ export const mc_attach: ToolDefinition = tool({
           // Best-effort: tagging failure should not block attach
         }
 
-        return `Opened TUI for job '${job.name}' in new tmux window`;
+        return { content: `Opened TUI for job '${job.name}' in new tmux window` };
       } else {
         // Not inside tmux, return the command to run
-        return `Run: opencode attach ${job.serverUrl}`;
+        return { content: `Run: opencode attach ${job.serverUrl}` };
       }
     }
 
@@ -67,6 +68,6 @@ export const mc_attach: ToolDefinition = tool({
     lines.push('');
     lines.push('# To detach: Ctrl+B, D');
 
-    return lines.join('\n');
+    return { content: lines.join('\n') };
   },
-});
+};

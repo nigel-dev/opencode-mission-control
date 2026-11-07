@@ -1,4 +1,4 @@
-import { tool, type ToolDefinition } from '@opencode-ai/plugin';
+import { z } from 'zod';
 import { loadJobState, type Job } from '../lib/job-state';
 import { formatTimeAgo } from '../lib/utils';
 
@@ -88,17 +88,15 @@ function formatJobsOutput(grouped: Record<string, Job[]>): string {
   return lines.join('\n');
 }
 
-export const mc_jobs: ToolDefinition = tool({
+export const mc_jobs = {
+  name: 'mc_jobs',
   description: 'List all Mission Control jobs with status',
-  args: {
-    status: tool.schema
-      .enum(['all', 'running', 'completed', 'failed'])
-      .optional()
-      .describe('Filter by status (default: all)'),
-  },
-  async execute(args) {
+  input: z.object({
+    status: z.enum(['all', 'running', 'completed', 'failed']).optional().describe('Filter by status (default: all)'),
+  }).strict(),
+  async execute(args: { status?: 'all' | 'running' | 'completed' | 'failed' }) {
     const state = await loadJobState();
     const grouped = groupJobsByStatus(state.jobs, args.status);
-    return formatJobsOutput(grouped);
+    return { content: formatJobsOutput(grouped) };
   },
-});
+};

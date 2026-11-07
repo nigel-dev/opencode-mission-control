@@ -1,16 +1,17 @@
-import { tool, type ToolDefinition } from '@opencode-ai/plugin';
+import { z } from 'zod';
 import { getJobByName } from '../lib/job-state';
 import { capturePane } from '../lib/tmux';
 import { getSharedMonitor } from '../lib/orchestrator-singleton';
 
-export const mc_capture: ToolDefinition = tool({
+export const mc_capture = {
+  name: 'mc_capture',
   description: 'Capture current terminal output or structured events from a job',
-  args: {
-    name: tool.schema.string().describe('Job name'),
-    lines: tool.schema.number().optional().describe('Number of lines for TUI mode (default: 100)'),
-    filter: tool.schema.enum(['file.edited', 'tool', 'error', 'all']).optional().describe('Event filter for serve-mode jobs (default: all)'),
-  },
-  async execute(args) {
+  input: z.object({
+    name: z.string().describe('Job name'),
+    lines: z.number().describe('Number of lines for TUI mode (default: 100)'),
+    filter: z.enum(['file.edited', 'tool', 'error', 'all']).describe('Event filter for serve-mode jobs (default: all)'),
+  }).strict(),
+  async execute(args: { name: string; lines?: number; filter?: 'file.edited' | 'tool' | 'error' | 'all' }) {
     const job = await getJobByName(args.name);
     if (!job) {
       throw new Error(`Job "${args.name}" not found`);
@@ -24,13 +25,13 @@ export const mc_capture: ToolDefinition = tool({
       const filter = args.filter ?? 'all';
 
       if (!accumulator) {
-        return JSON.stringify({
+        return { content: JSON.stringify({
           job: job.name,
           mode: 'serve',
           status: job.status,
           events: [],
           message: 'No events accumulated yet',
-        }, null, 2);
+        }, null, 2) };
       }
 
       const events: Array<{ type: string; timestamp: string; payload: unknown }> = [];
@@ -68,11 +69,11 @@ export const mc_capture: ToolDefinition = tool({
         events,
       };
 
-      return JSON.stringify(result, null, 2);
+      return { content: JSON.stringify(result, null, 2) };
     }
 
     const lineCount = args.lines ?? 100;
     const output = await capturePane(job.tmuxTarget, lineCount);
-    return output;
+    return { content: output };
   },
-});
+};

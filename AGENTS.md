@@ -31,8 +31,9 @@ Guide for coding agents working on `opencode-mission-control` in ULW mode.
 Run these before marking work complete:
 
 ```bash
+bun run typecheck
 bun run build
-bun test
+bun run test
 ```
 
 If tests fail, identify whether failures are pre-existing vs introduced by your change.
@@ -46,7 +47,7 @@ If tests fail, identify whether failures are pre-existing vs introduced by your 
 
 ## CI & GitHub Workflows
 
-- **CI** (`.github/workflows/ci.yml`) — Runs `bun run build` and `bun test` on PRs and pushes to `main`.
+- **CI** (`.github/workflows/ci.yml`) — Runs `bun run build`, `bun run typecheck` and `bun test` on PRs and pushes to `main`.
 - **Conventional Commits** (`.github/workflows/conventional-commits.yml`) — Validates PR titles follow the convention.
 - **CodeQL** (`.github/workflows/codeql.yml`) — Static analysis for TypeScript; runs on PRs, pushes to `main`, and weekly.
 - **Publish** (`.github/workflows/publish.yml`) — semantic-release to npm on `main`.

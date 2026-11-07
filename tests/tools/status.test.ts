@@ -56,7 +56,7 @@ describe('mc_status', () => {
     });
 
     it('should have required arg: name', () => {
-      expect(mc_status.args.name).toBeDefined();
+      expect(mc_status.input.shape.name).toBeDefined();
     });
   });
 
@@ -90,54 +90,54 @@ describe('mc_status', () => {
     it('should include job name and status', async () => {
       const result = await mc_status.execute({ name: 'test-job' }, mockContext);
 
-      expect(result).toContain('Job: test-job');
-      expect(result).toContain('Status: running');
+      expect(result.content).toContain('Job: test-job');
+      expect(result.content).toContain('Status: running');
     });
 
     it('should include job ID', async () => {
       const result = await mc_status.execute({ name: 'test-job' }, mockContext);
 
-      expect(result).toContain('ID: test-job-id');
+      expect(result.content).toContain('ID: test-job-id');
     });
 
     it('should include metadata section with branch and mode', async () => {
       const result = await mc_status.execute({ name: 'test-job' }, mockContext);
 
-      expect(result).toContain('Metadata:');
-      expect(result).toContain('Branch: mc/test-job');
-      expect(result).toContain('Mode: vanilla');
+      expect(result.content).toContain('Metadata:');
+      expect(result.content).toContain('Branch: mc/test-job');
+      expect(result.content).toContain('Mode: vanilla');
     });
 
     it('should include placement and creation time', async () => {
       const result = await mc_status.execute({ name: 'test-job' }, mockContext);
 
-      expect(result).toContain('Placement: session');
-      expect(result).toContain('Created:');
+      expect(result.content).toContain('Placement: session');
+      expect(result.content).toContain('Created:');
     });
 
     it('should include paths section with worktree and tmux target', async () => {
       const result = await mc_status.execute({ name: 'test-job' }, mockContext);
 
-      expect(result).toContain('Paths:');
-      expect(result).toContain('Worktree: /tmp/mc-worktrees/test-job');
-      expect(result).toContain('tmux Target: mc-test-job');
+      expect(result.content).toContain('Paths:');
+      expect(result.content).toContain('Worktree: /tmp/mc-worktrees/test-job');
+      expect(result.content).toContain('tmux Target: mc-test-job');
     });
 
     it('should include git status section', async () => {
       const result = await mc_status.execute({ name: 'test-job' }, mockContext);
 
-      expect(result).toContain('Git Status:');
-      expect(result).toContain('Branch:');
-      expect(result).toContain('Files Changed:');
-      expect(result).toContain('Ahead:');
-      expect(result).toContain('Behind:');
+      expect(result.content).toContain('Git Status:');
+      expect(result.content).toContain('Branch:');
+      expect(result.content).toContain('Files Changed:');
+      expect(result.content).toContain('Ahead:');
+      expect(result.content).toContain('Behind:');
     });
 
     it('should include recent output section', async () => {
       const result = await mc_status.execute({ name: 'test-job' }, mockContext);
 
-      expect(result).toContain('Recent Output (last 10 lines):');
-      expect(result).toContain('Last line of output');
+      expect(result.content).toContain('Recent Output (last 10 lines):');
+      expect(result.content).toContain('Last line of output');
     });
   });
 
@@ -150,8 +150,8 @@ describe('mc_status', () => {
 
       const result = await mc_status.execute({ name: 'test-job' }, mockContext);
 
-      expect(result).toContain('Duration:');
-      expect(result).toMatch(/Duration: \d+[hm]/);
+      expect(result.content).toContain('Duration:');
+      expect(result.content).toMatch(/Duration: \d+[hm]/);
     });
 
     it('should show duration for completed jobs', async () => {
@@ -169,8 +169,8 @@ describe('mc_status', () => {
 
       const result = await mc_status.execute({ name: 'test-job' }, mockContext);
 
-      expect(result).toContain('Duration:');
-      expect(result).toContain('Completed:');
+      expect(result.content).toContain('Duration:');
+      expect(result.content).toContain('Completed:');
     });
 
     it('should show exit code for completed jobs', async () => {
@@ -185,7 +185,7 @@ describe('mc_status', () => {
 
       const result = await mc_status.execute({ name: 'test-job' }, mockContext);
 
-      expect(result).toContain('Exit Code: 0');
+      expect(result.content).toContain('Exit Code: 0');
     });
   });
 
@@ -201,7 +201,7 @@ describe('mc_status', () => {
 
       const result = await mc_status.execute({ name: 'test-job' }, mockContext);
 
-      expect(result).toContain('Plan File: my-plan.md');
+      expect(result.content).toContain('Plan File: my-plan.md');
     });
 
     it('should not include plan file when absent', async () => {
@@ -211,7 +211,7 @@ describe('mc_status', () => {
 
       const result = await mc_status.execute({ name: 'test-job' }, mockContext);
 
-      expect(result).not.toContain('Plan File:');
+      expect(result.content).not.toContain('Plan File:');
     });
   });
 
@@ -223,7 +223,7 @@ describe('mc_status', () => {
 
       const result = await mc_status.execute({ name: 'test-job' }, mockContext);
 
-      expect(result).toContain('(unable to capture pane output)');
+      expect(result.content).toContain('(unable to capture pane output)');
     });
   });
 
@@ -235,7 +235,7 @@ describe('mc_status', () => {
 
       const result = await mc_status.execute({ name: 'test-job' }, mockContext);
 
-      expect(result).toContain('Managed: true');
+      expect(result.content).toContain('Managed: true');
     });
 
     it('should show unmanaged status', async () => {
@@ -245,7 +245,7 @@ describe('mc_status', () => {
 
       const result = await mc_status.execute({ name: 'test-job' }, mockContext);
 
-      expect(result).toContain('Managed: false');
+      expect(result.content).toContain('Managed: false');
     });
   });
 
@@ -257,7 +257,7 @@ describe('mc_status', () => {
 
       const result = await mc_status.execute({ name: 'test-job' }, mockContext);
 
-      expect(result).toContain('Status: running');
+      expect(result.content).toContain('Status: running');
     });
 
     it('should handle completed status', async () => {
@@ -272,7 +272,7 @@ describe('mc_status', () => {
 
       const result = await mc_status.execute({ name: 'test-job' }, mockContext);
 
-      expect(result).toContain('Status: completed');
+      expect(result.content).toContain('Status: completed');
     });
 
     it('should handle failed status', async () => {
@@ -288,8 +288,8 @@ describe('mc_status', () => {
 
       const result = await mc_status.execute({ name: 'test-job' }, mockContext);
 
-      expect(result).toContain('Status: failed');
-      expect(result).toContain('Exit Code: 1');
+      expect(result.content).toContain('Status: failed');
+      expect(result.content).toContain('Exit Code: 1');
     });
   });
 
@@ -315,15 +315,15 @@ describe('mc_status', () => {
 
       const result = await mc_status.execute({ name: 'test-job' }, mockContext);
 
-      expect(result).toContain('Serve Mode Telemetry:');
-      expect(result).toContain('Session State: streaming');
-      expect(result).toContain('Current File: src/index.ts');
-      expect(result).toContain('Files Edited: 2');
-      expect(result).toContain('src/index.ts');
-      expect(result).toContain('src/utils.ts');
-      expect(result).toContain('Events Accumulated: 42');
-      expect(result).toContain('Port: 8080');
-      expect(result).toContain('Server URL: http://localhost:8080');
+      expect(result.content).toContain('Serve Mode Telemetry:');
+      expect(result.content).toContain('Session State: streaming');
+      expect(result.content).toContain('Current File: src/index.ts');
+      expect(result.content).toContain('Files Edited: 2');
+      expect(result.content).toContain('src/index.ts');
+      expect(result.content).toContain('src/utils.ts');
+      expect(result.content).toContain('Events Accumulated: 42');
+      expect(result.content).toContain('Port: 8080');
+      expect(result.content).toContain('Server URL: http://localhost:8080');
     });
 
     it('should handle serve-mode job with no accumulated events', async () => {
@@ -340,8 +340,8 @@ describe('mc_status', () => {
 
       const result = await mc_status.execute({ name: 'test-job' }, mockContext);
 
-      expect(result).toContain('Port: 8080');
-      expect(result).not.toContain('Serve Mode Telemetry:');
+      expect(result.content).toContain('Port: 8080');
+      expect(result.content).not.toContain('Serve Mode Telemetry:');
     });
 
     it('should preserve TUI-mode output format for jobs without port', async () => {
@@ -353,10 +353,10 @@ describe('mc_status', () => {
 
       const result = await mc_status.execute({ name: 'test-job' }, mockContext);
 
-      expect(result).not.toContain('Serve Mode Telemetry:');
-      expect(result).not.toContain('Port:');
-      expect(result).toContain('Recent Output (last 10 lines):');
-      expect(result).toContain('TUI output');
+      expect(result.content).not.toContain('Serve Mode Telemetry:');
+      expect(result.content).not.toContain('Port:');
+      expect(result.content).toContain('Recent Output (last 10 lines):');
+      expect(result.content).toContain('TUI output');
     });
 
     it('should show idle state when no current tool', async () => {
@@ -377,8 +377,8 @@ describe('mc_status', () => {
 
       const result = await mc_status.execute({ name: 'test-job' }, mockContext);
 
-      expect(result).toContain('Session State: idle');
-      expect(result).toContain('Files Edited: 0');
+      expect(result.content).toContain('Session State: idle');
+      expect(result.content).toContain('Files Edited: 0');
     });
   });
 });

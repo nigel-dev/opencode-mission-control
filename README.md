@@ -85,6 +85,8 @@ For complex multi-task workflows, the **Plan System** handles dependency graphs,
 
 ### Installation (OpenCode Plugin)
 
+> **Requires OpenCode V2** (plugin API `@opencode/plugin` 2.x). This version targets V2 and is not compatible with V1.
+
 Most OpenCode setups install plugins listed in `opencode.json` automatically, so you usually **do not** run `npm install` manually.
 
 Add this plugin entry:
@@ -896,8 +898,9 @@ If your commit messages are vague, semantic-release gets moody.
 
 ```bash
 bun install
+bun run typecheck
 bun run build
-bun test
+bun run test
 ```
 
 ## Contributing

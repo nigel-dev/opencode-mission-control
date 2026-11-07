@@ -1,4 +1,6 @@
-import { createOpencodeClient, type OpencodeClient } from '@opencode-ai/sdk';
+import { OpenCode, type OpenCodeClient } from "@opencode/client";
+
+export type OpencodeClient = OpenCodeClient;
 
 export function createJobClient(
   port: number,
@@ -8,11 +10,11 @@ export function createJobClient(
   const headers: Record<string, string> = {};
 
   if (password) {
-    headers['Authorization'] =
-      'Basic ' + Buffer.from('opencode:' + password).toString('base64');
+    headers["Authorization"] =
+      "Basic " + Buffer.from("opencode:" + password).toString("base64");
   }
 
-  return createOpencodeClient({
+  return OpenCode.make({
     baseUrl,
     headers,
   });
@@ -60,7 +62,6 @@ export async function waitForServer(
 
 /**
  * Send a prompt to a session via the SDK.
- * Uses promptAsync to return immediately without waiting for completion.
  */
 export async function sendPrompt(
   client: OpencodeClient,
@@ -70,14 +71,18 @@ export async function sendPrompt(
   model?: { providerID: string; modelID: string },
 ): Promise<void> {
   try {
-    await client.session.promptAsync({
-      path: { id: sessionId },
-      body: {
-        parts: [{ type: 'text', text: prompt }],
-        ...(agent ? { agent } : {}),
-        ...(model ? { model } : {}),
-      },
-    });
+    if (agent) {
+      await client.session.switchAgent({ sessionID: sessionId, agent });
+    }
+
+    if (model) {
+      await client.session.switchModel({
+        sessionID: sessionId,
+        model: { id: model.modelID, providerID: model.providerID },
+      });
+    }
+
+    await client.session.prompt({ sessionID: sessionId, text: prompt });
   } catch (error) {
     throw new Error(
       `Failed to send prompt to session ${sessionId}: ${error instanceof Error ? error.message : String(error)}`,
@@ -91,17 +96,22 @@ export async function createSessionAndPrompt(
   agent?: string,
   model?: { providerID: string; modelID: string },
 ): Promise<string> {
-  const result = await client.session.create();
-
-  if (!result.data) {
+  let session;
+  try {
+    session = await client.session.create({
+      agent: agent ?? undefined,
+      model: model
+        ? { id: model.modelID, providerID: model.providerID }
+        : undefined,
+    });
+  } catch (error) {
     throw new Error(
-      `Failed to create session: ${result.error ? JSON.stringify(result.error) : 'unknown error'}`,
+      `Failed to create session: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
 
-  const sessionId = result.data.id;
-  await sendPrompt(client, sessionId, prompt, agent, model);
-  return sessionId;
+  await sendPrompt(client, session.id, prompt);
+  return session.id;
 }
 
 export interface ForkSessionOptions {
@@ -117,18 +127,16 @@ export async function forkJobSession(
   sourceSessionId: string,
   options: ForkSessionOptions,
 ): Promise<string> {
-  const forkResult = await client.session.fork({
-    path: { id: sourceSessionId },
-    body: {},
-  });
-
-  if (!forkResult.data) {
+  let forked;
+  try {
+    forked = await client.session.fork({ sessionID: sourceSessionId });
+  } catch (error) {
     throw new Error(
-      `Failed to fork session: ${forkResult.error ? JSON.stringify(forkResult.error) : 'unknown error'}`,
+      `Failed to fork session: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
 
-  const newSessionId = forkResult.data.id;
+  const newSessionId = forked.id;
 
   if (options.additionalPrompt) {
     const contextPrompt = `Forked from job "${options.sourceJobName}" as "${options.newJobName}".\n\nAdditional context: ${options.additionalPrompt}`;

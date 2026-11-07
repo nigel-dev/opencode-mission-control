@@ -121,15 +121,15 @@ describe('mc_launch', () => {
     });
 
     it('should have required args: name and prompt', () => {
-      expect(mc_launch.args.name).toBeDefined();
-      expect(mc_launch.args.prompt).toBeDefined();
+      expect(mc_launch.input.shape.name).toBeDefined();
+      expect(mc_launch.input.shape.prompt).toBeDefined();
     });
 
     it('should have optional args: branch, placement, mode, planFile', () => {
-      expect(mc_launch.args.branch).toBeDefined();
-      expect(mc_launch.args.placement).toBeDefined();
-      expect(mc_launch.args.mode).toBeDefined();
-      expect(mc_launch.args.planFile).toBeDefined();
+      expect(mc_launch.input.shape.branch).toBeDefined();
+      expect(mc_launch.input.shape.placement).toBeDefined();
+      expect(mc_launch.input.shape.mode).toBeDefined();
+      expect(mc_launch.input.shape.planFile).toBeDefined();
     });
   });
 
@@ -289,11 +289,11 @@ describe('mc_launch', () => {
         mockContext,
       );
 
-      expect(result).toContain('Job "feature-auth" launched successfully');
-      expect(result).toContain('test-uuid-1234');
-      expect(result).toContain('mc/feature-auth');
-      expect(result).toContain('mc-feature-auth');
-      expect(result).toContain('tmux attach -t mc-feature-auth');
+      expect(result.content).toContain('Job "feature-auth" launched successfully');
+      expect(result.content).toContain('test-uuid-1234');
+      expect(result.content).toContain('mc/feature-auth');
+      expect(result.content).toContain('mc-feature-auth');
+      expect(result.content).toContain('tmux attach -t mc-feature-auth');
     });
 
     it('should return window switch instructions for window placement', async () => {
@@ -308,7 +308,7 @@ describe('mc_launch', () => {
         mockContext,
       );
 
-      expect(result).toContain('tmux select-window');
+      expect(result.content).toContain('tmux select-window');
     });
 
     it('should pass copyFiles through to resolvePostCreateHook', async () => {
@@ -567,7 +567,7 @@ describe('mc_launch', () => {
         mockContext,
       );
 
-      expect(result).toContain('Job "test" launched successfully');
+      expect(result.content).toContain('Job "test" launched successfully');
     });
 
     it('should not fail if cleanup itself fails', async () => {
@@ -587,7 +587,7 @@ describe('mc_launch', () => {
         mockContext,
       );
 
-      expect(result).toContain('launched successfully');
+      expect(result.content).toContain('launched successfully');
       expect(mockAddJob).toHaveBeenCalledWith(
         expect.objectContaining({ status: 'running' }),
       );
@@ -669,8 +669,8 @@ describe('mc_launch', () => {
         mockContext,
       );
 
-      expect(result).toContain('Port:      14100');
-      expect(result).toContain('Server:    http://127.0.0.1:14100');
+      expect(result.content).toContain('Port:      14100');
+      expect(result.content).toContain('Server:    http://127.0.0.1:14100');
     });
 
     it('should pass serverPassword to serve launcher and waitForServer', async () => {

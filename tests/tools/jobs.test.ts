@@ -31,7 +31,7 @@ describe('mc_jobs', () => {
     });
 
     it('should have optional status arg', () => {
-      expect(mc_jobs.args.status).toBeDefined();
+      expect(mc_jobs.input.shape.status).toBeDefined();
     });
   });
 
@@ -45,8 +45,8 @@ describe('mc_jobs', () => {
 
       const result = await mc_jobs.execute({}, mockContext);
 
-      expect(result).toContain('Mission Control Jobs');
-      expect(result).toContain('No jobs found');
+      expect(result.content).toContain('Mission Control Jobs');
+      expect(result.content).toContain('No jobs found');
     });
   });
 
@@ -74,11 +74,11 @@ describe('mc_jobs', () => {
 
       const result = await mc_jobs.execute({}, mockContext);
 
-      expect(result).toContain('Running (1)');
-      expect(result).toContain('feature-auth');
-      expect(result).toContain('Add OAuth support');
-      expect(result).toContain('mc/feature-auth');
-      expect(result).toContain('plan');
+      expect(result.content).toContain('Running (1)');
+      expect(result.content).toContain('feature-auth');
+      expect(result.content).toContain('Add OAuth support');
+      expect(result.content).toContain('mc/feature-auth');
+      expect(result.content).toContain('plan');
     });
 
     it('should list completed jobs', async () => {
@@ -106,9 +106,9 @@ describe('mc_jobs', () => {
 
       const result = await mc_jobs.execute({}, mockContext);
 
-      expect(result).toContain('Completed (1)');
-      expect(result).toContain('refactor-api');
-      expect(result).toContain('✓');
+      expect(result.content).toContain('Completed (1)');
+      expect(result.content).toContain('refactor-api');
+      expect(result.content).toContain('✓');
     });
 
     it('should list failed jobs', async () => {
@@ -135,9 +135,9 @@ describe('mc_jobs', () => {
 
       const result = await mc_jobs.execute({}, mockContext);
 
-      expect(result).toContain('Failed (1)');
-      expect(result).toContain('fix-bug-123');
-      expect(result).toContain('✗');
+      expect(result.content).toContain('Failed (1)');
+      expect(result.content).toContain('fix-bug-123');
+      expect(result.content).toContain('✗');
     });
 
     it('should group jobs by status', async () => {
@@ -176,10 +176,10 @@ describe('mc_jobs', () => {
 
       const result = await mc_jobs.execute({}, mockContext);
 
-      expect(result).toContain('Running (1)');
-      expect(result).toContain('Completed (1)');
-      expect(result).toContain('feature-auth');
-      expect(result).toContain('refactor-api');
+      expect(result.content).toContain('Running (1)');
+      expect(result.content).toContain('Completed (1)');
+      expect(result.content).toContain('feature-auth');
+      expect(result.content).toContain('refactor-api');
     });
   });
 
@@ -220,9 +220,9 @@ describe('mc_jobs', () => {
 
       const result = await mc_jobs.execute({ status: 'running' }, mockContext);
 
-      expect(result).toContain('Running (1)');
-      expect(result).toContain('feature-auth');
-      expect(result).not.toContain('refactor-api');
+      expect(result.content).toContain('Running (1)');
+      expect(result.content).toContain('feature-auth');
+      expect(result.content).not.toContain('refactor-api');
     });
 
     it('should filter by completed status', async () => {
@@ -264,9 +264,9 @@ describe('mc_jobs', () => {
         mockContext,
       );
 
-      expect(result).toContain('Completed (1)');
-      expect(result).toContain('refactor-api');
-      expect(result).not.toContain('feature-auth');
+      expect(result.content).toContain('Completed (1)');
+      expect(result.content).toContain('refactor-api');
+      expect(result.content).not.toContain('feature-auth');
     });
 
     it('should filter by failed status', async () => {
@@ -305,9 +305,9 @@ describe('mc_jobs', () => {
 
       const result = await mc_jobs.execute({ status: 'failed' }, mockContext);
 
-      expect(result).toContain('Failed (1)');
-      expect(result).toContain('fix-bug');
-      expect(result).not.toContain('feature-auth');
+      expect(result.content).toContain('Failed (1)');
+      expect(result.content).toContain('fix-bug');
+      expect(result.content).not.toContain('feature-auth');
     });
 
     it('should show all jobs when status is all', async () => {
@@ -346,10 +346,10 @@ describe('mc_jobs', () => {
 
       const result = await mc_jobs.execute({ status: 'all' }, mockContext);
 
-      expect(result).toContain('Running (1)');
-      expect(result).toContain('Completed (1)');
-      expect(result).toContain('feature-auth');
-      expect(result).toContain('refactor-api');
+      expect(result.content).toContain('Running (1)');
+      expect(result.content).toContain('Completed (1)');
+      expect(result.content).toContain('feature-auth');
+      expect(result.content).toContain('refactor-api');
     });
   });
 
@@ -379,8 +379,8 @@ describe('mc_jobs', () => {
 
       const result = await mc_jobs.execute({}, mockContext);
 
-      expect(result).toContain('This is a very long prompt that should be trunc...');
-      expect(result).not.toContain(longPrompt);
+      expect(result.content).toContain('This is a very long prompt that should be trunc...');
+      expect(result.content).not.toContain(longPrompt);
     });
 
     it('should not truncate short prompts', async () => {
@@ -407,7 +407,7 @@ describe('mc_jobs', () => {
 
       const result = await mc_jobs.execute({}, mockContext);
 
-      expect(result).toContain(shortPrompt);
+      expect(result.content).toContain(shortPrompt);
     });
   });
 
@@ -435,10 +435,10 @@ describe('mc_jobs', () => {
 
       const result = await mc_jobs.execute({}, mockContext);
 
-      expect(result).toContain('feature-auth');
-      expect(result).toContain('[running]');
-      expect(result).toContain('mc/feature-auth');
-      expect(result).toContain('Mode: plan');
+      expect(result.content).toContain('feature-auth');
+      expect(result.content).toContain('[running]');
+      expect(result.content).toContain('mc/feature-auth');
+      expect(result.content).toContain('Mode: plan');
     });
 
     it('should show duration for running jobs', async () => {
@@ -464,7 +464,7 @@ describe('mc_jobs', () => {
 
       const result = await mc_jobs.execute({}, mockContext);
 
-      expect(result).toContain('Started:');
+      expect(result.content).toContain('Started:');
     });
 
     it('should show completion time for completed jobs', async () => {
@@ -492,7 +492,7 @@ describe('mc_jobs', () => {
 
       const result = await mc_jobs.execute({}, mockContext);
 
-      expect(result).toContain('Completed:');
+      expect(result.content).toContain('Completed:');
     });
 
     it('should include status indicators', async () => {
@@ -544,9 +544,9 @@ describe('mc_jobs', () => {
 
       const result = await mc_jobs.execute({}, mockContext);
 
-      expect(result).toContain('▶');
-      expect(result).toContain('✓');
-      expect(result).toContain('✗');
+      expect(result.content).toContain('▶');
+      expect(result.content).toContain('✓');
+      expect(result.content).toContain('✗');
     });
   });
 
@@ -587,8 +587,8 @@ describe('mc_jobs', () => {
 
       const result = await mc_jobs.execute({}, mockContext);
 
-      expect(result).toContain('Running (1)');
-      expect(result).toContain('Completed (1)');
+      expect(result.content).toContain('Running (1)');
+      expect(result.content).toContain('Completed (1)');
     });
   });
 });

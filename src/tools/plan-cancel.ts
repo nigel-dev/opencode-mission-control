@@ -1,16 +1,17 @@
-import { tool, type ToolDefinition } from '@opencode-ai/plugin';
+import { z } from 'zod';
 import { loadPlan } from '../lib/plan-state';
 import { Orchestrator } from '../lib/orchestrator';
 import { getSharedMonitor } from '../lib/orchestrator-singleton';
 import { loadConfig } from '../lib/config';
 
-export const mc_plan_cancel: ToolDefinition = tool({
+export const mc_plan_cancel = {
+  name: 'mc_plan_cancel',
   description: 'Cancel the active orchestrated plan and stop all its jobs',
-  args: {},
+  input: z.object({}).strict(),
   async execute() {
     const plan = await loadPlan();
     if (!plan) {
-      return 'No active plan to cancel.';
+      return { content: 'No active plan to cancel.' };
     }
 
     const planName = plan.name;
@@ -20,13 +21,13 @@ export const mc_plan_cancel: ToolDefinition = tool({
     const orchestrator = new Orchestrator(getSharedMonitor(), config);
     await orchestrator.cancelPlan();
 
-    return [
+    return { content: [
       `Plan "${planName}" canceled.`,
       '',
       `  ID: ${planId}`,
       '',
       'All running jobs have been stopped.',
       'Integration branch and worktrees cleaned up.',
-    ].join('\n');
+    ].join('\n') };
   },
-});
+};

@@ -1,4 +1,4 @@
-import { tool, type ToolDefinition } from '@opencode-ai/plugin';
+import { z } from 'zod';
 import { getJobByName } from '../lib/job-state';
 import { gitCommand } from '../lib/git';
 import { loadPlan } from '../lib/plan-state';
@@ -34,15 +34,16 @@ async function assertCleanWorktree(cwd: string): Promise<void> {
   }
 }
 
-export const mc_merge: ToolDefinition = tool({
+export const mc_merge = {
+  name: 'mc_merge',
   description: 'Merge a job\'s branch back to main (for non-PR workflows)',
-  args: {
-    name: tool.schema.string().describe('Job name'),
-    squash: tool.schema.boolean().optional().describe('Squash commits (deprecated: use strategy instead)'),
-    strategy: tool.schema.enum(['squash', 'ff-only', 'merge']).optional().describe('Merge strategy (default: from config, usually squash)'),
-    message: tool.schema.string().optional().describe('Merge commit message'),
-  },
-  async execute(args) {
+  input: z.object({
+    name: z.string().describe('Job name'),
+    squash: z.boolean().optional().describe('Squash commits (deprecated: use strategy instead)'),
+    strategy: z.enum(['squash', 'ff-only', 'merge']).optional().describe('Merge strategy (default: from config, usually squash)'),
+    message: z.string().optional().describe('Merge commit message'),
+  }).strict(),
+  async execute(args: { name: string; squash?: boolean; strategy?: 'squash' | 'ff-only' | 'merge'; message?: string }) {
     // 1. Get job by name
     const job = await getJobByName(args.name);
     if (!job) {
@@ -183,6 +184,6 @@ export const mc_merge: ToolDefinition = tool({
       'Note: Branch was not deleted. Use mc_cleanup to remove the worktree if needed.',
     ];
 
-    return lines.join('\n');
+    return { content: lines.join('\n') };
   },
-});
+};

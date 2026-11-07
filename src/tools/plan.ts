@@ -1,4 +1,4 @@
-import { tool, type ToolDefinition } from '@opencode-ai/plugin';
+import { z } from 'zod';
 import { randomUUID } from 'crypto';
 import type { PlanSpec, JobSpec } from '../lib/plan-types';
 import { loadPlan, savePlan, validateGhAuth } from '../lib/plan-state';
@@ -8,57 +8,42 @@ import { loadConfig } from '../lib/config';
 import { gitCommand } from '../lib/git';
 import { getCurrentModel } from '../lib/model-tracker';
 
-export const mc_plan: ToolDefinition = tool({
+export const mc_plan = {
+  name: 'mc_plan',
   description:
     'Create and start a multi-job orchestrated plan with dependency management',
-  args: {
-    name: tool.schema.string().describe('Plan name — used as the PR title. Use Conventional Commits format (e.g. "feat: add search", "fix: resolve auth bugs").'),
-    jobs: tool.schema
-      .array(
-        tool.schema.object({
-          name: tool.schema.string().describe('Unique job name'),
-          prompt: tool.schema.string().describe('Task prompt for the AI agent'),
-          dependsOn: tool.schema
-            .array(tool.schema.string())
-            .optional()
-            .describe('Names of jobs this depends on'),
-          touchSet: tool.schema
-            .array(tool.schema.string())
-            .optional()
-            .describe('File globs this job expects to modify'),
-          copyFiles: tool.schema
-            .array(tool.schema.string())
-            .optional()
-            .describe('Files to copy from main worktree (e.g. [".env"])'),
-          symlinkDirs: tool.schema
-            .array(tool.schema.string())
-            .optional()
-            .describe('Directories to symlink from main worktree (e.g. ["node_modules"])'),
-          commands: tool.schema
-            .array(tool.schema.string())
-            .optional()
-            .describe('Shell commands to run in worktree after creation'),
-          mode: tool.schema
-            .enum(['vanilla', 'plan', 'ralph', 'ulw'])
-            .optional()
-            .describe('Execution mode override for this job (defaults to omo.defaultMode config)'),
-        }),
-      )
-      .describe('Array of jobs to execute'),
-    mode: tool.schema
-      .enum(['autopilot', 'copilot', 'supervisor'])
-      .optional()
-      .describe('Execution mode (default: autopilot)'),
-    placement: tool.schema
-      .enum(['session', 'window'])
-      .optional()
-      .describe('tmux placement for jobs: session (default) or window in current session'),
-    baseBranch: tool.schema
-      .string()
-      .optional()
-      .describe('Base branch for the integration branch (defaults to default branch)'),
-  },
-  async execute(args, context) {
+  input: z.object({
+    name: z.string().describe('Plan name — used as the PR title. Use Conventional Commits format (e.g. "feat: add search", "fix: resolve auth bugs").'),
+    jobs: z.array(z.object({
+      name: z.string().describe('Unique job name'),
+      prompt: z.string().describe('Task prompt for the AI agent'),
+      dependsOn: z.array(z.string()).optional().describe('Names of jobs this depends on'),
+      touchSet: z.array(z.string()).optional().describe('File globs this job expects to modify'),
+      copyFiles: z.array(z.string()).optional().describe('Files to copy from main worktree (e.g. [".env"])'),
+      symlinkDirs: z.array(z.string()).optional().describe('Directories to symlink from main worktree (e.g. ["node_modules"])'),
+      commands: z.array(z.string()).optional().describe('Shell commands to run in worktree after creation'),
+      mode: z.enum(['vanilla', 'plan', 'ralph', 'ulw']).optional().describe('Execution mode override for this job (defaults to omo.defaultMode config)'),
+    }).strict()).describe('Array of jobs to execute'),
+    mode: z.enum(['autopilot', 'copilot', 'supervisor']).optional().describe('Execution mode (default: autopilot)'),
+    placement: z.enum(['session', 'window']).optional().describe('tmux placement for jobs: session (default) or window in current session'),
+    baseBranch: z.string().optional().describe('Base branch for the integration branch (defaults to default branch)'),
+  }).strict(),
+  async execute(args: {
+    name: string;
+    jobs: {
+      name: string;
+      prompt: string;
+      dependsOn?: string[];
+      touchSet?: string[];
+      copyFiles?: string[];
+      symlinkDirs?: string[];
+      commands?: string[];
+      mode?: 'vanilla' | 'plan' | 'ralph' | 'ulw';
+    }[];
+    mode?: 'autopilot' | 'copilot' | 'supervisor';
+    placement?: 'session' | 'window';
+    baseBranch?: string;
+  }, context: { sessionID?: string }) {
     const mode = args.mode ?? 'autopilot';
 
     // 1. Validate jobs: unique names
@@ -140,7 +125,7 @@ export const mc_plan: ToolDefinition = tool({
         })
         .join('\n');
 
-      return [
+      return { content: [
         `Plan "${args.name}" created (pending approval).`,
         '',
         `  ID:     ${planId}`,
@@ -152,7 +137,7 @@ export const mc_plan: ToolDefinition = tool({
         jobSummary,
         '',
         'Use mc_plan_approve to start execution.',
-      ].join('\n');
+      ].join('\n') };
     }
 
     // autopilot or supervisor: start immediately
@@ -171,7 +156,7 @@ export const mc_plan: ToolDefinition = tool({
       })
       .join('\n');
 
-    return [
+    return { content: [
       `Plan "${args.name}" started.`,
       '',
       `  ID:     ${planId}`,
@@ -183,6 +168,6 @@ export const mc_plan: ToolDefinition = tool({
       jobSummary,
       '',
       'Use mc_plan_status to monitor progress.',
-    ].join('\n');
+    ].join('\n') };
   },
-});
+};

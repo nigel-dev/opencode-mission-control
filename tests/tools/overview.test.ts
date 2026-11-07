@@ -55,7 +55,7 @@ describe('mc_overview', () => {
     });
 
     it('should have no required args', () => {
-      expect(Object.keys(mc_overview.args)).toHaveLength(0);
+      expect(Object.keys(mc_overview.input.shape)).toHaveLength(0);
     });
   });
 
@@ -63,29 +63,29 @@ describe('mc_overview', () => {
     it('should show dashboard header with timestamp', async () => {
       const result = await mc_overview.execute({});
 
-      expect(result).toContain('Mission Control Dashboard');
-      expect(result).toContain('Timestamp:');
+      expect(result.content).toContain('Mission Control Dashboard');
+      expect(result.content).toContain('Timestamp:');
     });
 
     it('should show no active plan', async () => {
       const result = await mc_overview.execute({});
 
-      expect(result).toContain('Active Plan');
-      expect(result).toContain('- None');
+      expect(result.content).toContain('Active Plan');
+      expect(result.content).toContain('- None');
     });
 
     it('should show zero jobs summary', async () => {
       const result = await mc_overview.execute({});
 
-      expect(result).toContain('Jobs Summary');
-      expect(result).toContain('0 running, 0 completed, 0 failed');
+      expect(result.content).toContain('Jobs Summary');
+      expect(result.content).toContain('0 running, 0 completed, 0 failed');
     });
 
     it('should show no running jobs', async () => {
       const result = await mc_overview.execute({});
 
-      expect(result).toContain('Running Jobs');
-      expect(result).toContain('- None');
+      expect(result.content).toContain('Running Jobs');
+      expect(result.content).toContain('- None');
     });
   });
 
@@ -112,8 +112,8 @@ describe('mc_overview', () => {
 
       const result = await mc_overview.execute({});
 
-      expect(result).toContain('serve-job');
-      expect(result).toContain('streaming');
+      expect(result.content).toContain('serve-job');
+      expect(result.content).toContain('streaming');
     });
 
     it('should show serve-mode jobs as idle when no current tool', async () => {
@@ -136,8 +136,8 @@ describe('mc_overview', () => {
 
       const result = await mc_overview.execute({});
 
-      expect(result).toContain('idle-job');
-      expect(result).toContain('idle');
+      expect(result.content).toContain('idle-job');
+      expect(result.content).toContain('idle');
     });
 
     it('should show TUI-mode jobs with report info', async () => {
@@ -161,8 +161,8 @@ describe('mc_overview', () => {
 
       const result = await mc_overview.execute({});
 
-      expect(result).toContain('tui-job');
-      expect(result).toContain('working: Processing files');
+      expect(result.content).toContain('tui-job');
+      expect(result.content).toContain('working: Processing files');
     });
 
     it('should show activity timestamp for serve-mode jobs', async () => {
@@ -187,8 +187,8 @@ describe('mc_overview', () => {
 
       const result = await mc_overview.execute({});
 
-      expect(result).toContain('active-job');
-      expect(result).toContain('streaming');
+      expect(result.content).toContain('active-job');
+      expect(result.content).toContain('streaming');
     });
 
     it('should handle multiple running jobs with mixed modes', async () => {
@@ -232,10 +232,10 @@ describe('mc_overview', () => {
 
       const result = await mc_overview.execute({});
 
-      expect(result).toContain('serve-job');
-      expect(result).toContain('streaming');
-      expect(result).toContain('tui-job');
-      expect(result).toContain('working: Working hard');
+      expect(result.content).toContain('serve-job');
+      expect(result.content).toContain('streaming');
+      expect(result.content).toContain('tui-job');
+      expect(result.content).toContain('working: Working hard');
     });
   });
 
@@ -258,11 +258,11 @@ describe('mc_overview', () => {
 
       const result = await mc_overview.execute({});
 
-      expect(result).toContain('Active Plan');
-      expect(result).toContain('Name: test-plan');
-      expect(result).toContain('Status: running');
-      expect(result).toContain('Progress: 1/3 merged');
-      expect(result).toContain('Mode: autopilot');
+      expect(result.content).toContain('Active Plan');
+      expect(result.content).toContain('Name: test-plan');
+      expect(result.content).toContain('Status: running');
+      expect(result.content).toContain('Progress: 1/3 merged');
+      expect(result.content).toContain('Mode: autopilot');
     });
 
     it('should show copilot mode pending plan', async () => {
@@ -279,8 +279,8 @@ describe('mc_overview', () => {
 
       const result = await mc_overview.execute({});
 
-      expect(result).toContain('Mode: copilot');
-      expect(result).toContain('Plan is pending approval');
+      expect(result.content).toContain('Mode: copilot');
+      expect(result.content).toContain('Plan is pending approval');
     });
 
     it('should show supervisor checkpoint', async () => {
@@ -298,7 +298,7 @@ describe('mc_overview', () => {
 
       const result = await mc_overview.execute({});
 
-      expect(result).toContain('Plan paused at pre_merge');
+      expect(result.content).toContain('Plan paused at pre_merge');
     });
   });
 
@@ -316,9 +316,9 @@ describe('mc_overview', () => {
 
       const result = await mc_overview.execute({});
 
-      expect(result).toContain('Alerts');
-      expect(result).toContain('blocked-job [blocked]:');
-      expect(result).toContain('Waiting for user input');
+      expect(result.content).toContain('Alerts');
+      expect(result.content).toContain('blocked-job [blocked]:');
+      expect(result.content).toContain('Waiting for user input');
     });
 
     it('should show needs_review alerts', async () => {
@@ -334,7 +334,7 @@ describe('mc_overview', () => {
 
       const result = await mc_overview.execute({});
 
-      expect(result).toContain('review-job [needs_review]:');
+      expect(result.content).toContain('review-job [needs_review]:');
     });
 
     it('should suggest actions based on job states', async () => {
@@ -364,11 +364,11 @@ describe('mc_overview', () => {
 
       const result = await mc_overview.execute({});
 
-      expect(result).toContain('Suggested Actions');
-      expect(result).toContain('blocked');
-      expect(result).toContain('completed');
-      expect(result).toContain('failed');
-      expect(result).toContain('running');
+      expect(result.content).toContain('Suggested Actions');
+      expect(result.content).toContain('blocked');
+      expect(result.content).toContain('completed');
+      expect(result.content).toContain('failed');
+      expect(result.content).toContain('running');
     });
   });
 
@@ -393,8 +393,8 @@ describe('mc_overview', () => {
 
       const result = await mc_overview.execute({});
 
-      expect(result).toContain('Recent Completions');
-      expect(result).toContain('completed-job');
+      expect(result.content).toContain('Recent Completions');
+      expect(result.content).toContain('completed-job');
     });
 
     it('should show recent failed jobs', async () => {
@@ -413,8 +413,8 @@ describe('mc_overview', () => {
 
       const result = await mc_overview.execute({});
 
-      expect(result).toContain('Recent Failures');
-      expect(result).toContain('failed-job');
+      expect(result.content).toContain('Recent Failures');
+      expect(result.content).toContain('failed-job');
     });
   });
 });

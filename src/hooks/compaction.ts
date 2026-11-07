@@ -88,8 +88,8 @@ export async function getCompactionContext(): Promise<string> {
   return lines.join('\n');
 }
 
-export async function getJobCompactionContext(): Promise<string> {
-  const context = await getWorktreeContext();
+export async function getJobCompactionContext(cwd: string = process.cwd()): Promise<string> {
+  const context = await getWorktreeContext(cwd);
 
   if (context.isInJob && context.jobName) {
     const mode = context.mode || 'unknown';

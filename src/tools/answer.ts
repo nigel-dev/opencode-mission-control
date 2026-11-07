@@ -1,4 +1,4 @@
-import { tool, type ToolDefinition } from '@opencode-ai/plugin';
+import { z } from 'zod';
 import { getJobByName } from '../lib/job-state';
 import {
   findPendingQuestionByJobName,
@@ -7,18 +7,15 @@ import {
 } from '../lib/question-relay';
 import { loadConfig } from '../lib/config';
 
-export const mc_answer: ToolDefinition = tool({
+export const mc_answer = {
+  name: 'mc_answer',
   description:
     'Answer a pending question from a background job. When a serve-mode job\'s agent asks a question via mcp_question, it gets relayed to this session. Use this tool to respond and unblock the agent.',
-  args: {
-    name: tool.schema
-      .string()
-      .describe('Job name that asked the question'),
-    response: tool.schema
-      .string()
-      .describe('Your answer to the question. For option-based questions, provide the option label(s). For open-ended questions, provide your response text.'),
-  },
-  async execute(args) {
+  input: z.object({
+    name: z.string().describe('Job name that asked the question'),
+    response: z.string().describe('Your answer to the question. For option-based questions, provide the option label(s). For open-ended questions, provide your response text.'),
+  }).strict(),
+  async execute(args: { name: string; response: string }) {
     const job = await getJobByName(args.name);
     if (!job) {
       throw new Error(`Job "${args.name}" not found.`);
@@ -56,6 +53,6 @@ export const mc_answer: ToolDefinition = tool({
 
     await answerPendingQuestion(question, args.response, config.serverPassword);
 
-    return `Answer sent to job "${args.name}": "${args.response}"`;
+    return { content: `Answer sent to job "${args.name}": "${args.response}"` };
   },
-});
+};

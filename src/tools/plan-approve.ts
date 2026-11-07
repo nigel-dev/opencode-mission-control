@@ -1,4 +1,4 @@
-import { tool, type ToolDefinition } from '@opencode-ai/plugin';
+import { z } from 'zod';
 import { loadPlan, savePlan } from '../lib/plan-state';
 import { Orchestrator } from '../lib/orchestrator';
 import { getSharedMonitor, getSharedNotifyCallback, setSharedOrchestrator } from '../lib/orchestrator-singleton';
@@ -9,24 +9,16 @@ import { createIntegrationBranch } from '../lib/integration';
 import { resolvePostCreateHook } from '../lib/worktree-setup';
 import { validateTouchSet } from '../lib/merge-train';
 
-export const mc_plan_approve: ToolDefinition = tool({
+export const mc_plan_approve = {
+  name: 'mc_plan_approve',
   description:
     'Approve a pending copilot plan, clear a supervisor checkpoint, or retry/relaunch a failed job to continue execution',
-  args: {
-    checkpoint: tool.schema
-      .enum(['pre_merge', 'on_error', 'pre_pr'])
-      .optional()
-      .describe('Specific checkpoint to clear (for supervisor mode)'),
-    retry: tool.schema
-      .string()
-      .optional()
-      .describe('Name of a failed, conflict, or needs_rebase job to retry after manual fix (re-validates touchSet)'),
-    relaunch: tool.schema
-      .string()
-      .optional()
-      .describe('Name of a touchSet-failed job to relaunch — spawns agent in existing worktree with correction prompt'),
-  },
-  async execute(args) {
+  input: z.object({
+    checkpoint: z.enum(['pre_merge', 'on_error', 'pre_pr']).optional().describe('Specific checkpoint to clear (for supervisor mode)'),
+    retry: z.string().optional().describe('Name of a failed, conflict, or needs_rebase job to retry after manual fix (re-validates touchSet)'),
+    relaunch: z.string().optional().describe('Name of a touchSet-failed job to relaunch — spawns agent in existing worktree with correction prompt'),
+  }).strict(),
+  async execute(args: { checkpoint?: 'pre_merge' | 'on_error' | 'pre_pr'; retry?: string; relaunch?: string }) {
     if (args.retry && args.relaunch) {
       throw new Error('Cannot specify both "retry" and "relaunch". Use "retry" for manual fixes (re-validates) or "relaunch" to spawn an agent to fix violations.');
     }
@@ -76,7 +68,7 @@ export const mc_plan_approve: ToolDefinition = tool({
         );
         await orchestrator.resumePlan();
 
-        return [
+        return { content: [
           `Checkpoint "${checkpoint}" cleared. Job "${args.relaunch}" relaunched with correction prompt.`,
           '',
           `  ID:   ${plan.id}`,
@@ -84,7 +76,7 @@ export const mc_plan_approve: ToolDefinition = tool({
           '',
           'The agent will fix touchSet violations in the existing worktree.',
           'Use mc_plan_status to monitor progress.',
-        ].join('\n');
+        ].join('\n') };
       }
 
       if (args.retry) {
@@ -119,14 +111,14 @@ export const mc_plan_approve: ToolDefinition = tool({
         orchestrator.setPlanModelSnapshot(getCurrentModel());
         await orchestrator.resumePlan();
 
-        return [
+        return { content: [
           `Checkpoint "${checkpoint}" cleared. Job "${args.retry}" reset to ready_to_merge.`,
           '',
           `  ID:   ${plan.id}`,
           `  Mode: ${plan.mode}`,
           '',
           'Use mc_plan_status to monitor progress.',
-        ].join('\n');
+        ].join('\n') };
       }
 
       const ctx = plan.checkpointContext;
@@ -151,14 +143,14 @@ export const mc_plan_approve: ToolDefinition = tool({
       const acceptMsg = ctx?.failureKind === 'touchset'
         ? ` TouchSet violations for job "${ctx.jobName}" accepted.`
         : '';
-      return [
+      return { content: [
         `Checkpoint "${checkpoint}" cleared.${acceptMsg} Plan "${plan.name}" resuming.`,
         '',
         `  ID:   ${plan.id}`,
         `  Mode: ${plan.mode}`,
         '',
         'Use mc_plan_status to monitor progress.',
-      ].join('\n');
+      ].join('\n') };
     }
 
     if (plan.status !== 'pending') {
@@ -182,7 +174,7 @@ export const mc_plan_approve: ToolDefinition = tool({
     orchestrator.setPlanModelSnapshot(getCurrentModel());
     await orchestrator.resumePlan();
 
-    return [
+    return { content: [
       `Plan "${plan.name}" approved and started.`,
       '',
       `  ID:   ${plan.id}`,
@@ -190,6 +182,6 @@ export const mc_plan_approve: ToolDefinition = tool({
       `  Jobs: ${plan.jobs.length}`,
       '',
       'Use mc_plan_status to monitor progress.',
-    ].join('\n');
+    ].join('\n') };
   },
-});
+};

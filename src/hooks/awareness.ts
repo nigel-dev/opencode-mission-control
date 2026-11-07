@@ -8,8 +8,7 @@ export interface WorktreeContext {
   mode?: string;
 }
 
-export async function getWorktreeContext(): Promise<WorktreeContext> {
-  const cwd = process.cwd();
+export async function getWorktreeContext(cwd: string = process.cwd()): Promise<WorktreeContext> {
   const { isManaged, worktreePath } = await isInManagedWorktree(cwd);
 
   if (!isManaged) {
