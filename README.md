@@ -14,7 +14,11 @@
   <a href="https://github.com/nigel-dev/opencode-mission-control/actions/workflows/ci.yml"><img src="https://github.com/nigel-dev/opencode-mission-control/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
 </p>
 
+> [!IMPORTANT]
+> **Migrated fork — OpenCode V2.** This version has been ported to the OpenCode V2 plugin API (`@opencode/plugin` 2.x) and **is not compatible with OpenCode V1**. The migration is functional but **partial**: see [Migration status](#migration-status) for what is validated, what is not, and what is not migrated yet.
+
 <p align="center">
+  <a href="#migration-status">Migration status</a> &bull;
   <a href="#quick-start">Quick Start</a> &bull;
   <a href="#more-usage-examples">Examples</a> &bull;
   <a href="#choosing-between-launch-and-plan">Launch vs Plan</a> &bull;
@@ -33,7 +37,7 @@ AI coding is fast, but context switching is slow. Running multiple agents in a s
 
 ## The Solution
 
-Mission Control orchestrates **isolated environments** for your AI agents. Each job gets its own git worktree and tmux session — complete filesystem isolation. You can monitor progress, capture output, or attach to any session at any time. When the work is done, sync changes back or create a PR with a single command.
+Mission Control orchestrates **isolated environments** for your AI agents. In this migrated version, each job gets its own git worktree, a local `opencode serve` process, and a tmux session — complete filesystem isolation. You can monitor progress, capture output, or attach to any session at any time. When the work is done, sync changes back or create a PR with a single command.
 
 For complex multi-task workflows, the **Plan System** handles dependency graphs, merge ordering, automated testing, and PR creation — all orchestrated automatically. Less herding cats, more shipping code.
 
@@ -52,7 +56,7 @@ For complex multi-task workflows, the **Plan System** handles dependency graphs,
             ┌──────┴──────┐     ┌──────┴──────┐     ┌──────┴──────┐
             │   Job A     │     │   Job B     │     │   Job C     │
             │  Worktree   │     │  Worktree   │     │  Worktree   │
-            │  + tmux     │     │  + tmux     │     │  + tmux     │
+            │ tmux+serve  │     │ tmux+serve  │     │ tmux+serve  │
             └──────┬──────┘     └──────┬──────┘     └──────┬──────┘
                    │                   │                   │
                    └───────────────────┼───────────────────┘
@@ -66,10 +70,156 @@ For complex multi-task workflows, the **Plan System** handles dependency graphs,
                               └─────────────────┘
 ```
 
-1. **Launch** — `mc_launch` creates a git worktree + tmux session and starts an AI agent inside it
-2. **Monitor** — The background monitor polls every 10s, tracking output, idle state, and pane death
+1. **Launch** — `mc_launch` creates a git worktree and starts a local `opencode serve` inside a tmux session, then prompts the agent
+2. **Monitor** — The monitor subscribes to each serve job's SSE stream; TUI jobs are polled for pane state and exit status
 3. **Observe** — Use `mc_status`, `mc_capture`, or `mc_attach` to check on progress
 4. **Integrate** — Use `mc_diff` to review, `mc_pr` to create a PR, `mc_merge` to merge, or `mc_sync` to rebase
+
+---
+
+## Migration status
+
+This repository is a **migration of Mission Control to OpenCode V2**. It targets
+`@opencode/plugin` / `@opencode/client` 2.x and has been validated with OpenCode
+**2.2.5** on Linux/WSL2. It does **not** work with OpenCode V1.
+
+The port is functional, but not every V1 feature could be carried over as-is and
+not every path has been validated end-to-end yet.
+
+### What had to be replaced (not available in OpenCode V2)
+
+| V1 behavior | V2 reality | What this version does |
+|---|---|---|
+| Server-side toast notifications | No server-side toast API | Toasts are emitted over the plugin RPC channel and rendered by a companion TUI plugin (`src/tui.ts`) |
+| Question tool with prompt/answer | V2 uses first-class forms | `mc_answer` relays answers through `session.form.list` / `session.form.reply` |
+| `noReply` on a prompt | Removed | Uses `session.synthetic({ resume: false })`; the message stays in the pending inbox until the next turn |
+| `session.idle` as the completion signal | Serve-mode runs emit `session.execution.succeeded` / `.failed` / `.interrupted` | The monitor uses execution events for serve jobs; TUI jobs poll the pane and trust an exit code of 0 or an explicit `mc_report` |
+| `opencode -m <model>` in the TUI | `-m/--model` only exists on `opencode run` | Vanilla plan jobs run through `opencode run -m`; OMO modes keep the TUI and its default model |
+| Unauthenticated local server | `opencode serve` always requires auth | Each job gets a random password and uses Basic auth (`opencode:<password>`) |
+| Tool context exposes the directory/worktree | V2 `Tool.Context` has no directory | The plugin location is bound into `mc_report` at registration; cwd is threaded through job state and reports |
+| Permission action `bash` | Permission action is `shell` | Permission relay and auto-approval use the V2 action names |
+| V1 hooks/plugin shape | V2 plugin API | `Plugin.define`, `ctx.tool.transform`, `ctx.event.subscribe`, `ctx.rpc.register` |
+
+### Validated live (end-to-end)
+
+- Plugin loading, tool and command registration
+- Direct slash commands
+- Serve-mode job launch: worktree, per-job `opencode serve`, per-job password, tmux session
+- Job completion through `session.execution.succeeded`
+- `mc_report` writing to the correct project data directory (shared-server case)
+- `mc_diff`, `mc_status`, `mc_capture`, `mc_cleanup`, `mc_kill`
+- Multiple locations / plugin instances
+- V2 question forms + `mc_answer`
+- `session.synthetic({ resume: false })` (V1 `noReply` equivalent)
+- Permission auto-approval
+- Plan flow: `mc_plan` (copilot) → `mc_plan_approve` → `opencode run` job → commit → report → squash merge into the integration branch → `mc_plan_cancel` cleanup
+- Supervisor checkpoints `pre_merge` and `pre_pr` (including persisted approvals across processes)
+- Multi-job plans: parallel launch, `dependsOn` ordering, real merge conflict + `on_error` retry, `touchSet` violation + `relaunch`
+- Real TUI toast rendering (auto-status toast observed in a live TUI session)
+
+### Not validated, not migrated, or known gaps
+
+- **Real PR creation is not validated.** `gh` and a git remote were not available in the test environment. Execution reaches `git push origin` and stops there; the `gh pr create` path is covered by unit tests only. A failed PR stage currently does not persist its error reason on the plan.
+- **Supervisor `retry` / `relaunch` was not live-tested.** Retry and relaunch were validated on normal plans; the supervisor variants are covered by unit tests.
+- **OMO modes (`plan`, `ralph`, `ulw`) were not live-tested.** They require Oh-My-OpenCode to be installed; the launcher path is preserved but unverified in a real session.
+- **Large plans and saturation were not stress-tested.** Live tests used at most three jobs; `maxParallel`, merge-train contention, and many concurrent worktrees are not exercised.
+- **Remote workflows are untested.** Push, PR, branch protection, and CI integration are not validated.
+- **Windows native is not supported/tested.** Only Linux and WSL2 were validated.
+- **V1 → V2 data migration is not guaranteed.** Existing V1 jobs/sessions are not resumed; start from a clean Mission Control state.
+- **Toasts:** the auto-status toast was validated visually; other toast types (checkpoints, errors) use the same channel but were not individually observed.
+- **Native V2 backend is not implemented (Phase 2).** This version still uses tmux + one local `opencode serve` per job. Native V2 worktrees/sessions are planned but not done.
+- **Packaging/publishing is not done.** There is no npm release, no `.d.ts`, and the package has not been tested as an installed tarball. Repository metadata still points to the upstream project.
+- **Compaction, model tracking, and notification edge cases** are covered by unit tests only.
+
+### Local installation (WSL2 / Linux)
+
+#### 1. Prerequisites
+
+| Tool | Required | Purpose |
+|---|---|---|
+| OpenCode **2.x** | Yes | Plugin host (validated with 2.2.5) |
+| git | Yes | Worktrees |
+| tmux | Yes, for the current backend | Hosts each job's local server |
+| Bun (or npm) | For dependency install | `bun install` in the plugin directory |
+| gh | Only for `mc_pr` | PR creation (not validated here) |
+
+```bash
+sudo apt install tmux git
+opencode --version   # must be 2.x
+```
+
+#### 2. Clone and install
+
+Clone **inside the WSL filesystem**, not under `/mnt/c`:
+
+```bash
+git clone <your-fork-url> ~/opencode-mission-control
+cd ~/opencode-mission-control
+bun install
+```
+
+No build step is required: OpenCode loads the TypeScript sources directly.
+
+#### 3. Declare the plugin in your project
+
+In the project where you want to use Mission Control (`opencode.jsonc` or `opencode.json`):
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": ["/home/<user>/opencode-mission-control"]
+}
+```
+
+The path must point to the plugin **directory**, not to a file.
+
+#### 4. Optional: TUI toast notifications
+
+Server plugins and TUI plugins are configured separately. Add Mission Control to the
+global CLI config (`~/.config/opencode/cli.json`, or `$XDG_CONFIG_HOME/opencode/cli.json`)
+using the **singular** `plugin` key:
+
+```json
+{
+  "$schema": "https://opencode.ai/v2/cli.json",
+  "plugin": ["/home/<user>/opencode-mission-control"]
+}
+```
+
+Everything works without this entry; only in-TUI toasts require it.
+
+#### 5. Use it
+
+Restart OpenCode, then run `mc_status` (or `/mc-status`). On the first `mc_launch`,
+Mission Control creates a worktree, starts a local `opencode serve` on
+`127.0.0.1:14100-14199` inside a tmux session, and prompts the agent.
+
+State is stored under:
+
+```
+~/.local/share/opencode-mission-control/<project>/
+├── state/jobs.json
+├── state/plan.json
+└── reports/
+```
+
+### Architecture in this migrated version
+
+```
+mc_launch
+  └─ git worktree
+       └─ tmux session
+            └─ opencode serve (127.0.0.1, random port + password)
+                 └─ OpenCode session + agent
+```
+
+- The monitor subscribes to each serve job's SSE stream and reacts to
+  `session.execution.succeeded` / `.failed` / `.interrupted`.
+- Plan jobs run in their worktree through `opencode run -m <model>`.
+- Toasts go from the server plugin to the TUI companion plugin over the RPC channel.
+
+Phase 2 (not implemented) would replace tmux + per-job `opencode serve` with native
+V2 worktrees and sessions on the shared server.
 
 ---
 
@@ -79,13 +229,16 @@ For complex multi-task workflows, the **Plan System** handles dependency graphs,
 
 | Tool | Required | Purpose |
 |------|----------|---------|
-| **[tmux](https://github.com/tmux/tmux)** | Yes | Session isolation and monitoring |
+| **[OpenCode 2.x](https://opencode.ai/)** | Yes | Plugin host (validated with 2.2.5) |
+| **[tmux](https://github.com/tmux/tmux)** | Yes, for the current backend | Hosts each job's local server |
 | **[git](https://git-scm.com/)** | Yes | Worktree management |
-| **[gh](https://cli.github.com/)** | For `mc_pr` | GitHub PR creation |
+| **Bun or npm** | For installation | Install the plugin's dependencies |
+| **[gh](https://cli.github.com/)** | For `mc_pr` | GitHub PR creation (not validated here) |
 
 ### Installation (OpenCode Plugin)
 
-> **Requires OpenCode V2** (plugin API `@opencode/plugin` 2.x). This version targets V2 and is not compatible with V1.
+> **Requires OpenCode V2** (plugin API `@opencode/plugin` 2.x). This version is a
+> partial migration: see [Migration status](#migration-status).
 
 Most OpenCode setups install plugins listed in `opencode.json` automatically, so you usually **do not** run `npm install` manually.
 
@@ -353,11 +506,11 @@ Launch a new parallel AI coding session in an isolated worktree.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `name` | `string` | Yes | — | Job name (used for branch name and tmux target) |
+| `name` | `string` | Yes | — | Job name (used for branch name and tmux/SSE identity) |
 | `prompt` | `string` | Yes | — | Task prompt for the spawned AI agent |
 | `branch` | `string` | No | `mc/{name}` | Git branch name |
 | `baseBranch` | `string` | No | Default branch | Branch or ref to start from (e.g. `"develop"`) |
-| `placement` | `"session"` \| `"window"` | No | Config default | `session` creates a new tmux session; `window` adds a window to the current session |
+| `placement` | `"session"` \| `"window"` | No | Config default | `session` creates a new tmux session; `window` adds a window to the current session (current backend) |
 | `mode` | `"vanilla"` \| `"plan"` \| `"ralph"` \| `"ulw"` | No | Config default | Execution mode (see [OMO Integration](#omo-integration)) |
 | `planFile` | `string` | No | — | Plan file path (for `plan` mode) |
 | `copyFiles` | `string[]` | No | — | Files to copy from main worktree (e.g. `[".env", ".env.local"]`) |
@@ -367,10 +520,10 @@ Launch a new parallel AI coding session in an isolated worktree.
 **What happens on launch:**
 1. Creates a new git worktree on a dedicated branch
 2. Runs post-create hooks (copy files, create symlinks, run commands)
-3. Spins up a tmux session or window
-4. Starts `opencode --prompt '...'` inside the tmux pane
-5. Sets up pane-died hook for completion detection
-6. Registers the job for background monitoring
+3. Spins up a tmux session or window (current backend)
+4. Starts a local `opencode serve` on a random port with a per-job password
+5. Creates an OpenCode session in the worktree and sends the prompt
+6. Sets up the pane-died hook and SSE monitoring for the job
 
 #### `mc_jobs`
 
@@ -390,7 +543,7 @@ Get detailed status of a specific job including branch, worktree path, tmux targ
 
 #### `mc_capture`
 
-Capture the last N lines of terminal output from a job's tmux pane.
+Capture the last N lines of terminal output from a job's tmux pane (current backend).
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
@@ -399,7 +552,7 @@ Capture the last N lines of terminal output from a job's tmux pane.
 
 #### `mc_attach`
 
-Get the tmux command to attach to a job's terminal session.
+Get the tmux command to attach to a job's terminal session (current backend).
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -407,7 +560,7 @@ Get the tmux command to attach to a job's terminal session.
 
 #### `mc_kill`
 
-Stop a running job by terminating its tmux session/window.
+Stop a running job by terminating its tmux session/window (current backend).
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
@@ -713,7 +866,8 @@ Mission Control runs an active background monitor — not a passive wrapper.
 
 | Mechanism | Interval | What It Does |
 |-----------|----------|--------------|
-| **Polling** | Every `pollInterval` (default 10s) | Checks if each job's tmux pane is still running |
+| **SSE subscription** | Continuous | Serve jobs: subscribes to the job's `opencode serve` event stream and reacts to execution events |
+| **Polling** | Every `pollInterval` (default 10s) | TUI jobs: checks whether the tmux pane is still running |
 | **Pane death detection** | Immediate | tmux `pane-died` hook fires when a pane closes, capturing exit status |
 | **Idle detection** | `idleThreshold` (default 5min) | Hashes terminal output; if unchanged for the threshold period and the session shows the idle prompt (`ctrl+p commands`), marks the job as completed |
 | **Exit code capture** | On pane death | Exit code `0` → completed. Non-zero → failed. |
@@ -723,6 +877,7 @@ Mission Control runs an active background monitor — not a passive wrapper.
 
 | Hook | Trigger | Behavior |
 |------|---------|----------|
+| `session.execution.succeeded` | A job's agent turn completes | Marks the serve job completed and updates job state |
 | `session.idle` | User's main session goes quiet | Shows toast notification with running job summary (rate-limited to once per 5 minutes) |
 | `session.compacting` | OpenCode compacts context | Injects current job state into the AI's memory so it stays aware of background work |
 | `pane-died` | tmux pane closes | Immediately captures exit status and updates job state |
@@ -813,7 +968,9 @@ By default in `~/.local/share/opencode-mission-control/{project}/`. They are rea
 <details>
 <summary><strong>Can I use this without tmux?</strong></summary>
 
-No. tmux is the backbone of session isolation, monitoring, idle detection, and output capture. It's a hard requirement.
+Not in this migrated version. tmux hosts the per-job local server and remains a hard
+requirement for the current backend. A native V2 backend (worktrees + sessions on the
+shared server) is planned for Phase 2.
 </details>
 
 <details>
