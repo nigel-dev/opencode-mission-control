@@ -134,6 +134,8 @@ export const PlanSpecSchema = z.object({
   checkpoint: CheckpointTypeSchema.nullable().optional(),
   checkpointContext: CheckpointContextSchema.nullable().optional(),
   ghAuthenticated: z.boolean().optional(),
+  approvedMergeJobs: z.array(z.string()).optional(),
+  approvedPrePr: z.boolean().optional(),
   launchSessionID: z.string().optional(),
   auditLog: z.array(AuditLogEntrySchema).optional(),
   permissionPolicy: PermissionPolicySchema.optional(),

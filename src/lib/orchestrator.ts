@@ -295,6 +295,7 @@ export class Orchestrator {
       );
     }
     const wasPreMerge = this.checkpoint === 'pre_merge';
+    const wasPrePr = this.checkpoint === 'pre_pr';
     this.checkpoint = null;
 
     const plan = await loadPlan();
@@ -311,6 +312,10 @@ export class Orchestrator {
         status: 'running',
         checkpoint: null,
         checkpointContext: null,
+        ...(wasPreMerge
+          ? { approvedMergeJobs: plan.jobs.filter((j) => j.status === 'ready_to_merge').map((j) => j.name) }
+          : {}),
+        ...(wasPrePr ? { approvedPrePr: true } : {}),
       });
       this.showToast('Mission Control', 'Checkpoint cleared, resuming execution.', 'info');
 
@@ -598,9 +603,22 @@ export class Orchestrator {
           }
         }
 
-        if (this.isSupervisor(plan) && !this.approvedForMerge.has(job.name)) {
+        const persistedMergeApproval = plan.approvedMergeJobs ?? [];
+        const approvedForMerge =
+          this.approvedForMerge.has(job.name) ||
+          persistedMergeApproval.includes(job.name);
+
+        if (this.isSupervisor(plan) && !approvedForMerge) {
           await this.setCheckpoint('pre_merge', plan);
           return;
+        }
+
+        if (persistedMergeApproval.includes(job.name)) {
+          // Consume the persisted approval so a later retry does not silently
+          // bypass the supervisor checkpoint again.
+          await updatePlanFields(plan.id, {
+            approvedMergeJobs: persistedMergeApproval.filter((name) => name !== job.name),
+          });
         }
 
         this.mergeTrain ??= new MergeTrain(plan.integrationWorktree!, this.getMergeTrainConfig());
@@ -685,12 +703,15 @@ export class Orchestrator {
         this.showToast('Mission Control', 'All jobs merged. Creating PR...', 'info');
         this.notify(`🎯 All ${latestPlan.jobs.length} jobs merged. Creating PR...`);
 
-        if (this.isSupervisor(latestPlan)) {
+        if (this.isSupervisor(latestPlan) && !latestPlan.approvedPrePr) {
           await this.setCheckpoint('pre_pr', latestPlan);
           return;
         }
 
-        await updatePlanFields(latestPlan.id, { status: 'creating_pr' });
+        await updatePlanFields(latestPlan.id, {
+          status: 'creating_pr',
+          ...(this.isSupervisor(latestPlan) ? { approvedPrePr: false } : {}),
+        });
 
         try {
           const prUrl = await this.createPR();

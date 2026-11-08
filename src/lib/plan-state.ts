@@ -121,6 +121,8 @@ export interface PlanFieldUpdates {
   completedAt?: string;
   prUrl?: string;
   auditLog?: PlanSpec['auditLog'];
+  approvedMergeJobs?: string[];
+  approvedPrePr?: boolean;
 }
 
 /**
@@ -165,6 +167,12 @@ export async function updatePlanFields(
     }
     if (updates.prUrl !== undefined) {
       plan.prUrl = updates.prUrl;
+    }
+    if (updates.approvedMergeJobs !== undefined) {
+      plan.approvedMergeJobs = updates.approvedMergeJobs;
+    }
+    if (updates.approvedPrePr !== undefined) {
+      plan.approvedPrePr = updates.approvedPrePr;
     }
 
     const ghAuthenticated = await validateGhAuth();

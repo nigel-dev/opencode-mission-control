@@ -65,6 +65,13 @@ export interface PlanSpec {
   auditLog?: AuditLogEntry[];
   permissionPolicy?: PermissionPolicyConfig;
   ghAuthenticated?: boolean;
+  /**
+   * Supervisor-mode approvals persisted across orchestrator instances.
+   * `mc_plan_approve` runs in a fresh process, so in-memory approval sets are
+   * lost between checkpoints; these fields keep the decision on disk.
+   */
+  approvedMergeJobs?: string[];
+  approvedPrePr?: boolean;
 }
 
 export interface JobSpec {

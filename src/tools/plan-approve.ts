@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { loadPlan, savePlan } from '../lib/plan-state';
 import { Orchestrator } from '../lib/orchestrator';
-import { getSharedMonitor, getSharedNotifyCallback, setSharedOrchestrator } from '../lib/orchestrator-singleton';
+import { getSharedMonitor, getSharedOrchestratorCallbacks, setSharedOrchestrator } from '../lib/orchestrator-singleton';
 import type { CheckpointType } from '../lib/plan-types';
 import { loadConfig } from '../lib/config';
 import { getCurrentModel } from '../lib/model-tracker';
@@ -43,6 +43,17 @@ export const mc_plan_approve = {
       const checkpoint = (args.checkpoint ?? plan.checkpoint) as CheckpointType;
       const config = await loadConfig();
 
+      // Supervisor approvals must survive the process boundary: mc_plan_approve
+      // creates a new Orchestrator, so in-memory approval sets are empty on
+      // resume. Persist approvals on the plan before resuming.
+      const mergeApprovals = plan.approvedMergeJobs ?? [];
+      const approveForMerge = (jobName: string) => {
+        if (!mergeApprovals.includes(jobName)) {
+          mergeApprovals.push(jobName);
+        }
+        plan.approvedMergeJobs = mergeApprovals;
+      };
+
       if (args.relaunch) {
         const ctx = plan.checkpointContext;
         if (!ctx || ctx.failureKind !== 'touchset') {
@@ -55,9 +66,10 @@ export const mc_plan_approve = {
         plan.status = 'running';
         plan.checkpoint = null;
         plan.checkpointContext = null;
+        approveForMerge(args.relaunch);
         await savePlan(plan);
 
-        const orchestrator = new Orchestrator(getSharedMonitor(), config, { notify: getSharedNotifyCallback() ?? undefined });
+        const orchestrator = new Orchestrator(getSharedMonitor(), config, getSharedOrchestratorCallbacks());
         setSharedOrchestrator(orchestrator);
         orchestrator.setPlanModelSnapshot(getCurrentModel());
 
@@ -104,9 +116,10 @@ export const mc_plan_approve = {
         plan.status = 'running';
         plan.checkpoint = null;
         plan.checkpointContext = null;
+        approveForMerge(args.retry);
         await savePlan(plan);
 
-        const orchestrator = new Orchestrator(getSharedMonitor(), config, { notify: getSharedNotifyCallback() ?? undefined });
+        const orchestrator = new Orchestrator(getSharedMonitor(), config, getSharedOrchestratorCallbacks());
         setSharedOrchestrator(orchestrator);
         orchestrator.setPlanModelSnapshot(getCurrentModel());
         await orchestrator.resumePlan();
@@ -130,12 +143,26 @@ export const mc_plan_approve = {
         }
       }
 
+      if (plan.mode === 'supervisor') {
+        if (checkpoint === 'pre_merge') {
+          for (const job of plan.jobs) {
+            if (job.status === 'ready_to_merge') {
+              approveForMerge(job.name);
+            }
+          }
+        } else if (checkpoint === 'pre_pr') {
+          plan.approvedPrePr = true;
+        } else if (ctx?.failureKind === 'touchset' && ctx.jobName) {
+          approveForMerge(ctx.jobName);
+        }
+      }
+
       plan.status = 'running';
       plan.checkpoint = null;
       plan.checkpointContext = null;
       await savePlan(plan);
 
-      const orchestrator = new Orchestrator(getSharedMonitor(), config, { notify: getSharedNotifyCallback() ?? undefined });
+      const orchestrator = new Orchestrator(getSharedMonitor(), config, getSharedOrchestratorCallbacks());
       setSharedOrchestrator(orchestrator);
       orchestrator.setPlanModelSnapshot(getCurrentModel());
       await orchestrator.resumePlan();
@@ -169,7 +196,7 @@ export const mc_plan_approve = {
     plan.status = 'running';
     await savePlan(plan);
 
-    const orchestrator = new Orchestrator(getSharedMonitor(), config, { notify: getSharedNotifyCallback() ?? undefined });
+    const orchestrator = new Orchestrator(getSharedMonitor(), config, getSharedOrchestratorCallbacks());
     setSharedOrchestrator(orchestrator);
     orchestrator.setPlanModelSnapshot(getCurrentModel());
     await orchestrator.resumePlan();

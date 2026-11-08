@@ -1,5 +1,5 @@
 import { Plugin } from '@opencode/plugin';
-import { getSharedMonitor, setSharedNotifyCallback, getSharedNotifyCallback, setSharedOrchestrator } from './lib/orchestrator-singleton';
+import { getSharedMonitor, setSharedNotifyCallback, getSharedOrchestratorCallbacks, setSharedOrchestrator } from './lib/orchestrator-singleton';
 import { getCompactionContext, getJobCompactionContext } from './hooks/compaction';
 import { shouldShowAutoStatus, getAutoStatusMessage } from './hooks/auto-status';
 import { setupNotifications, hasAnnotation, resetSessionTitle, isTitleResetSuppressed, ensureMCPrefix } from './hooks/notifications';
@@ -224,7 +224,7 @@ export default Plugin.define({
       loadPlan().then(async (plan) => {
         if (plan && (plan.status === 'running' || plan.status === 'paused')) {
           const config = await loadConfig();
-          const orchestrator = new Orchestrator(monitor, config, { notify: getSharedNotifyCallback() ?? undefined });
+          const orchestrator = new Orchestrator(monitor, config, getSharedOrchestratorCallbacks());
           setSharedOrchestrator(orchestrator);
           await orchestrator.resumePlan();
         }
@@ -320,7 +320,9 @@ export default Plugin.define({
           }
         }
 
-        if (type === 'session.idle') {
+        // V2 emits `session.execution.succeeded` when a turn finishes; the
+        // V1 `session.idle` event is not emitted by current V2 servers.
+        if (type === 'session.idle' || type === 'session.execution.succeeded') {
           const shouldShow = await shouldShowAutoStatus(cwd);
           if (shouldShow) {
             const message = await getAutoStatusMessage();

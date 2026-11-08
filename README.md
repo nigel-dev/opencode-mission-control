@@ -101,6 +101,21 @@ Add this plugin entry:
 
 If you are developing this repository itself, use the local dev flow in [Development](#development).
 
+#### TUI notifications (optional)
+
+Mission Control's toast notifications are rendered by a companion TUI plugin, which OpenCode V2 configures separately
+from server plugins. Add Mission Control to the global CLI config (`~/.config/opencode/cli.json`, or
+`$XDG_CONFIG_HOME/opencode/cli.json`) using the `plugin` array:
+
+```json
+{
+  "$schema": "https://opencode.ai/v2/cli.json",
+  "plugin": ["opencode-mission-control"]
+}
+```
+
+Everything else works without this entry; only the in-TUI toasts require it.
+
 ### Your First Job
 
 ```

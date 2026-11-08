@@ -3,7 +3,7 @@ import { randomUUID } from 'crypto';
 import type { PlanSpec, JobSpec } from '../lib/plan-types';
 import { loadPlan, savePlan, validateGhAuth } from '../lib/plan-state';
 import { Orchestrator, hasCircularDependency } from '../lib/orchestrator';
-import { getSharedMonitor, getSharedNotifyCallback, setSharedOrchestrator } from '../lib/orchestrator-singleton';
+import { getSharedMonitor, getSharedOrchestratorCallbacks, setSharedOrchestrator } from '../lib/orchestrator-singleton';
 import { loadConfig } from '../lib/config';
 import { gitCommand } from '../lib/git';
 import { getCurrentModel } from '../lib/model-tracker';
@@ -142,7 +142,7 @@ export const mc_plan = {
 
     // autopilot or supervisor: start immediately
     const config = await loadConfig();
-    const orchestrator = new Orchestrator(getSharedMonitor(), config, { notify: getSharedNotifyCallback() ?? undefined });
+    const orchestrator = new Orchestrator(getSharedMonitor(), config, getSharedOrchestratorCallbacks());
     setSharedOrchestrator(orchestrator);
     const modelSnapshot = getCurrentModel(context?.sessionID);
     orchestrator.setPlanModelSnapshot(modelSnapshot);

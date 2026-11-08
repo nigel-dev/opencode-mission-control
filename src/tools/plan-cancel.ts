@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { loadPlan } from '../lib/plan-state';
 import { Orchestrator } from '../lib/orchestrator';
-import { getSharedMonitor } from '../lib/orchestrator-singleton';
+import { getSharedMonitor, getSharedOrchestratorCallbacks } from '../lib/orchestrator-singleton';
 import { loadConfig } from '../lib/config';
 
 export const mc_plan_cancel = {
@@ -18,7 +18,7 @@ export const mc_plan_cancel = {
     const planId = plan.id;
 
     const config = await loadConfig();
-    const orchestrator = new Orchestrator(getSharedMonitor(), config);
+    const orchestrator = new Orchestrator(getSharedMonitor(), config, getSharedOrchestratorCallbacks());
     await orchestrator.cancelPlan();
 
     return { content: [

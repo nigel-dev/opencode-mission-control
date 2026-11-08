@@ -399,7 +399,36 @@ describe('mc_plan_approve', () => {
       expect(result.content).toContain('Checkpoint "pre_merge" cleared');
       expect(result.content).toContain('resuming');
       expect(result.content).not.toContain('ready_to_merge');
-      expect(mockSavePlan).toHaveBeenCalled();
+      expect(mockSavePlan).toHaveBeenCalledWith(expect.objectContaining({
+        approvedMergeJobs: ['merge-job'],
+      }));
+      expect(mockResumePlan).toHaveBeenCalled();
+    });
+
+    it('should persist pre_pr approval so a fresh orchestrator does not re-pause', async () => {
+      spyOn(planState, 'loadPlan').mockResolvedValue({
+        id: 'plan-1',
+        name: 'Pre-PR Plan',
+        mode: 'supervisor',
+        status: 'paused',
+        checkpoint: 'pre_pr',
+        jobs: [{ id: 'j1', name: 'done-job', prompt: 'do merge', status: 'merged' }],
+        integrationBranch: 'mc/integration/plan-1',
+        baseCommit: 'abc123',
+        createdAt: new Date().toISOString(),
+      });
+
+      const mockSavePlan = spyOn(planState, 'savePlan').mockResolvedValue(undefined);
+      const mockResumePlan = mock().mockResolvedValue(undefined);
+      spyOn(orchestrator.Orchestrator.prototype, 'resumePlan').mockImplementation(mockResumePlan);
+      spyOn(orchestrator.Orchestrator.prototype, 'setPlanModelSnapshot').mockImplementation(() => {});
+
+      const result = await mc_plan_approve.execute({ checkpoint: 'pre_pr' }, mockContext);
+
+      expect(result.content).toContain('Checkpoint "pre_pr" cleared');
+      expect(mockSavePlan).toHaveBeenCalledWith(expect.objectContaining({
+        approvedPrePr: true,
+      }));
       expect(mockResumePlan).toHaveBeenCalled();
     });
   });
