@@ -1,4 +1,4 @@
-import { tool, type ToolDefinition } from '@opencode-ai/plugin';
+import { z } from 'zod';
 import { getJobByName, removeJob, getRunningJobs, loadJobState } from '../lib/job-state';
 import { removeWorktree } from '../lib/worktree';
 import { killSession, sessionExists, killTaggedWindows } from '../lib/tmux';
@@ -142,31 +142,23 @@ function formatCleanupOutput(
   return output.join('\n');
 }
 
-export const mc_cleanup: ToolDefinition = tool({
+export const mc_cleanup = {
+  name: 'mc_cleanup',
   description: 'Remove completed/stopped jobs and their worktrees',
-  args: {
-    name: tool.schema
-      .string()
-      .optional()
-      .describe('Specific job to cleanup (by name)'),
-    all: tool.schema
-      .boolean()
-      .optional()
-      .describe('Cleanup all non-running jobs'),
-    deleteBranch: tool.schema
-      .boolean()
-      .optional()
-      .describe('Also delete the git branch'),
-  },
-  async execute(args) {
+  input: z.object({
+    name: z.string().optional().describe('Specific job to cleanup (by name)'),
+    all: z.boolean().optional().describe('Cleanup all non-running jobs'),
+    deleteBranch: z.boolean().optional().describe('Also delete the git branch'),
+  }).strict(),
+  async execute(args: { name?: string; all?: boolean; deleteBranch?: boolean }) {
     validateCleanupArgs(args);
 
     const jobsToClean = await determineJobsToClean(args);
     if (jobsToClean.length === 0) {
-      return 'No non-running jobs to cleanup.';
+      return { content: 'No non-running jobs to cleanup.' };
     }
 
     const { results, errors } = await cleanupJobs(jobsToClean, args.deleteBranch);
-    return formatCleanupOutput(results, errors);
+    return { content: formatCleanupOutput(results, errors) };
   },
-});
+};

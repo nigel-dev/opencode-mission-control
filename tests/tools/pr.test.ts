@@ -31,19 +31,19 @@ describe('mc_pr', () => {
     });
 
     it('should have required name arg', () => {
-      expect(mc_pr.args.name).toBeDefined();
+      expect(mc_pr.input.shape.name).toBeDefined();
     });
 
     it('should have optional title arg', () => {
-      expect(mc_pr.args.title).toBeDefined();
+      expect(mc_pr.input.shape.title).toBeDefined();
     });
 
     it('should have optional body arg', () => {
-      expect(mc_pr.args.body).toBeDefined();
+      expect(mc_pr.input.shape.body).toBeDefined();
     });
 
     it('should have optional draft arg', () => {
-      expect(mc_pr.args.draft).toBeDefined();
+      expect(mc_pr.input.shape.draft).toBeDefined();
     });
   });
 

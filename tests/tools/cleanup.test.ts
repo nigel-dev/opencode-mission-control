@@ -56,17 +56,17 @@ describe('mc_cleanup', () => {
 
     it('should have optional name arg', async () => {
       const { mc_cleanup } = await import('../../src/tools/cleanup');
-      expect(mc_cleanup.args.name).toBeDefined();
+      expect(mc_cleanup.input.shape.name).toBeDefined();
     });
 
     it('should have optional all arg', async () => {
       const { mc_cleanup } = await import('../../src/tools/cleanup');
-      expect(mc_cleanup.args.all).toBeDefined();
+      expect(mc_cleanup.input.shape.all).toBeDefined();
     });
 
     it('should have optional deleteBranch arg', async () => {
       const { mc_cleanup } = await import('../../src/tools/cleanup');
-      expect(mc_cleanup.args.deleteBranch).toBeDefined();
+      expect(mc_cleanup.input.shape.deleteBranch).toBeDefined();
     });
   });
 
@@ -118,8 +118,8 @@ describe('mc_cleanup', () => {
 
       const result = await mc_cleanup.execute({ name: 'test-job' }, mockContext);
 
-      expect(result).toContain('Cleanup Results');
-      expect(result).toContain('✓ Cleaned up job "test-job" (stopped)');
+      expect(result.content).toContain('Cleanup Results');
+      expect(result.content).toContain('✓ Cleaned up job "test-job" (stopped)');
       expect(mockRemoveWorktree).toHaveBeenCalledWith(
         stoppedJob.worktreePath,
         true,
@@ -136,7 +136,7 @@ describe('mc_cleanup', () => {
 
       const result = await mc_cleanup.execute({ name: 'test-job' }, mockContext);
 
-      expect(result).toContain('✓ Cleaned up job "test-job" (completed)');
+      expect(result.content).toContain('✓ Cleaned up job "test-job" (completed)');
     });
 
     it('should cleanup failed job successfully', async () => {
@@ -148,7 +148,7 @@ describe('mc_cleanup', () => {
 
       const result = await mc_cleanup.execute({ name: 'test-job' }, mockContext);
 
-      expect(result).toContain('✓ Cleaned up job "test-job" (failed)');
+      expect(result.content).toContain('✓ Cleaned up job "test-job" (failed)');
     });
   });
 
@@ -163,7 +163,7 @@ describe('mc_cleanup', () => {
 
       const result = await mc_cleanup.execute({ all: true }, mockContext);
 
-      expect(result).toBe('No non-running jobs to cleanup.');
+      expect(result.content).toBe('No non-running jobs to cleanup.');
     });
 
     it('should cleanup all non-running jobs', async () => {
@@ -182,9 +182,9 @@ describe('mc_cleanup', () => {
 
       const result = await mc_cleanup.execute({ all: true }, mockContext);
 
-      expect(result).toContain('✓ Cleaned up job "job-1" (stopped)');
-      expect(result).toContain('✓ Cleaned up job "job-2" (completed)');
-      expect(result).not.toContain('job-3');
+      expect(result.content).toContain('✓ Cleaned up job "job-1" (stopped)');
+      expect(result.content).toContain('✓ Cleaned up job "job-2" (completed)');
+      expect(result.content).not.toContain('job-3');
       expect(mockRemoveJob).toHaveBeenCalledTimes(2);
     });
   });
@@ -212,7 +212,7 @@ describe('mc_cleanup', () => {
 
       const result = await mc_cleanup.execute({ name: 'test-job' }, mockContext);
 
-      expect(result).toContain('✓ Cleaned up job "test-job"');
+      expect(result.content).toContain('✓ Cleaned up job "test-job"');
       expect(mockRemoveJob).toHaveBeenCalled();
     });
   });
@@ -227,7 +227,7 @@ describe('mc_cleanup', () => {
 
       const result = await mc_cleanup.execute({ name: 'test-job' }, mockContext);
 
-      expect(result).toContain('Summary: 1 cleaned, 0 failed');
+      expect(result.content).toContain('Summary: 1 cleaned, 0 failed');
     });
 
     it('should show summary with failed cleanups', async () => {

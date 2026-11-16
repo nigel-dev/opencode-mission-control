@@ -62,15 +62,15 @@ const STATE_FILE = 'jobs.json';
  */
 const stateMutex = new GitMutex();
 
-async function getStateFilePath(): Promise<string> {
-  const dataDir = await getDataDir();
+async function getStateFilePath(cwd?: string): Promise<string> {
+  const dataDir = await getDataDir(cwd);
   return join(dataDir, STATE_FILE);
 }
 
 
 
-export async function loadJobState(): Promise<JobState> {
-  const filePath = await getStateFilePath();
+export async function loadJobState(cwd?: string): Promise<JobState> {
+  const filePath = await getStateFilePath(cwd);
   const file = Bun.file(filePath);
   const exists = await file.exists();
 

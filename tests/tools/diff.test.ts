@@ -47,11 +47,11 @@ describe('mc_diff', () => {
     });
 
     it('should have required name arg', () => {
-      expect(mc_diff.args.name).toBeDefined();
+      expect(mc_diff.input.shape.name).toBeDefined();
     });
 
     it('should have optional stat arg', () => {
-      expect(mc_diff.args.stat).toBeDefined();
+      expect(mc_diff.input.shape.stat).toBeDefined();
     });
   });
 

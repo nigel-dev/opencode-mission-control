@@ -1,4 +1,5 @@
-import type { OpencodeClient } from '@opencode-ai/sdk';
+import type { FormField, FormInfo, FormOption, FormValue } from '@opencode/client';
+import type { OpencodeClient } from './sdk-client.js';
 import type { Job } from './job-state.js';
 import { createJobClient, sendPrompt } from './sdk-client.js';
 
@@ -14,6 +15,7 @@ export interface PendingQuestion {
   callID: string;
   remoteSessionID: string;
   port: number;
+  serverPassword?: string;
   question: string;
   options: Array<{ label: string; description?: string }>;
   header?: string;
@@ -93,17 +95,120 @@ export function getPendingQuestionCount(): number {
   return pendingQuestions.size;
 }
 
+function getFormToolId(form: FormInfo): string | undefined {
+  const tool = form.metadata?.tool;
+  if (tool && typeof tool === 'object' && 'id' in tool) {
+    const id = (tool as { id?: unknown }).id;
+    if (typeof id === 'string') return id;
+  }
+  return undefined;
+}
+
+function getFormKind(form: FormInfo): string | undefined {
+  const kind = form.metadata?.kind;
+  return typeof kind === 'string' ? kind : undefined;
+}
+
 /**
- * Answer a pending question by sending a user message to the job's session.
- * This unblocks the agent waiting on the mcp_question tool call.
+ * Locate the form backing a question tool call. V2 renders the `question` tool
+ * as a session form, so the tool call id is stored in form metadata.
+ */
+export function findQuestionForm(forms: readonly FormInfo[], partId: string): FormInfo | undefined {
+  const exact = forms.find((form) => getFormToolId(form) === partId);
+  if (exact) return exact;
+
+  const questions = forms.filter((form) => getFormKind(form) === 'question');
+  return questions.length === 1 ? questions[0] : undefined;
+}
+
+function matchOptionValue(options: readonly FormOption[] | undefined, raw: string): string {
+  const text = raw.trim();
+  if (!options) return text;
+  const match = options.find(
+    (option) =>
+      option.value.toLowerCase() === text.toLowerCase() ||
+      option.label.toLowerCase() === text.toLowerCase(),
+  );
+  return match ? match.value : text;
+}
+
+function coerceFormField(field: FormField, raw: string): FormValue {
+  switch (field.type) {
+    case 'multiselect': {
+      const parts = raw
+        .split(/[,\n;]+/)
+        .map((part) => part.trim())
+        .filter(Boolean);
+      return parts.map((part) => matchOptionValue(field.options, part));
+    }
+    case 'boolean':
+      return /^(true|yes|y|1|on)$/i.test(raw.trim());
+    case 'number':
+    case 'integer': {
+      const value = Number(raw.trim());
+      return Number.isFinite(value) ? value : raw.trim();
+    }
+    case 'string':
+      return field.options && field.options.length > 0
+        ? matchOptionValue(field.options, raw)
+        : raw;
+    default:
+      return raw;
+  }
+}
+
+export function buildFormAnswer(
+  fields: readonly FormField[],
+  response: string,
+): Record<string, FormValue> {
+  const answer: Record<string, FormValue> = {};
+  const lines = response.split(/\r?\n/).map((line) => line.trim());
+  const linePerField = fields.length > 1 && lines.length >= fields.length;
+
+  fields.forEach((field, index) => {
+    const raw = fields.length === 1
+      ? response
+      : linePerField
+        ? lines[index]
+        : index === 0
+          ? response
+          : '';
+    answer[field.key] = coerceFormField(field, raw);
+  });
+
+  return answer;
+}
+
+/**
+ * Answer a pending question by replying to the question form on the job's
+ * session. V2's `question` tool is implemented as a session form; posting a
+ * prompt does not unblock it. Fall back to a prompt for compatibility.
  */
 export async function answerPendingQuestion(
   question: PendingQuestion,
   response: string,
   password?: string,
 ): Promise<void> {
-  const client = createJobClient(question.port, password);
-  await sendPrompt(client, question.remoteSessionID, response);
+  const client = createJobClient(question.port, question.serverPassword ?? password);
+
+  let form: FormInfo | undefined;
+  try {
+    const forms = await client.session.form.list({ sessionID: question.remoteSessionID });
+    form = findQuestionForm(forms, question.partId);
+  } catch {
+    // Form listing may fail on older servers; fall back to a prompt below.
+  }
+
+  if (form) {
+    await client.session.form.reply({
+      sessionID: question.remoteSessionID,
+      formID: form.id,
+      answer: buildFormAnswer(form.fields, response),
+    });
+  } else {
+    await sendPrompt(client, question.remoteSessionID, response);
+  }
+
   pendingQuestions.delete(pendingKey(question.jobId, question.partId));
 }
 
@@ -316,7 +421,7 @@ export function buildQuestionPrompt(context: QuestionContext): string {
 export class QuestionRelay {
   private config: QuestionRelayConfig;
   private pendingResponses: Map<string, Timer> = new Map();
-  private clients: Map<number, OpencodeClient> = new Map();
+  private clients: Map<string, OpencodeClient> = new Map();
 
   constructor(config: Partial<QuestionRelayConfig> = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config };
@@ -326,7 +431,7 @@ export class QuestionRelay {
    * Get or create a client for a job's port
    */
   private getClient(port: number, password?: string): OpencodeClient {
-    const key = port;
+    const key = `${port}:${password ?? ''}`;
     if (!this.clients.has(key)) {
       this.clients.set(key, createJobClient(port, password));
     }
@@ -346,10 +451,10 @@ export class QuestionRelay {
 
     if (result.autoApproved) {
       // Auto-approve the permission
-      if (job.port) {
+      if (job.port && job.remoteSessionID) {
         try {
-          const client = this.getClient(job.port);
-          await this.replyToPermission(client, permission.id, true);
+          const client = this.getClient(job.port, job.serverPassword);
+          await this.replyToPermission(client, job.remoteSessionID, permission.id, true);
         } catch (error) {
           console.error(`[QuestionRelay] Failed to auto-approve permission for job ${job.name}:`, error);
         }
@@ -371,12 +476,12 @@ export class QuestionRelay {
     approved: boolean,
     message?: string,
   ): Promise<void> {
-    if (!job.port) {
+    if (!job.port || !job.remoteSessionID) {
       return;
     }
 
-    const client = this.getClient(job.port);
-    await this.replyToPermission(client, permissionId, approved, message);
+    const client = this.getClient(job.port, job.serverPassword);
+    await this.replyToPermission(client, job.remoteSessionID, permissionId, approved, message);
   }
 
   /**
@@ -387,8 +492,8 @@ export class QuestionRelay {
     permission: PermissionRequest,
     currentFile?: string,
   ): Promise<void> {
-    if (!job.launchSessionID || !job.port) {
-      console.warn(`[QuestionRelay] Cannot relay: missing launchSessionID or port for job ${job.name}`);
+    if (!job.launchSessionID || !job.remoteSessionID || !job.port) {
+      console.warn(`[QuestionRelay] Cannot relay: missing launchSessionID, remoteSessionID or port for job ${job.name}`);
       return;
     }
 
@@ -402,17 +507,22 @@ export class QuestionRelay {
     const prompt = buildQuestionPrompt(context);
 
     try {
-      const client = this.getClient(job.port);
-      await client.session.prompt({
-        path: { id: job.launchSessionID },
-        body: {
-          parts: [{ type: 'text', text: prompt }],
-          noReply: false,
-        },
-      });
+      // The launching session belongs to the control-center server, not the
+      // job's server. Relay through the shared notifier instead of the job
+      // client, which would raise SessionNotFoundError.
+      const { getSharedNotifyCallback } = await import('./orchestrator-singleton.js');
+      const notify = getSharedNotifyCallback();
+      if (notify) {
+        notify(prompt, job.launchSessionID);
+      } else {
+        console.warn(
+          `[QuestionRelay] No control-center notifier available; permission request for job ${job.name} was not relayed.`,
+        );
+      }
 
-      // Set up auto-response timeout
-      this.setupAutoResponse(job.id, permission.id, client);
+      // Auto-response always targets the job server.
+      const client = this.getClient(job.port, job.serverPassword);
+      this.setupAutoResponse(job.id, permission.id, job.remoteSessionID, client);
     } catch (error) {
       console.error(`[QuestionRelay] Failed to relay question for job ${job.name}:`, error);
     }
@@ -424,6 +534,7 @@ export class QuestionRelay {
   private setupAutoResponse(
     jobId: string,
     permissionId: string,
+    sessionID: string,
     client: OpencodeClient,
   ): void {
     // Clear any existing timeout for this permission
@@ -435,7 +546,7 @@ export class QuestionRelay {
     // Set new timeout
     const timeoutId = setTimeout(async () => {
       try {
-        await this.replyToPermission(client, permissionId, true, this.config.defaultResponse);
+        await this.replyToPermission(client, sessionID, permissionId, true, this.config.defaultResponse);
         console.log(`[QuestionRelay] Auto-responded to permission ${permissionId} for job ${jobId}`);
       } catch (error) {
         console.error(`[QuestionRelay] Failed to auto-respond for job ${jobId}:`, error);
@@ -452,30 +563,18 @@ export class QuestionRelay {
    */
   private async replyToPermission(
     client: OpencodeClient,
+    sessionID: string,
     permissionId: string,
     approved: boolean,
     message?: string,
   ): Promise<void> {
-    // Note: The actual SDK endpoint for replying to permissions may vary
-    // This is a placeholder based on typical SDK patterns
-    // The SDK might have client.permission.reply or similar
     try {
-      // Using a generic approach - actual implementation depends on SDK
-      const response = await fetch(`${(client as any).baseUrl}/permission/${permissionId}/reply`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...((client as any).headers || {}),
-        },
-        body: JSON.stringify({
-          approved,
-          message: message || (approved ? 'Approved' : 'Denied'),
-        }),
+      await client.permission.reply({
+        sessionID,
+        requestID: permissionId,
+        decision: approved ? "once" : "reject",
+        message: message || (approved ? "Approved" : "Denied"),
       });
-
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${await response.text()}`);
-      }
     } catch (error) {
       console.error(`[QuestionRelay] Failed to reply to permission ${permissionId}:`, error);
       throw error;
@@ -498,7 +597,7 @@ export class QuestionRelay {
       this.pendingResponses.delete(key);
     }
 
-    if (!job.port) {
+    if (!job.port || !job.remoteSessionID) {
       return;
     }
 
@@ -523,8 +622,8 @@ export class QuestionRelay {
     }
 
     try {
-      const client = this.getClient(job.port);
-      await this.replyToPermission(client, permissionId, approved, message);
+      const client = this.getClient(job.port, job.serverPassword);
+      await this.replyToPermission(client, job.remoteSessionID, permissionId, approved, message);
     } catch (error) {
       console.error(`[QuestionRelay] Failed to send user response for job ${job.name}:`, error);
     }

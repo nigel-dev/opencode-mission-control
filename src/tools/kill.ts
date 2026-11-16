@@ -1,18 +1,16 @@
-import { tool, type ToolDefinition } from '@opencode-ai/plugin';
+import { z } from 'zod';
 import { getJobByName, updateJob } from '../lib/job-state';
 import { killSession, killWindow } from '../lib/tmux';
 import { releasePort } from '../lib/port-allocator';
 
-export const mc_kill: ToolDefinition = tool({
+export const mc_kill = {
+  name: 'mc_kill',
   description: 'Stop a running job',
-  args: {
-    name: tool.schema.string().describe('Job name'),
-    force: tool.schema
-      .boolean()
-      .optional()
-      .describe('Force kill (SIGKILL)'),
-  },
-  async execute(args) {
+  input: z.object({
+    name: z.string().describe('Job name'),
+    force: z.boolean().optional().describe('Force kill (SIGKILL)'),
+  }).strict(),
+  async execute(args: { name: string; force?: boolean }) {
     // 1. Find job by name
     const job = await getJobByName(args.name);
     if (!job) {
@@ -21,7 +19,7 @@ export const mc_kill: ToolDefinition = tool({
 
     // 2. Check if job is already stopped
     if (job.status === 'stopped') {
-      return `Job "${args.name}" is already stopped.`;
+      return { content: `Job "${args.name}" is already stopped.` };
     }
 
     // 3. Kill tmux session or window
@@ -67,7 +65,7 @@ export const mc_kill: ToolDefinition = tool({
     }
 
     // 5. Return success message
-    return [
+    return { content: [
       `Job "${args.name}" stopped successfully.`,
       '',
       `  ID:        ${job.id}`,
@@ -76,6 +74,6 @@ export const mc_kill: ToolDefinition = tool({
       `  Worktree:  ${job.worktreePath}`,
       '',
       'Note: Worktree is preserved. Use mc_cleanup to remove it.',
-    ].join('\n');
+    ].join('\n') };
   },
-});
+};

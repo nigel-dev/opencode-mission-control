@@ -251,7 +251,7 @@ describe('Workflow 1: Basic lifecycle (Launch -> Status -> Capture -> Kill -> Cl
       mockContext,
     );
 
-    expect(launchResult).toContain('Job "auth-job" launched successfully');
+    expect(launchResult.content).toContain('Job "auth-job" launched successfully');
     expect(mockCreateWorktree).toHaveBeenCalledWith({
       branch: 'mc/auth-job',
       postCreate: expect.objectContaining({
@@ -277,10 +277,10 @@ describe('Workflow 1: Basic lifecycle (Launch -> Status -> Capture -> Kill -> Cl
       mockContext,
     );
 
-    expect(statusResult).toContain('Job: auth-job');
-    expect(statusResult).toContain('Status: running');
-    expect(statusResult).toContain('Branch: mc/auth-job');
-    expect(statusResult).toContain('Mode: vanilla');
+    expect(statusResult.content).toContain('Job: auth-job');
+    expect(statusResult.content).toContain('Status: running');
+    expect(statusResult.content).toContain('Branch: mc/auth-job');
+    expect(statusResult.content).toContain('Mode: vanilla');
 
     // ---- Step 3: Capture output ----
     const captureResult = await mc_capture.execute(
@@ -288,8 +288,8 @@ describe('Workflow 1: Basic lifecycle (Launch -> Status -> Capture -> Kill -> Cl
       mockContext,
     );
 
-    expect(captureResult).toContain('Working on task');
-    expect(captureResult).toContain('Tests passing');
+    expect(captureResult.content).toContain('Working on task');
+    expect(captureResult.content).toContain('Tests passing');
     expect(mockCapturePane).toHaveBeenCalledWith('mc-auth-job', 50);
 
     // ---- Step 4: Kill the job ----
@@ -298,7 +298,7 @@ describe('Workflow 1: Basic lifecycle (Launch -> Status -> Capture -> Kill -> Cl
       mockContext,
     );
 
-    expect(killResult).toContain('Job "auth-job" stopped successfully');
+    expect(killResult.content).toContain('Job "auth-job" stopped successfully');
     expect(mockKillSession).toHaveBeenCalledWith('mc-auth-job');
 
     // Verify job is now stopped in state
@@ -312,7 +312,7 @@ describe('Workflow 1: Basic lifecycle (Launch -> Status -> Capture -> Kill -> Cl
       mockContext,
     );
 
-    expect(cleanupResult).toContain('Cleaned up job "auth-job"');
+    expect(cleanupResult.content).toContain('Cleaned up job "auth-job"');
     expect(mockRemoveWorktree).toHaveBeenCalledWith(
       '/tmp/mc-worktrees/mc-auth-job',
       true,
@@ -335,7 +335,7 @@ describe('Workflow 1: Basic lifecycle (Launch -> Status -> Capture -> Kill -> Cl
       { name: 'tracking-test' },
       mockContext,
     );
-    expect(status1).toContain('Status: running');
+    expect(status1.content).toContain('Status: running');
 
     // Kill
     await mc_kill.execute({ name: 'tracking-test' }, mockContext);
@@ -345,7 +345,7 @@ describe('Workflow 1: Basic lifecycle (Launch -> Status -> Capture -> Kill -> Cl
       { name: 'tracking-test' },
       mockContext,
     );
-    expect(status2).toContain('Status: stopped');
+    expect(status2.content).toContain('Status: stopped');
   });
 
   it('should prevent duplicate job names across lifecycle', async () => {
@@ -372,7 +372,7 @@ describe('Workflow 1: Basic lifecycle (Launch -> Status -> Capture -> Kill -> Cl
       { name: 'unique-job', prompt: 'Second launch' },
       mockContext,
     );
-    expect(result).toContain('Job "unique-job" launched successfully');
+    expect(result.content).toContain('Job "unique-job" launched successfully');
   });
 
   it('should not cleanup a running job', async () => {
@@ -431,8 +431,8 @@ describe('Workflow 2: OMO mode launch with plans', () => {
       mockContext,
     );
 
-    expect(result).toContain('Job "plan-job" launched successfully');
-    expect(result).toContain('Mode:      plan');
+    expect(result.content).toContain('Job "plan-job" launched successfully');
+    expect(result.content).toContain('Mode:      plan');
 
     // Verify OMO detection was called
     expect(mockDetectOMO).toHaveBeenCalled();
@@ -461,7 +461,7 @@ describe('Workflow 2: OMO mode launch with plans', () => {
       mockContext,
     );
 
-    expect(result).toContain('Job "ralph-job" launched successfully');
+    expect(result.content).toContain('Job "ralph-job" launched successfully');
     expect(mockDetectOMO).toHaveBeenCalled();
     expect(mockCopyPlans).toHaveBeenCalled();
 
@@ -481,7 +481,7 @@ describe('Workflow 2: OMO mode launch with plans', () => {
       mockContext,
     );
 
-    expect(result).toContain('Job "ulw-job" launched successfully');
+    expect(result.content).toContain('Job "ulw-job" launched successfully');
     expect(mockDetectOMO).toHaveBeenCalled();
     expect(mockCopyPlans).toHaveBeenCalled();
 
@@ -532,7 +532,7 @@ describe('Workflow 2: OMO mode launch with plans', () => {
       mockContext,
     );
 
-    expect(result).toContain('Job "no-plans" launched successfully');
+    expect(result.content).toContain('Job "no-plans" launched successfully');
   });
 
   it('should verify full OMO lifecycle: launch with plan -> status -> kill -> cleanup', async () => {
@@ -560,7 +560,7 @@ describe('Workflow 2: OMO mode launch with plans', () => {
       { name: 'omo-lifecycle' },
       mockContext,
     );
-    expect(status).toContain('Mode: plan');
+    expect(status.content).toContain('Mode: plan');
 
     // Kill
     await mc_kill.execute({ name: 'omo-lifecycle' }, mockContext);
@@ -570,7 +570,7 @@ describe('Workflow 2: OMO mode launch with plans', () => {
       { name: 'omo-lifecycle' },
       mockContext,
     );
-    expect(cleanup).toContain('Cleaned up job "omo-lifecycle"');
+    expect(cleanup.content).toContain('Cleaned up job "omo-lifecycle"');
     expect(getJobs()).toHaveLength(0);
   });
 });
@@ -608,7 +608,7 @@ describe('Workflow 3: Launch -> PR -> Cleanup', () => {
       { name: 'pr-job', prompt: 'Add new feature for PR' },
       mockContext,
     );
-    expect(launchResult).toContain('Job "pr-job" launched successfully');
+    expect(launchResult.content).toContain('Job "pr-job" launched successfully');
 
     // Verify job branch was set
     const jobs = getJobs();
@@ -696,7 +696,7 @@ describe('Workflow 3: Launch -> PR -> Cleanup', () => {
       { name: 'full-pr-flow' },
       mockContext,
     );
-    expect(cleanupResult).toContain('Cleaned up job "full-pr-flow"');
+    expect(cleanupResult.content).toContain('Cleaned up job "full-pr-flow"');
     expect(getJobs()).toHaveLength(0);
   });
 });
@@ -776,10 +776,10 @@ describe('Workflow 4: Multiple jobs in parallel', () => {
 
     const jobsResult = await mc_jobs.execute({}, mockContext);
 
-    expect(jobsResult).toContain('Mission Control Jobs');
-    expect(jobsResult).toContain('list-job-1');
-    expect(jobsResult).toContain('list-job-2');
-    expect(jobsResult).toContain('Running (2)');
+    expect(jobsResult.content).toContain('Mission Control Jobs');
+    expect(jobsResult.content).toContain('list-job-1');
+    expect(jobsResult.content).toContain('list-job-2');
+    expect(jobsResult.content).toContain('Running (2)');
   });
 
   it('should independently manage job statuses', async () => {
@@ -829,10 +829,10 @@ describe('Workflow 4: Multiple jobs in parallel', () => {
       mockContext,
     );
 
-    expect(status1).toContain('Job: status-job-1');
-    expect(status1).toContain('Branch: mc/status-job-1');
-    expect(status2).toContain('Job: status-job-2');
-    expect(status2).toContain('Branch: mc/status-job-2');
+    expect(status1.content).toContain('Job: status-job-1');
+    expect(status1.content).toContain('Branch: mc/status-job-1');
+    expect(status2.content).toContain('Job: status-job-2');
+    expect(status2.content).toContain('Branch: mc/status-job-2');
   });
 
   it('should capture output from specific jobs', async () => {
@@ -861,8 +861,8 @@ describe('Workflow 4: Multiple jobs in parallel', () => {
       mockContext,
     );
 
-    expect(outputA).toContain('Output from job A');
-    expect(outputB).toContain('Output from job B');
+    expect(outputA.content).toContain('Output from job A');
+    expect(outputB.content).toContain('Output from job B');
   });
 
   it('should cleanup all non-running jobs at once', async () => {
@@ -890,9 +890,9 @@ describe('Workflow 4: Multiple jobs in parallel', () => {
       mockContext,
     );
 
-    expect(cleanupResult).toContain('Cleaned up job "batch-1"');
-    expect(cleanupResult).toContain('Cleaned up job "batch-3"');
-    expect(cleanupResult).toContain('2 cleaned');
+    expect(cleanupResult.content).toContain('Cleaned up job "batch-1"');
+    expect(cleanupResult.content).toContain('Cleaned up job "batch-3"');
+    expect(cleanupResult.content).toContain('2 cleaned');
 
     // Only running job should remain
     const remainingJobs = getJobs();
@@ -921,7 +921,7 @@ describe('Workflow 4: Multiple jobs in parallel', () => {
     // All launches should succeed
     expect(launches).toHaveLength(3);
     launches.forEach((result) => {
-      expect(result).toContain('launched successfully');
+      expect(result.content).toContain('launched successfully');
     });
 
     // All jobs should be tracked
@@ -948,8 +948,8 @@ describe('Workflow 4: Multiple jobs in parallel', () => {
       { status: 'running' },
       mockContext,
     );
-    expect(runningResult).toContain('filter-running');
-    expect(runningResult).not.toContain('filter-stopped');
+    expect(runningResult.content).toContain('filter-running');
+    expect(runningResult.content).not.toContain('filter-stopped');
   });
 
   it('should kill and cleanup all jobs sequentially', async () => {
@@ -969,7 +969,7 @@ describe('Workflow 4: Multiple jobs in parallel', () => {
 
     // Cleanup all
     const result = await mc_cleanup.execute({ all: true }, mockContext);
-    expect(result).toContain('3 cleaned');
+    expect(result.content).toContain('3 cleaned');
     expect(getJobs()).toHaveLength(0);
   });
 });

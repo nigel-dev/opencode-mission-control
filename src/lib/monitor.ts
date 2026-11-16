@@ -16,7 +16,15 @@ import {
 } from './question-relay.js';
 import { loadPlan } from './plan-state.js';
 import { PermissionPolicy, type PermissionPolicyConfig } from './permission-policy.js';
-import type { OpencodeClient } from '@opencode-ai/sdk';
+import type { OpencodeClient } from './sdk-client.js';
+import type { V2Event } from '@opencode/client';
+
+type PermissionAskedData = Extract<V2Event, { type: 'permission.asked' }>['data'];
+
+interface QuestionToolPart {
+  id: string;
+  state: { status: string; input?: Record<string, unknown> };
+}
 
 type JobEventType = 'complete' | 'failed' | 'blocked' | 'needs_review' | 'awaiting_input' | 'agent_report' | 'question';
 
@@ -213,7 +221,7 @@ export class JobMonitor extends EventEmitter {
     }
 
     const abortController = new AbortController();
-    const client = createJobClient(job.port);
+    const client = createJobClient(job.port, job.serverPassword);
 
     this.sseSubscriptions.set(job.id, {
       abortController,
@@ -222,26 +230,65 @@ export class JobMonitor extends EventEmitter {
     });
 
     this.backfillPendingQuestions(job, client).catch(() => {});
+    this.backfillPendingPermissions(job, client).catch(() => {});
+    this.reconcileJobOutcome(job).catch(() => {});
 
     this.processSSEStream(job, client, abortController).catch((error) => {
       console.error(`[Monitor] SSE stream error for job ${job.name}:`, error);
     });
   }
 
+  private async backfillPendingPermissions(job: Job, client: OpencodeClient): Promise<void> {
+    if (!job.remoteSessionID) return;
+
+    try {
+      const pending = await client.permission.list({ sessionID: job.remoteSessionID });
+      for (const request of pending) {
+        await this.handlePermissionUpdate(job, request);
+      }
+    } catch {
+      // Non-fatal: the live event stream may still deliver the request
+    }
+  }
+
+  private async reconcileJobOutcome(job: Job): Promise<void> {
+    if (!job.remoteSessionID || !job.port) return;
+
+    try {
+      const client = createJobClient(job.port, job.serverPassword);
+      const session = await client.session.get({ sessionID: job.remoteSessionID });
+
+      if (session.outcome === 'succeeded') {
+        await this.completeJob(job);
+        return;
+      }
+
+      if (session.outcome === 'failed' || session.outcome === 'interrupted') {
+        const now = new Date().toISOString();
+        this.cleanupSSEForJob(job.id);
+        await updateJob(job.id, { status: 'failed', completedAt: now });
+        this.emit('failed', { ...job, status: 'failed', completedAt: now });
+      }
+    } catch {
+      // Non-fatal: the SSE stream remains the primary completion signal
+    }
+  }
+
   private async backfillPendingQuestions(job: Job, client: OpencodeClient): Promise<void> {
     if (!job.remoteSessionID) return;
 
     try {
-      const result = await client.session.messages({ path: { id: job.remoteSessionID } });
-      const messages = (result.data ?? result) as Array<{ parts?: Array<Record<string, unknown>> }>;
-      if (!Array.isArray(messages)) return;
+      const messages = await client.session.context({ sessionID: job.remoteSessionID });
 
       for (const msg of messages) {
-        for (const part of msg.parts ?? []) {
-          if (part.type === 'tool' && part.tool === 'question') {
-            const state = part.state as { status?: string } | undefined;
-            if (state?.status === 'running') {
-              this.handleQuestionToolUpdate(job, part);
+        if (msg.type !== 'assistant') continue;
+        for (const part of msg.content) {
+          if (part.type === 'tool' && part.name === 'question') {
+            if (part.state.status === 'running') {
+              this.handleQuestionToolUpdate(job, {
+                id: part.id,
+                state: { status: 'running', input: part.state.input },
+              });
             }
           }
         }
@@ -265,7 +312,7 @@ export class JobMonitor extends EventEmitter {
 
         const events = await client.event.subscribe();
 
-        for await (const event of events.stream) {
+        for await (const event of events) {
           if (abortController.signal.aborted) {
             break;
           }
@@ -297,30 +344,40 @@ export class JobMonitor extends EventEmitter {
     }
   }
 
-  private async handleSSEEvent(job: Job, event: any): Promise<void> {
-    const eventType = event.type || event.event;
+  private async completeJob(job: Job): Promise<void> {
+    const now = new Date().toISOString();
+    this.cleanupSSEForJob(job.id);
+    await updateJob(job.id, { status: 'completed', completedAt: now });
+    this.emit('complete', { ...job, status: 'completed', completedAt: now });
+  }
 
-    switch (eventType) {
+  private async handleSSEEvent(job: Job, event: V2Event): Promise<void> {
+    // A job server can also run child/subagent sessions. Only events from the
+    // job's root session should drive completion, failures and questions.
+    const eventSessionID = (event.data as { sessionID?: string } | undefined)?.sessionID;
+    if (job.remoteSessionID && eventSessionID && eventSessionID !== job.remoteSessionID) {
+      return;
+    }
+
+    switch (event.type) {
       case 'session.status': {
-        const statusPayload = event.properties?.status;
-        if (statusPayload?.type === 'idle') {
-          const now = new Date().toISOString();
-          this.cleanupSSEForJob(job.id);
-          await updateJob(job.id, { status: 'completed', completedAt: now });
-          this.emit('complete', { ...job, status: 'completed', completedAt: now });
+        if (event.data.status.type === 'idle') {
+          await this.completeJob(job);
         }
         break;
       }
 
       case 'session.idle': {
-        const now = new Date().toISOString();
-        this.cleanupSSEForJob(job.id);
-        await updateJob(job.id, { status: 'completed', completedAt: now });
-        this.emit('complete', { ...job, status: 'completed', completedAt: now });
+        await this.completeJob(job);
         break;
       }
 
-      case 'session.error': {
+      case 'session.execution.succeeded': {
+        await this.completeJob(job);
+        break;
+      }
+
+      case 'session.execution.failed': {
         const now = new Date().toISOString();
         this.cleanupSSEForJob(job.id);
         await updateJob(job.id, { status: 'failed', completedAt: now });
@@ -328,34 +385,46 @@ export class JobMonitor extends EventEmitter {
         break;
       }
 
-      case 'message.part.updated': {
-        const part = event.properties?.part;
-        if (part?.type === 'tool' && part.tool === 'question') {
-          this.handleQuestionToolUpdate(job, part);
+      case 'session.tool.called': {
+        const input = event.data.input as Record<string, unknown> | undefined;
+        if (input && Array.isArray(input.questions)) {
+          this.handleQuestionToolUpdate(job, {
+            id: event.data.id,
+            state: { status: 'running', input },
+          });
         }
         this.updateEventAccumulator(job.id, { currentTool: 'streaming' });
         break;
       }
 
-      case 'file.edited': {
-        const filePath = event.properties?.path || event.path;
-        if (filePath) {
+      case 'session.tool.progress':
+      case 'session.tool.success':
+      case 'session.tool.failed': {
+        if (event.type === 'session.tool.success' || event.type === 'session.tool.failed') {
+          removePendingQuestion(job.id, event.data.id);
+        }
+        this.updateEventAccumulator(job.id, { currentTool: 'streaming' });
+        break;
+      }
+
+      case 'filesystem.changed': {
+        if (event.data.event !== 'unlink') {
           this.updateEventAccumulator(job.id, {
-            filesEdited: [filePath],
-            currentFile: filePath,
+            filesEdited: [event.data.file],
+            currentFile: event.data.file,
           });
         }
         break;
       }
 
-      case 'permission.updated': {
-        void this.handlePermissionUpdate(job, event);
+      case 'permission.asked': {
+        void this.handlePermissionUpdate(job, event.data);
         break;
       }
     }
   }
 
-  private handleQuestionToolUpdate(job: Job, part: any): void {
+  private handleQuestionToolUpdate(job: Job, part: QuestionToolPart): void {
     const state = part.state;
     if (!state) return;
 
@@ -377,9 +446,10 @@ export class JobMonitor extends EventEmitter {
         jobName: job.name,
         taskSummary: buildTaskSummary(job.prompt),
         partId: part.id,
-        callID: part.callID,
+        callID: part.id,
         remoteSessionID: job.remoteSessionID,
         port: job.port,
+        serverPassword: job.serverPassword,
         question: first.question ?? '',
         options: first.options ?? [],
         header: first.header,
@@ -396,10 +466,9 @@ export class JobMonitor extends EventEmitter {
     }
   }
 
-  private inferPermissionType(event: any): PermissionRequest['type'] {
-    const eventData = event.properties || event;
-    const metadata = eventData.metadata ?? {};
-    const typeHint = String(eventData.type || eventData.permissionType || metadata.type || '').toLowerCase();
+  private inferPermissionType(data: PermissionAskedData): PermissionRequest['type'] {
+    const metadata = data.metadata ?? {};
+    const typeHint = String(data.action || metadata.type || '').toLowerCase();
 
     if (typeHint.includes('mcp') || typeHint.includes('tool')) {
       return 'mcp';
@@ -421,40 +490,51 @@ export class JobMonitor extends EventEmitter {
     return typeof value === 'string' && value.length > 0 ? value : undefined;
   }
 
-  private extractPermissionPath(event: any): string | undefined {
-    const eventData = event.properties || event;
-    const metadata = eventData.metadata;
-
-    const directPath = this.extractString(eventData.path)
-      ?? this.extractString(eventData.file)
-      ?? this.extractString(event.path);
-    if (directPath) {
-      return directPath;
+  private extractPermissionPath(data: PermissionAskedData): string | undefined {
+    const firstResource = data.resources?.[0];
+    if (typeof firstResource === 'string' && this.looksLikePath(firstResource)) {
+      return firstResource;
     }
 
+    const metadata = data.metadata;
     if (metadata && typeof metadata === 'object') {
-      const metadataPath = (metadata as Record<string, unknown>).path;
-      return this.extractString(metadataPath);
+      const metadataPath = this.extractString((metadata as Record<string, unknown>).path);
+      if (metadataPath) {
+        return metadataPath;
+      }
     }
 
     return undefined;
   }
 
-  private buildPermissionRequest(event: any): PermissionRequest {
-    const eventData = event.properties || event;
-    const rawType = this.extractString(eventData.type) || this.extractString(eventData.permissionType) || 'unknown';
-    const path = this.extractPermissionPath(event);
-    const description = this.extractString(eventData.description)
-      || this.extractString(eventData.title)
-      || this.extractString(event.description)
-      || 'Unknown permission request';
+  private looksLikePath(value: string): boolean {
+    // V2 `resources` carries the command string for shell permissions and the
+    // target path for file permissions. Only treat whitespace-free strings
+    // containing a path separator (or a home/relative prefix) as paths.
+    if (/\s/.test(value)) {
+      return false;
+    }
+    return (
+      value.startsWith('/') ||
+      value.startsWith('./') ||
+      value.startsWith('../') ||
+      value.startsWith('~') ||
+      value.includes('/')
+    );
+  }
+
+  private buildPermissionRequest(data: PermissionAskedData): PermissionRequest {
+    const rawType = this.extractString(data.action) || 'unknown';
+    const path = this.extractPermissionPath(data);
+    const description = this.extractString(data.message)
+      || `Permission request: ${rawType}`;
 
     return {
-      id: this.extractString(eventData.id) || this.extractString(event.id) || 'unknown',
-      type: this.inferPermissionType(event),
+      id: String(data.id),
+      type: this.inferPermissionType(data),
       path,
       target: path,
-      action: this.extractString(eventData.title) || rawType,
+      action: rawType,
       rawType,
       description,
     };
@@ -482,9 +562,9 @@ export class JobMonitor extends EventEmitter {
     });
   }
 
-  private async handlePermissionUpdate(job: Job, event: any): Promise<void> {
+  private async handlePermissionUpdate(job: Job, data: PermissionAskedData): Promise<void> {
     try {
-      const permission = this.buildPermissionRequest(event);
+      const permission = this.buildPermissionRequest(data);
       const accumulator = this.getOrCreateEventAccumulator(job.id);
       const policy = await this.resolvePolicyForJob(job);
       const decision = policy.evaluate(permission, { worktreePath: job.worktreePath });
@@ -562,6 +642,7 @@ export class JobMonitor extends EventEmitter {
       try {
         if (this.isServeModeJob(job)) {
           await this.subscribeToSSE(job);
+          await this.reconcileJobOutcome(job);
           continue;
         }
 
@@ -582,7 +663,13 @@ export class JobMonitor extends EventEmitter {
           const now = new Date().toISOString();
 
           const exitCode = await captureExitStatus(job.tmuxTarget);
-          const isFailed = exitCode !== undefined && exitCode !== 0;
+          const report = await readReport(job.id);
+          const reportedComplete =
+            report?.status === 'completed' || report?.status === 'needs_review';
+          // If the pane vanished without an exit status (tmux server died or
+          // the launcher failed to start), do not assume success. Only a clean
+          // exit code or an explicit completion report counts as completed.
+          const isFailed = exitCode !== undefined ? exitCode !== 0 : !reportedComplete;
 
           if (isFailed) {
             await updateJob(job.id, { status: 'failed', completedAt: now });

@@ -47,11 +47,11 @@ describe('mc_kill', () => {
     });
 
     it('should have required arg: name', () => {
-      expect(mc_kill.args.name).toBeDefined();
+      expect(mc_kill.input.shape.name).toBeDefined();
     });
 
     it('should have optional arg: force', () => {
-      expect(mc_kill.args.force).toBeDefined();
+      expect(mc_kill.input.shape.force).toBeDefined();
     });
   });
 
@@ -93,7 +93,7 @@ describe('mc_kill', () => {
 
       const result = await mc_kill.execute({ name: 'my-job' }, mockContext);
 
-      expect(result).toContain('already stopped');
+      expect(result.content).toContain('already stopped');
       expect(mockKillSession).not.toHaveBeenCalled();
       expect(mockUpdateJob).not.toHaveBeenCalled();
     });
@@ -256,11 +256,11 @@ describe('mc_kill', () => {
 
       const result = await mc_kill.execute({ name: 'my-job' }, mockContext);
 
-      expect(result).toContain('Job "my-job" stopped successfully');
-      expect(result).toContain('job-1');
-      expect(result).toContain('stopped');
-      expect(result).toContain('session');
-      expect(result).toContain('/tmp/worktree');
+      expect(result.content).toContain('Job "my-job" stopped successfully');
+      expect(result.content).toContain('job-1');
+      expect(result.content).toContain('stopped');
+      expect(result.content).toContain('session');
+      expect(result.content).toContain('/tmp/worktree');
     });
 
     it('should mention worktree preservation in response', async () => {
@@ -275,8 +275,8 @@ describe('mc_kill', () => {
 
       const result = await mc_kill.execute({ name: 'my-job' }, mockContext);
 
-      expect(result).toContain('Worktree is preserved');
-      expect(result).toContain('mc_cleanup');
+      expect(result.content).toContain('Worktree is preserved');
+      expect(result.content).toContain('mc_cleanup');
     });
   });
 
@@ -296,7 +296,7 @@ describe('mc_kill', () => {
         mockContext,
       );
 
-      expect(result).toContain('stopped successfully');
+      expect(result.content).toContain('stopped successfully');
     });
   });
 });

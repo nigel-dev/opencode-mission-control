@@ -1,7 +1,7 @@
-import { tool, type ToolDefinition } from '@opencode-ai/plugin';
+import { z } from 'zod';
 import { loadPlan, savePlan } from '../lib/plan-state';
 import { Orchestrator } from '../lib/orchestrator';
-import { getSharedMonitor, getSharedNotifyCallback, setSharedOrchestrator } from '../lib/orchestrator-singleton';
+import { getSharedMonitor, getSharedOrchestratorCallbacks, setSharedOrchestrator } from '../lib/orchestrator-singleton';
 import type { CheckpointType } from '../lib/plan-types';
 import { loadConfig } from '../lib/config';
 import { getCurrentModel } from '../lib/model-tracker';
@@ -9,24 +9,16 @@ import { createIntegrationBranch } from '../lib/integration';
 import { resolvePostCreateHook } from '../lib/worktree-setup';
 import { validateTouchSet } from '../lib/merge-train';
 
-export const mc_plan_approve: ToolDefinition = tool({
+export const mc_plan_approve = {
+  name: 'mc_plan_approve',
   description:
     'Approve a pending copilot plan, clear a supervisor checkpoint, or retry/relaunch a failed job to continue execution',
-  args: {
-    checkpoint: tool.schema
-      .enum(['pre_merge', 'on_error', 'pre_pr'])
-      .optional()
-      .describe('Specific checkpoint to clear (for supervisor mode)'),
-    retry: tool.schema
-      .string()
-      .optional()
-      .describe('Name of a failed, conflict, or needs_rebase job to retry after manual fix (re-validates touchSet)'),
-    relaunch: tool.schema
-      .string()
-      .optional()
-      .describe('Name of a touchSet-failed job to relaunch — spawns agent in existing worktree with correction prompt'),
-  },
-  async execute(args) {
+  input: z.object({
+    checkpoint: z.enum(['pre_merge', 'on_error', 'pre_pr']).optional().describe('Specific checkpoint to clear (for supervisor mode)'),
+    retry: z.string().optional().describe('Name of a failed, conflict, or needs_rebase job to retry after manual fix (re-validates touchSet)'),
+    relaunch: z.string().optional().describe('Name of a touchSet-failed job to relaunch — spawns agent in existing worktree with correction prompt'),
+  }).strict(),
+  async execute(args: { checkpoint?: 'pre_merge' | 'on_error' | 'pre_pr'; retry?: string; relaunch?: string }) {
     if (args.retry && args.relaunch) {
       throw new Error('Cannot specify both "retry" and "relaunch". Use "retry" for manual fixes (re-validates) or "relaunch" to spawn an agent to fix violations.');
     }
@@ -51,6 +43,17 @@ export const mc_plan_approve: ToolDefinition = tool({
       const checkpoint = (args.checkpoint ?? plan.checkpoint) as CheckpointType;
       const config = await loadConfig();
 
+      // Supervisor approvals must survive the process boundary: mc_plan_approve
+      // creates a new Orchestrator, so in-memory approval sets are empty on
+      // resume. Persist approvals on the plan before resuming.
+      const mergeApprovals = plan.approvedMergeJobs ?? [];
+      const approveForMerge = (jobName: string) => {
+        if (!mergeApprovals.includes(jobName)) {
+          mergeApprovals.push(jobName);
+        }
+        plan.approvedMergeJobs = mergeApprovals;
+      };
+
       if (args.relaunch) {
         const ctx = plan.checkpointContext;
         if (!ctx || ctx.failureKind !== 'touchset') {
@@ -63,9 +66,10 @@ export const mc_plan_approve: ToolDefinition = tool({
         plan.status = 'running';
         plan.checkpoint = null;
         plan.checkpointContext = null;
+        approveForMerge(args.relaunch);
         await savePlan(plan);
 
-        const orchestrator = new Orchestrator(getSharedMonitor(), config, { notify: getSharedNotifyCallback() ?? undefined });
+        const orchestrator = new Orchestrator(getSharedMonitor(), config, getSharedOrchestratorCallbacks());
         setSharedOrchestrator(orchestrator);
         orchestrator.setPlanModelSnapshot(getCurrentModel());
 
@@ -76,7 +80,7 @@ export const mc_plan_approve: ToolDefinition = tool({
         );
         await orchestrator.resumePlan();
 
-        return [
+        return { content: [
           `Checkpoint "${checkpoint}" cleared. Job "${args.relaunch}" relaunched with correction prompt.`,
           '',
           `  ID:   ${plan.id}`,
@@ -84,7 +88,7 @@ export const mc_plan_approve: ToolDefinition = tool({
           '',
           'The agent will fix touchSet violations in the existing worktree.',
           'Use mc_plan_status to monitor progress.',
-        ].join('\n');
+        ].join('\n') };
       }
 
       if (args.retry) {
@@ -112,21 +116,22 @@ export const mc_plan_approve: ToolDefinition = tool({
         plan.status = 'running';
         plan.checkpoint = null;
         plan.checkpointContext = null;
+        approveForMerge(args.retry);
         await savePlan(plan);
 
-        const orchestrator = new Orchestrator(getSharedMonitor(), config, { notify: getSharedNotifyCallback() ?? undefined });
+        const orchestrator = new Orchestrator(getSharedMonitor(), config, getSharedOrchestratorCallbacks());
         setSharedOrchestrator(orchestrator);
         orchestrator.setPlanModelSnapshot(getCurrentModel());
         await orchestrator.resumePlan();
 
-        return [
+        return { content: [
           `Checkpoint "${checkpoint}" cleared. Job "${args.retry}" reset to ready_to_merge.`,
           '',
           `  ID:   ${plan.id}`,
           `  Mode: ${plan.mode}`,
           '',
           'Use mc_plan_status to monitor progress.',
-        ].join('\n');
+        ].join('\n') };
       }
 
       const ctx = plan.checkpointContext;
@@ -138,12 +143,26 @@ export const mc_plan_approve: ToolDefinition = tool({
         }
       }
 
+      if (plan.mode === 'supervisor') {
+        if (checkpoint === 'pre_merge') {
+          for (const job of plan.jobs) {
+            if (job.status === 'ready_to_merge') {
+              approveForMerge(job.name);
+            }
+          }
+        } else if (checkpoint === 'pre_pr') {
+          plan.approvedPrePr = true;
+        } else if (ctx?.failureKind === 'touchset' && ctx.jobName) {
+          approveForMerge(ctx.jobName);
+        }
+      }
+
       plan.status = 'running';
       plan.checkpoint = null;
       plan.checkpointContext = null;
       await savePlan(plan);
 
-      const orchestrator = new Orchestrator(getSharedMonitor(), config, { notify: getSharedNotifyCallback() ?? undefined });
+      const orchestrator = new Orchestrator(getSharedMonitor(), config, getSharedOrchestratorCallbacks());
       setSharedOrchestrator(orchestrator);
       orchestrator.setPlanModelSnapshot(getCurrentModel());
       await orchestrator.resumePlan();
@@ -151,14 +170,14 @@ export const mc_plan_approve: ToolDefinition = tool({
       const acceptMsg = ctx?.failureKind === 'touchset'
         ? ` TouchSet violations for job "${ctx.jobName}" accepted.`
         : '';
-      return [
+      return { content: [
         `Checkpoint "${checkpoint}" cleared.${acceptMsg} Plan "${plan.name}" resuming.`,
         '',
         `  ID:   ${plan.id}`,
         `  Mode: ${plan.mode}`,
         '',
         'Use mc_plan_status to monitor progress.',
-      ].join('\n');
+      ].join('\n') };
     }
 
     if (plan.status !== 'pending') {
@@ -177,12 +196,12 @@ export const mc_plan_approve: ToolDefinition = tool({
     plan.status = 'running';
     await savePlan(plan);
 
-    const orchestrator = new Orchestrator(getSharedMonitor(), config, { notify: getSharedNotifyCallback() ?? undefined });
+    const orchestrator = new Orchestrator(getSharedMonitor(), config, getSharedOrchestratorCallbacks());
     setSharedOrchestrator(orchestrator);
     orchestrator.setPlanModelSnapshot(getCurrentModel());
     await orchestrator.resumePlan();
 
-    return [
+    return { content: [
       `Plan "${plan.name}" approved and started.`,
       '',
       `  ID:   ${plan.id}`,
@@ -190,6 +209,6 @@ export const mc_plan_approve: ToolDefinition = tool({
       `  Jobs: ${plan.jobs.length}`,
       '',
       'Use mc_plan_status to monitor progress.',
-    ].join('\n');
+    ].join('\n') };
   },
-});
+};

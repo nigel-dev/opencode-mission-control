@@ -1,4 +1,4 @@
-import { tool, type ToolDefinition } from '@opencode-ai/plugin';
+import { z } from 'zod';
 import { getJobByName } from '../lib/job-state';
 import { gitCommand } from '../lib/git';
 
@@ -40,18 +40,14 @@ async function executeGitDiff(
   return diffResult.stdout;
 }
 
-export const mc_diff: ToolDefinition = tool({
+export const mc_diff = {
+  name: 'mc_diff',
   description: 'Show changes in a job\'s branch compared to base',
-  args: {
-    name: tool.schema
-      .string()
-      .describe('Job name'),
-    stat: tool.schema
-      .boolean()
-      .optional()
-      .describe('Show diffstat only'),
-  },
-  async execute(args) {
+  input: z.object({
+    name: z.string().describe('Job name'),
+    stat: z.boolean().optional().describe('Show diffstat only'),
+  }).strict(),
+  async execute(args: { name: string; stat?: boolean }) {
     // 1. Get job by name
     const job = await getJobByName(args.name);
     if (!job) {
@@ -62,6 +58,6 @@ export const mc_diff: ToolDefinition = tool({
     const diff = await executeGitDiff(job.worktreePath, job.branch, args.stat, job.baseBranch);
 
     // 3. Return diff output
-    return diff || '(no changes)';
+    return { content: diff || '(no changes)' };
   },
-});
+};

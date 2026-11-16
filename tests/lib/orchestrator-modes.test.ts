@@ -88,6 +88,10 @@ describe('orchestrator modes', () => {
         if (updates.checkpointContext !== undefined) planState.checkpointContext = updates.checkpointContext;
         if (updates.completedAt !== undefined) planState.completedAt = updates.completedAt;
         if (updates.prUrl !== undefined) planState.prUrl = updates.prUrl;
+        if (updates.approvedMergeJobs !== undefined) {
+          planState.approvedMergeJobs = updates.approvedMergeJobs;
+        }
+        if (updates.approvedPrePr !== undefined) planState.approvedPrePr = updates.approvedPrePr;
       },
     );
     spyOn(planStateMod, 'clearPlan').mockImplementation(async () => {
@@ -446,6 +450,60 @@ describe('orchestrator modes', () => {
       expect(orchestrator.getCheckpoint()).not.toBe('pre_merge');
       const mergeJob = planState?.jobs.find(j => j.name === 'merge-me');
       expect(mergeJob?.status).toBe('merged');
+    });
+
+    it('honors persisted approvedMergeJobs from a previous process', async () => {
+      planState = makePlan({
+        mode: 'supervisor',
+        status: 'running',
+        approvedMergeJobs: ['merge-me'],
+        jobs: [
+          makeJob('merge-me', { status: 'completed', mergeOrder: 0, branch: 'mc/merge-me' }),
+        ],
+      });
+
+      const fakeTrain = {
+        queue: [] as JobSpec[],
+        enqueue(job: JobSpec) {
+          this.queue.push(job);
+        },
+        getQueue() {
+          return [...this.queue];
+        },
+        async processNext() {
+          this.queue.shift();
+          return { success: true, mergedAt: '2026-01-02T00:00:00.000Z' };
+        },
+      };
+
+      const orchestrator = new Orchestrator(monitor as any, DEFAULT_CONFIG as any, toastCallback);
+      (orchestrator as any).mergeTrain = fakeTrain;
+
+      await (orchestrator as any).reconcile();
+
+      expect(orchestrator.getCheckpoint()).not.toBe('pre_merge');
+      expect(planState?.jobs.find((j) => j.name === 'merge-me')?.status).toBe('merged');
+      expect(planState?.approvedMergeJobs).toEqual([]);
+    });
+
+    it('honors persisted approvedPrePr from a previous process', async () => {
+      planState = makePlan({
+        mode: 'supervisor',
+        status: 'running',
+        approvedPrePr: true,
+        jobs: [makeJob('done', { status: 'merged', mergeOrder: 0 })],
+      });
+
+      const orchestrator = new Orchestrator(monitor as any, DEFAULT_CONFIG as any, toastCallback);
+      const createPRSpy = spyOn(orchestrator as any, 'createPR').mockResolvedValue(
+        'https://example.com/pr/1',
+      );
+
+      await (orchestrator as any).reconcile();
+
+      expect(createPRSpy).toHaveBeenCalled();
+      expect(planState?.status).toBe('completed');
+      expect(planState?.approvedPrePr).toBe(false);
     });
 
     it('sends checkpoint toast notifications', async () => {

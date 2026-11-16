@@ -1,21 +1,16 @@
-import { tool, type ToolDefinition } from '@opencode-ai/plugin';
+import { z } from 'zod';
 import { getJobByName } from '../lib/job-state';
 import { syncWorktree } from '../lib/worktree';
 
-export const mc_sync: ToolDefinition = tool({
+export const mc_sync = {
+  name: 'mc_sync',
   description: 'Sync a job\'s branch with the base branch',
-  args: {
-    name: tool.schema.string().describe('Job name'),
-    strategy: tool.schema
-      .enum(['rebase', 'merge'])
-      .optional()
-      .describe('Sync strategy (default: rebase)'),
-    source: tool.schema
-      .enum(['local', 'origin'])
-      .optional()
-      .describe('Sync source: local base branch (default) or origin'),
-  },
-  async execute(args) {
+  input: z.object({
+    name: z.string().describe('Job name'),
+    strategy: z.enum(['rebase', 'merge']).optional().describe('Sync strategy (default: rebase)'),
+    source: z.enum(['local', 'origin']).optional().describe('Sync source: local base branch (default) or origin'),
+  }).strict(),
+  async execute(args: { name: string; strategy?: 'rebase' | 'merge'; source?: 'local' | 'origin' }) {
     // 1. Find job by name
     const job = await getJobByName(args.name);
     if (!job) {
@@ -35,7 +30,7 @@ export const mc_sync: ToolDefinition = tool({
 
     // 4. Format output
     if (result.success) {
-      return `Successfully synced job "${job.name}" using ${syncStrategy} strategy.`;
+      return { content: `Successfully synced job "${job.name}" using ${syncStrategy} strategy.` };
     }
 
     // Sync failed with conflicts
@@ -43,6 +38,6 @@ export const mc_sync: ToolDefinition = tool({
       ? result.conflicts.map((f) => `  - ${f}`).join('\n')
       : '  (no conflict details available)';
 
-    return `Sync failed for job "${job.name}" using ${syncStrategy} strategy.\n\nConflicts:\n${conflictList}\n\nResolve conflicts manually and try again.`;
+    return { content: `Sync failed for job "${job.name}" using ${syncStrategy} strategy.\n\nConflicts:\n${conflictList}\n\nResolve conflicts manually and try again.` };
   },
-});
+};

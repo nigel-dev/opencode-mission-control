@@ -1,4 +1,4 @@
-import { tool, type ToolDefinition } from '@opencode-ai/plugin';
+import { z } from 'zod';
 import { loadJobState, getRunningJobs, type Job } from '../lib/job-state';
 import { loadPlan } from '../lib/plan-state';
 import { readAllReports, type AgentReport } from '../lib/reports';
@@ -187,10 +187,11 @@ function getSuggestedActions(
   return actions.slice(0, 5).map((action) => `- ${action}`);
 }
 
-export const mc_overview: ToolDefinition = tool({
+export const mc_overview = {
+  name: 'mc_overview',
   description:
     'START HERE — Get a complete overview of all Mission Control activity, jobs, plans, and alerts',
-  args: {},
+  input: z.object({}).strict(),
   async execute() {
     const [jobState, runningJobs, plan, reports] = await Promise.all([
       loadJobState(),
@@ -266,6 +267,6 @@ export const mc_overview: ToolDefinition = tool({
     lines.push('', 'Suggested Actions', '-----------------');
     lines.push(...getSuggestedActions(jobs, plan, reports));
 
-    return lines.join('\n');
+    return { content: lines.join('\n') };
   },
-});
+};

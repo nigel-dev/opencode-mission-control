@@ -1,4 +1,4 @@
-import { tool, type ToolDefinition } from '@opencode-ai/plugin';
+import { z } from 'zod';
 import { getDefaultBranch } from '../lib/git';
 import { getJobByName, type Job } from '../lib/job-state';
 
@@ -58,30 +58,17 @@ function buildDefaultBody(job: Job): string {
   ].join('\n');
 }
 
-export const mc_pr: ToolDefinition = tool({
+export const mc_pr = {
+  name: 'mc_pr',
   description: 'Create a pull request from a job\'s branch',
-  args: {
-    name: tool.schema
-      .string()
-      .describe('Job name'),
-    title: tool.schema
-      .string()
-      .optional()
-      .describe('PR title — use Conventional Commits format (e.g. "feat: add login", "fix: resolve timeout"). Defaults to job name.'),
-    body: tool.schema
-      .string()
-      .optional()
-      .describe('PR body (defaults to PR template or generated summary)'),
-    draft: tool.schema
-      .boolean()
-      .optional()
-      .describe('Create as draft PR'),
-    baseBranch: tool.schema
-      .string()
-      .optional()
-      .describe('Target branch for the PR (defaults to the job\'s base branch, or the repo default branch)'),
-  },
-  async execute(args) {
+  input: z.object({
+    name: z.string().describe('Job name'),
+    title: z.string().optional().describe('PR title — use Conventional Commits format (e.g. "feat: add login", "fix: resolve timeout"). Defaults to job name.'),
+    body: z.string().optional().describe('PR body (defaults to PR template or generated summary)'),
+    draft: z.boolean().optional().describe('Create as draft PR'),
+    baseBranch: z.string().optional().describe('Target branch for the PR (defaults to the job\'s base branch, or the repo default branch)'),
+  }).strict(),
+  async execute(args: { name: string; title?: string; body?: string; draft?: boolean; baseBranch?: string }) {
     // 1. Get job by name
     const job = await getJobByName(args.name);
     if (!job) {
@@ -132,6 +119,6 @@ export const mc_pr: ToolDefinition = tool({
     // 7. Execute gh pr create
     const prUrl = await executeGhCommand(ghArgs);
 
-    return prUrl;
+    return { content: prUrl };
   },
-});
+};

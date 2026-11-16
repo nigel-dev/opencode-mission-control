@@ -44,7 +44,7 @@ describe('mc_plan_cancel', () => {
 
       const result = await mc_plan_cancel.execute({}, mockContext);
 
-      expect(result).toContain('No active plan to cancel');
+      expect(result.content).toContain('No active plan to cancel');
     });
   });
 
@@ -71,9 +71,9 @@ describe('mc_plan_cancel', () => {
 
       const result = await mc_plan_cancel.execute({}, mockContext);
 
-      expect(result).toContain('Plan "Feature Sprint" canceled');
-      expect(result).toContain('plan-1');
-      expect(result).toContain('All running jobs have been stopped');
+      expect(result.content).toContain('Plan "Feature Sprint" canceled');
+      expect(result.content).toContain('plan-1');
+      expect(result.content).toContain('All running jobs have been stopped');
       expect(mockCancelPlan).toHaveBeenCalled();
     });
   });

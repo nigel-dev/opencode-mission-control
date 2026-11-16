@@ -101,8 +101,8 @@ describe('mc_plan_approve', () => {
           expect.objectContaining({ name: 'bad-job', status: 'ready_to_merge' }),
         ]),
       }));
-      expect(result).toContain('bad-job');
-      expect(result).toContain('ready_to_merge');
+      expect(result.content).toContain('bad-job');
+      expect(result.content).toContain('ready_to_merge');
       expect(mockResumePlan).toHaveBeenCalled();
     });
 
@@ -143,7 +143,7 @@ describe('mc_plan_approve', () => {
         ]),
       }));
       expect(mockResumePlan).toHaveBeenCalled();
-      expect(result).toContain('TouchSet violations for job "touch-job" accepted');
+      expect(result.content).toContain('TouchSet violations for job "touch-job" accepted');
     });
 
     it('should relaunch touchSet-failed job for correction', async () => {
@@ -190,7 +190,7 @@ describe('mc_plan_approve', () => {
       }));
       expect(relaunchSpy).toHaveBeenCalledWith('touch-job', ['README.md'], ['src/**']);
       expect(mockResumePlan).toHaveBeenCalled();
-      expect(result).toContain('relaunched with correction prompt');
+      expect(result.content).toContain('relaunched with correction prompt');
     });
 
     it('should re-validate touchSet on retry before proceeding', async () => {
@@ -240,8 +240,8 @@ describe('mc_plan_approve', () => {
         ]),
       }));
       expect(mockResumePlan).toHaveBeenCalled();
-      expect(result).toContain('touch-job');
-      expect(result).toContain('ready_to_merge');
+      expect(result.content).toContain('touch-job');
+      expect(result.content).toContain('ready_to_merge');
     });
 
     it('should reject retry when touchSet remains violated after manual fix', async () => {
@@ -335,8 +335,8 @@ describe('mc_plan_approve', () => {
           expect.objectContaining({ name: 'conflicting-job', status: 'ready_to_merge' }),
         ]),
       }));
-      expect(result).toContain('Checkpoint');
-      expect(result).toContain('ready_to_merge');
+      expect(result.content).toContain('Checkpoint');
+      expect(result.content).toContain('ready_to_merge');
       expect(mockResumePlan).toHaveBeenCalled();
     });
 
@@ -396,10 +396,39 @@ describe('mc_plan_approve', () => {
 
       const result = await mc_plan_approve.execute({ checkpoint: 'pre_merge' }, mockContext);
 
-      expect(result).toContain('Checkpoint "pre_merge" cleared');
-      expect(result).toContain('resuming');
-      expect(result).not.toContain('ready_to_merge');
-      expect(mockSavePlan).toHaveBeenCalled();
+      expect(result.content).toContain('Checkpoint "pre_merge" cleared');
+      expect(result.content).toContain('resuming');
+      expect(result.content).not.toContain('ready_to_merge');
+      expect(mockSavePlan).toHaveBeenCalledWith(expect.objectContaining({
+        approvedMergeJobs: ['merge-job'],
+      }));
+      expect(mockResumePlan).toHaveBeenCalled();
+    });
+
+    it('should persist pre_pr approval so a fresh orchestrator does not re-pause', async () => {
+      spyOn(planState, 'loadPlan').mockResolvedValue({
+        id: 'plan-1',
+        name: 'Pre-PR Plan',
+        mode: 'supervisor',
+        status: 'paused',
+        checkpoint: 'pre_pr',
+        jobs: [{ id: 'j1', name: 'done-job', prompt: 'do merge', status: 'merged' }],
+        integrationBranch: 'mc/integration/plan-1',
+        baseCommit: 'abc123',
+        createdAt: new Date().toISOString(),
+      });
+
+      const mockSavePlan = spyOn(planState, 'savePlan').mockResolvedValue(undefined);
+      const mockResumePlan = mock().mockResolvedValue(undefined);
+      spyOn(orchestrator.Orchestrator.prototype, 'resumePlan').mockImplementation(mockResumePlan);
+      spyOn(orchestrator.Orchestrator.prototype, 'setPlanModelSnapshot').mockImplementation(() => {});
+
+      const result = await mc_plan_approve.execute({ checkpoint: 'pre_pr' }, mockContext);
+
+      expect(result.content).toContain('Checkpoint "pre_pr" cleared');
+      expect(mockSavePlan).toHaveBeenCalledWith(expect.objectContaining({
+        approvedPrePr: true,
+      }));
       expect(mockResumePlan).toHaveBeenCalled();
     });
   });
@@ -431,10 +460,10 @@ describe('mc_plan_approve', () => {
 
       const result = await mc_plan_approve.execute({}, mockContext);
 
-      expect(result).toContain('approved and started');
-      expect(result).toContain('plan-1');
-      expect(result).toContain('Jobs: 2');
-      expect(result).toContain('mc_plan_status');
+      expect(result.content).toContain('approved and started');
+      expect(result.content).toContain('plan-1');
+      expect(result.content).toContain('Jobs: 2');
+      expect(result.content).toContain('mc_plan_status');
       expect(mockSavePlan).toHaveBeenCalled();
       expect(mockResumePlan).toHaveBeenCalled();
     });

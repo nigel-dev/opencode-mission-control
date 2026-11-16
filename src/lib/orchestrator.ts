@@ -2,7 +2,7 @@ import { randomUUID } from 'crypto';
 import type { MCConfig } from './config';
 import type { PlanSpec, JobSpec, PlanStatus, CheckpointType, CheckpointContext, AuditLogEntry } from './plan-types';
 import { loadPlan, savePlan, updatePlanJob, updatePlanFields, clearPlan, validateGhAuth } from './plan-state';
-import { getDefaultBranch } from './git';
+import { getDefaultBranch, gitCommand } from './git';
 import { createIntegrationBranch, deleteIntegrationBranch } from './integration';
 import { MergeTrain, checkMergeability, type MergeTestReport, validateTouchSet } from './merge-train';
 import { addJob, getRunningJobs, updateJob, loadJobState, removeJob, type Job } from './job-state';
@@ -295,6 +295,7 @@ export class Orchestrator {
       );
     }
     const wasPreMerge = this.checkpoint === 'pre_merge';
+    const wasPrePr = this.checkpoint === 'pre_pr';
     this.checkpoint = null;
 
     const plan = await loadPlan();
@@ -311,6 +312,10 @@ export class Orchestrator {
         status: 'running',
         checkpoint: null,
         checkpointContext: null,
+        ...(wasPreMerge
+          ? { approvedMergeJobs: plan.jobs.filter((j) => j.status === 'ready_to_merge').map((j) => j.name) }
+          : {}),
+        ...(wasPrePr ? { approvedPrePr: true } : {}),
       });
       this.showToast('Mission Control', 'Checkpoint cleared, resuming execution.', 'info');
 
@@ -598,9 +603,22 @@ export class Orchestrator {
           }
         }
 
-        if (this.isSupervisor(plan) && !this.approvedForMerge.has(job.name)) {
+        const persistedMergeApproval = plan.approvedMergeJobs ?? [];
+        const approvedForMerge =
+          this.approvedForMerge.has(job.name) ||
+          persistedMergeApproval.includes(job.name);
+
+        if (this.isSupervisor(plan) && !approvedForMerge) {
           await this.setCheckpoint('pre_merge', plan);
           return;
+        }
+
+        if (persistedMergeApproval.includes(job.name)) {
+          // Consume the persisted approval so a later retry does not silently
+          // bypass the supervisor checkpoint again.
+          await updatePlanFields(plan.id, {
+            approvedMergeJobs: persistedMergeApproval.filter((name) => name !== job.name),
+          });
         }
 
         this.mergeTrain ??= new MergeTrain(plan.integrationWorktree!, this.getMergeTrainConfig());
@@ -685,12 +703,15 @@ export class Orchestrator {
         this.showToast('Mission Control', 'All jobs merged. Creating PR...', 'info');
         this.notify(`🎯 All ${latestPlan.jobs.length} jobs merged. Creating PR...`);
 
-        if (this.isSupervisor(latestPlan)) {
+        if (this.isSupervisor(latestPlan) && !latestPlan.approvedPrePr) {
           await this.setCheckpoint('pre_pr', latestPlan);
           return;
         }
 
-        await updatePlanFields(latestPlan.id, { status: 'creating_pr' });
+        await updatePlanFields(latestPlan.id, {
+          status: 'creating_pr',
+          ...(this.isSupervisor(latestPlan) ? { approvedPrePr: false } : {}),
+        });
 
         try {
           const prUrl = await this.createPR();
@@ -821,7 +842,9 @@ If your work needs human review before it can proceed: mc_report(status: "needs_
       }
       promptFilePath = await writePromptFile(worktreePath, jobPrompt);
       const model = this.planModelSnapshot ?? getCurrentModel();
-      const launcherPath = await writeLauncherScript(worktreePath, promptFilePath, model);
+      const launcherPath = await writeLauncherScript(worktreePath, promptFilePath, model, {
+        run: mode === 'vanilla',
+      });
 
       const initialCommand = `bash '${launcherPath}'`;
       if (placement === 'session') {
@@ -1011,7 +1034,9 @@ If your work needs human review before it can proceed: mc_report(status: "needs_
     try {
       promptFilePath = await writePromptFile(worktreePath, fullPrompt);
       const model = this.planModelSnapshot ?? getCurrentModel();
-      const launcherPath = await writeLauncherScript(worktreePath, promptFilePath, model);
+      const launcherPath = await writeLauncherScript(worktreePath, promptFilePath, model, {
+        run: mode === 'vanilla',
+      });
 
       const initialCommand = `bash '${launcherPath}'`;
       if (placement === 'session') {
@@ -1190,6 +1215,16 @@ If your work needs human review before it can proceed: mc_report(status: "needs_
       } catch {}
     }
 
+    const state = await loadJobState();
+    const planJobs = state.jobs.filter((job) => job.planId === plan.id);
+    for (const job of planJobs) {
+      if (job.worktreePath) {
+        await removeWorktree(job.worktreePath, true).catch(() => {});
+      }
+      if (job.branch) {
+        await gitCommand(['branch', '-D', job.branch]).catch(() => {});
+      }
+    }
     await deleteIntegrationBranch(plan.id);
     await clearPlan();
   }

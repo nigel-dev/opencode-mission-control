@@ -1,4 +1,4 @@
-import { tool, type ToolDefinition } from '@opencode-ai/plugin';
+import { z } from 'zod';
 import { loadPlan } from '../lib/plan-state';
 import type { JobSpec, PlanSpec } from '../lib/plan-types';
 
@@ -59,13 +59,14 @@ function getNextActions(plan: PlanSpec): string {
   return actions.length > 0 ? actions.join(', ') : 'None';
 }
 
-export const mc_plan_status: ToolDefinition = tool({
+export const mc_plan_status = {
+  name: 'mc_plan_status',
   description: 'Show status of the active orchestrated plan',
-  args: {},
+  input: z.object({}).strict(),
   async execute() {
     const plan = await loadPlan();
     if (!plan) {
-      return 'No active plan.';
+      return { content: 'No active plan.' };
     }
 
     const merged = plan.jobs.filter((j) => j.status === 'merged').length;
@@ -89,6 +90,6 @@ export const mc_plan_status: ToolDefinition = tool({
       lines.push(`PR: ${plan.prUrl}`);
     }
 
-    return lines.join('\n');
+    return { content: lines.join('\n') };
   },
-});
+};

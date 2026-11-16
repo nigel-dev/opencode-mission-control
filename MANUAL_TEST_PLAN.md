@@ -1417,7 +1417,7 @@ done
 
 ## Key Risks
 
-1. **Dogfooding paradox**: We're testing Mission Control from within a Mission Control-managed session. Launching jobs will create worktrees of this repo, and those agents will also have MC loaded (via `.opencode/plugins/mission-control.ts` -> `../../dist/index.js`). Our simple prompts and quick kills mitigate recursive chaos.
+1. **Dogfooding paradox**: We're testing Mission Control from within a Mission Control-managed session. Launching jobs will create worktrees of this repo, and those agents will also have MC loaded (via the `plugins` entry in `opencode.jsonc` or `.opencode/plugins/`). Our simple prompts and quick kills mitigate recursive chaos.
 2. **Merge pollution (Phases 4 & 6)**: The merge tests temporarily bring test commits into main. We immediately `git reset --hard $SAVED_SHA` to undo. If anything goes wrong, these are the highest-risk steps. **NEVER use `HEAD~N`** — always use saved SHAs.
 3. **State file corruption**: If we crash mid-test, `jobs.json` and `plan.json` may have orphaned entries. The Nuclear Cleanup script (top of document) handles this.
 4. **tmux session leak**: If `mc_kill` fails, tmux sessions persist. Phase 12 force-kills all `mc-tmc-*` sessions.
@@ -1430,7 +1430,7 @@ done
 11. **TouchSet testing on feature branches**: When running Phase 5G on a non-main branch, job worktrees inherit the feature branch's uncommitted changes. TouchSet validation compares the job branch against the integration branch, so feature branch source files show up as spurious violations alongside the actual test violations (e.g., `rogue.txt`). This is a testing artifact — in production, both branches share the same base so only the job's own changes appear.
 12. **Port exhaustion (v1.5)**: The default port range is 14100–14199 (100 ports). If cleanup fails to release ports, the `port.lock` file accumulates stale entries. Symptoms: "No available ports" error on launch. Fix: delete `port.lock` from the state directory.
 13. **Serve-mode server leak (v1.5)**: If `mc_kill` or `mc_cleanup` fails to terminate the `opencode serve` process, ports stay bound. Symptoms: next launch on the same port fails. Fix: `lsof -ti:14100-14199 | xargs kill` or use the Nuclear Cleanup script.
-14. **SDK availability (v1.5)**: Serve-mode tests (Phases 13–15) require `@opencode-ai/sdk` to be installed and the OpenCode serve endpoint to be functional. If the SDK is not available, serve-mode launches will fail at the "waiting for server" step — this is expected, not a plugin bug.
+14. **SDK availability (v1.5)**: Serve-mode tests (Phases 13–15) require `@opencode/client` to be installed and the OpenCode serve endpoint to be functional. If the SDK is not available, serve-mode launches will fail at the "waiting for server" step — this is expected, not a plugin bug.
 15. **Title annotation timing (v1.5)**: Session title annotations (Phase 16) are fire-and-forget. If the SDK session API is slow or the session has already been compacted, annotations may not appear. A missing annotation is not a test failure — check the decision log in unit tests instead.
 16. **Permission policy non-determinism (v1.5)**: Permission evaluation during live agent execution depends on the agent triggering permission prompts (file edits, shell commands). Simple test prompts may not trigger any prompts at all, making live permission testing unreliable. Unit tests are the source of truth for policy evaluation logic.
 

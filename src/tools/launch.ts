@@ -1,4 +1,4 @@
-import { tool, type ToolDefinition } from '@opencode-ai/plugin';
+import { z } from 'zod';
 import { randomUUID } from 'crypto';
 import { getJobByName, addJob, getRunningJobs, type Job } from '../lib/job-state';
 import { createWorktree, removeWorktree } from '../lib/worktree';
@@ -74,48 +74,23 @@ function buildFullPrompt(opts: {
   }
 }
 
-export const mc_launch: ToolDefinition = tool({
+export const mc_launch = {
+  name: 'mc_launch',
   description:
     'Launch a new parallel AI coding session in an isolated worktree',
-  args: {
-    name: tool.schema
-      .string()
-      .describe('Job name (used for branch and tmux)'),
-    prompt: tool.schema.string().describe('Task prompt for the AI agent'),
-    branch: tool.schema
-      .string()
-      .optional()
-      .describe('Branch name (defaults to mc/{name})'),
-    baseBranch: tool.schema
-      .string()
-      .optional()
-      .describe('Branch or ref to start from (defaults to default branch)'),
-    placement: tool.schema
-      .enum(['session', 'window'])
-      .optional()
-      .describe('tmux placement: session (default) or window'),
-    mode: tool.schema
-      .enum(['vanilla', 'plan', 'ralph', 'ulw'])
-      .optional()
-      .describe('Execution mode'),
-    planFile: tool.schema
-      .string()
-      .optional()
-      .describe('Plan file to use (for plan mode)'),
-    copyFiles: tool.schema
-      .array(tool.schema.string())
-      .optional()
-      .describe('Files to copy from main worktree (e.g. [".env", ".env.local"])'),
-    symlinkDirs: tool.schema
-      .array(tool.schema.string())
-      .optional()
-      .describe('Directories to symlink from main worktree (e.g. ["node_modules"]). .opencode is always included.'),
-    commands: tool.schema
-      .array(tool.schema.string())
-      .optional()
-      .describe('Shell commands to run in worktree after creation (e.g. ["bun install"])'),
-  },
-  async execute(args, context) {
+  input: z.object({
+    name: z.string().describe('Job name (used for branch and tmux)'),
+    prompt: z.string().describe('Task prompt for the AI agent'),
+    branch: z.string().optional().describe('Branch name (defaults to mc/{name})'),
+    baseBranch: z.string().optional().describe('Branch or ref to start from (defaults to default branch)'),
+    placement: z.enum(['session', 'window']).optional().describe('tmux placement: session (default) or window'),
+    mode: z.enum(['vanilla', 'plan', 'ralph', 'ulw']).optional().describe('Execution mode'),
+    planFile: z.string().optional().describe('Plan file to use (for plan mode)'),
+    copyFiles: z.array(z.string()).optional().describe('Files to copy from main worktree (e.g. [".env", ".env.local"])'),
+    symlinkDirs: z.array(z.string()).optional().describe('Directories to symlink from main worktree (e.g. ["node_modules"]). .opencode is always included.'),
+    commands: z.array(z.string()).optional().describe('Shell commands to run in worktree after creation (e.g. ["bun install"])'),
+  }).strict(),
+  async execute(args: { name: string; prompt: string; branch?: string; baseBranch?: string; placement?: 'session' | 'window'; mode?: 'vanilla' | 'plan' | 'ralph' | 'ulw'; planFile?: string; copyFiles?: string[]; symlinkDirs?: string[]; commands?: string[] }, context?: { sessionID?: string }) {
     // 0. Validate tmux is available
     const tmuxFound = await isTmuxAvailable();
     if (!tmuxFound) {
@@ -210,9 +185,16 @@ export const mc_launch: ToolDefinition = tool({
     let allocatedPort: number | undefined;
     let serverUrl: string | undefined;
     let remoteSessionId: string | undefined;
+    let serverPassword: string | undefined;
 
     if (useServeMode) {
       // === SERVE MODE ===
+      // V2's `opencode serve` always requires auth: when no password is
+      // configured it generates a random one and only prints it to its own
+      // stdout. Generate a known per-job password so the launcher and every
+      // client that later connects to this server can authenticate.
+      serverPassword = config.serverPassword ?? randomUUID().replace(/-/g, '');
+
       // Allocate port
       try {
         const activeJobs = await getRunningJobs();
@@ -236,7 +218,7 @@ export const mc_launch: ToolDefinition = tool({
         launcherPath = await writeServeLauncherScript(
           worktreePath,
           allocatedPort,
-          config.serverPassword,
+          serverPassword,
         );
       } catch (error) {
         await releasePort(allocatedPort).catch(() => {});
@@ -294,7 +276,7 @@ export const mc_launch: ToolDefinition = tool({
       // Wait for server and send prompt via SDK
       try {
         const client = await waitForServer(allocatedPort, {
-          password: config.serverPassword,
+          password: serverPassword,
         });
         const fullPrompt = buildFullPrompt({
           prompt: args.prompt,
@@ -435,6 +417,7 @@ export const mc_launch: ToolDefinition = tool({
       launchSessionID: context?.sessionID,
       port: allocatedPort,
       serverUrl,
+      serverPassword,
       remoteSessionID: remoteSessionId,
     };
 
@@ -465,6 +448,6 @@ export const mc_launch: ToolDefinition = tool({
         : `Switch with: tmux select-window -t ${tmuxTarget}`,
     );
 
-    return infoLines.join('\n');
+    return { content: infoLines.join('\n') };
   },
-});
+};

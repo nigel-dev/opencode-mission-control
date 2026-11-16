@@ -1,29 +1,21 @@
-import { tool, type ToolDefinition } from '@opencode-ai/plugin';
+import { z } from 'zod';
 import { isInManagedWorktree } from '../lib/worktree';
 import { getJobByName, loadJobState } from '../lib/job-state';
 import { writeReport, type ReportStatus } from '../lib/reports';
 
-export const mc_report: ToolDefinition = tool({
+export const mc_report = {
+  name: 'mc_report',
   description:
     'Report agent status back to Mission Control. Auto-detects which job is calling based on the current worktree.',
-  args: {
-    status: tool.schema
-      .enum(['working', 'blocked', 'needs_review', 'completed', 'progress'])
-      .describe(
-        'Current status: working (actively coding), blocked (waiting/stuck), needs_review (done but needs human review), completed (work finished successfully), progress (milestone update)',
-      ),
-    message: tool.schema
-      .string()
-      .describe('Human-readable status message'),
-    progress: tool.schema
-      .number()
-      .min(0)
-      .max(100)
-      .optional()
-      .describe('Completion percentage (0-100)'),
-  },
-  async execute(args) {
-    const cwd = process.cwd();
+  input: z.object({
+    status: z.enum(['working', 'blocked', 'needs_review', 'completed', 'progress']).describe('Current status: working (actively coding), blocked (waiting/stuck), needs_review (done but needs human review), completed (work finished successfully), progress (milestone update)'),
+    message: z.string().describe('Human-readable status message'),
+    progress: z.number().min(0).max(100).optional().describe('Completion percentage (0-100)'),
+  }).strict(),
+  async execute(
+    args: { status: 'working' | 'blocked' | 'needs_review' | 'completed' | 'progress'; message: string; progress?: number },
+    cwd: string = process.env.MC_WORKTREE_PATH ?? process.cwd(),
+  ) {
     const managed = await isInManagedWorktree(cwd);
 
     if (!managed.isManaged || !managed.jobName) {
@@ -32,7 +24,7 @@ export const mc_report: ToolDefinition = tool({
       );
     }
 
-    const state = await loadJobState();
+    const state = await loadJobState(cwd);
     // Match only running jobs to avoid picking up stale entries from previous runs
     // that share the same name/worktree path
     const job = state.jobs.find(
@@ -59,10 +51,10 @@ export const mc_report: ToolDefinition = tool({
       message: args.message,
       progress: args.progress,
       timestamp: new Date().toISOString(),
-    });
+    }, cwd);
 
     const progressSuffix =
       args.progress !== undefined ? ` (${args.progress}%)` : '';
-    return `Report submitted: [${args.status}]${progressSuffix} ${args.message}`;
+    return { content: `Report submitted: [${args.status}]${progressSuffix} ${args.message}` };
   },
-});
+};

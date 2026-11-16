@@ -48,11 +48,11 @@ describe('mc_sync', () => {
     });
 
     it('should have required arg: name', () => {
-      expect(mc_sync.args.name).toBeDefined();
+      expect(mc_sync.input.shape.name).toBeDefined();
     });
 
     it('should have optional arg: strategy', () => {
-      expect(mc_sync.args.strategy).toBeDefined();
+      expect(mc_sync.input.shape.strategy).toBeDefined();
     });
   });
 
@@ -120,22 +120,22 @@ describe('mc_sync', () => {
     it('should return success message for rebase', async () => {
       const result = await mc_sync.execute({ name: 'test-job', strategy: 'rebase' }, mockContext);
 
-      expect(result).toContain('Successfully synced job "test-job"');
-      expect(result).toContain('rebase');
+      expect(result.content).toContain('Successfully synced job "test-job"');
+      expect(result.content).toContain('rebase');
     });
 
     it('should return success message for merge', async () => {
       const result = await mc_sync.execute({ name: 'test-job', strategy: 'merge' }, mockContext);
 
-      expect(result).toContain('Successfully synced job "test-job"');
-      expect(result).toContain('merge');
+      expect(result.content).toContain('Successfully synced job "test-job"');
+      expect(result.content).toContain('merge');
     });
 
     it('should return success message with default strategy', async () => {
       const result = await mc_sync.execute({ name: 'test-job' }, mockContext);
 
-      expect(result).toContain('Successfully synced job "test-job"');
-      expect(result).toContain('rebase');
+      expect(result.content).toContain('Successfully synced job "test-job"');
+      expect(result.content).toContain('rebase');
     });
   });
 
@@ -152,10 +152,10 @@ describe('mc_sync', () => {
 
       const result = await mc_sync.execute({ name: 'test-job' }, mockContext);
 
-      expect(result).toContain('Sync failed for job "test-job"');
-      expect(result).toContain('Conflicts:');
-      expect(result).toContain('src/file1.ts');
-      expect(result).toContain('src/file2.ts');
+      expect(result.content).toContain('Sync failed for job "test-job"');
+      expect(result.content).toContain('Conflicts:');
+      expect(result.content).toContain('src/file1.ts');
+      expect(result.content).toContain('src/file2.ts');
     });
 
     it('should handle empty conflicts array', async () => {
@@ -166,8 +166,8 @@ describe('mc_sync', () => {
 
       const result = await mc_sync.execute({ name: 'test-job' }, mockContext);
 
-      expect(result).toContain('Sync failed for job "test-job"');
-      expect(result).toContain('Conflicts:');
+      expect(result.content).toContain('Sync failed for job "test-job"');
+      expect(result.content).toContain('Conflicts:');
     });
 
     it('should handle missing conflicts field', async () => {
@@ -177,8 +177,8 @@ describe('mc_sync', () => {
 
       const result = await mc_sync.execute({ name: 'test-job' }, mockContext);
 
-      expect(result).toContain('Sync failed for job "test-job"');
-      expect(result).toContain('(no conflict details available)');
+      expect(result.content).toContain('Sync failed for job "test-job"');
+      expect(result.content).toContain('(no conflict details available)');
     });
 
     it('should suggest manual resolution', async () => {
@@ -189,7 +189,7 @@ describe('mc_sync', () => {
 
       const result = await mc_sync.execute({ name: 'test-job' }, mockContext);
 
-      expect(result).toContain('Resolve conflicts manually and try again');
+      expect(result.content).toContain('Resolve conflicts manually and try again');
     });
   });
 
@@ -200,7 +200,7 @@ describe('mc_sync', () => {
     });
 
     it('should have optional arg: source', () => {
-      expect(mc_sync.args.source).toBeDefined();
+      expect(mc_sync.input.shape.source).toBeDefined();
     });
 
     it('should pass source=local to syncWorktree', async () => {
@@ -247,7 +247,7 @@ describe('mc_sync', () => {
 
       const result = await mc_sync.execute({ name: 'feature-branch' }, mockContext);
 
-      expect(result).toContain('feature-branch');
+      expect(result.content).toContain('feature-branch');
       expect(mockGetJobByName).toHaveBeenCalledWith('feature-branch');
     });
   });
@@ -260,7 +260,7 @@ describe('mc_sync', () => {
 
       const result = await mc_sync.execute({ name: jobName }, mockContext);
 
-      expect(result).toContain(jobName);
+      expect(result.content).toContain(jobName);
     });
 
     it('should pass correct worktree path to syncWorktree', async () => {

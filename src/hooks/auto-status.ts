@@ -14,10 +14,10 @@ const LAST_STATUS_FILE = 'last-status-time';
  * 3. Running jobs > 0
  * 4. 5+ minutes since last status
  */
-export async function shouldShowAutoStatus(): Promise<boolean> {
+export async function shouldShowAutoStatus(cwd?: string): Promise<boolean> {
   try {
     // Guard 1: Check if we're in the command center (not in a managed worktree)
-    const isCommandCenter = await checkIsCommandCenter();
+    const isCommandCenter = await checkIsCommandCenter(cwd);
     if (!isCommandCenter) {
       return false;
     }
@@ -80,8 +80,7 @@ export async function getAutoStatusMessage(): Promise<string> {
 /**
  * Check if current directory is the command center (not in a managed worktree)
  */
-async function checkIsCommandCenter(): Promise<boolean> {
-  const cwd = process.cwd();
+async function checkIsCommandCenter(cwd: string = process.cwd()): Promise<boolean> {
   const result = await isInManagedWorktree(cwd);
   return !result.isManaged;
 }

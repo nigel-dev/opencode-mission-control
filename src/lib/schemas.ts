@@ -19,6 +19,7 @@ export const JobSchema = z.object({
   launchSessionID: z.string().optional(),
   port: z.number().optional(),
   serverUrl: z.string().optional(),
+  serverPassword: z.string().optional(),
   remoteSessionID: z.string().optional(),
 });
 
@@ -133,6 +134,8 @@ export const PlanSpecSchema = z.object({
   checkpoint: CheckpointTypeSchema.nullable().optional(),
   checkpointContext: CheckpointContextSchema.nullable().optional(),
   ghAuthenticated: z.boolean().optional(),
+  approvedMergeJobs: z.array(z.string()).optional(),
+  approvedPrePr: z.boolean().optional(),
   launchSessionID: z.string().optional(),
   auditLog: z.array(AuditLogEntrySchema).optional(),
   permissionPolicy: PermissionPolicySchema.optional(),

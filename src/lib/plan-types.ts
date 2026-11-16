@@ -64,6 +64,14 @@ export interface PlanSpec {
   launchSessionID?: string;
   auditLog?: AuditLogEntry[];
   permissionPolicy?: PermissionPolicyConfig;
+  ghAuthenticated?: boolean;
+  /**
+   * Supervisor-mode approvals persisted across orchestrator instances.
+   * `mc_plan_approve` runs in a fresh process, so in-memory approval sets are
+   * lost between checkpoints; these fields keep the decision on disk.
+   */
+  approvedMergeJobs?: string[];
+  approvedPrePr?: boolean;
 }
 
 export interface JobSpec {
@@ -93,7 +101,7 @@ export interface JobSpec {
 
 export const VALID_PLAN_TRANSITIONS: Record<PlanStatus, PlanStatus[]> = {
   pending: ['running', 'failed', 'canceled'],
-  running: ['paused', 'merging', 'failed', 'canceled'],
+  running: ['paused', 'merging', 'creating_pr', 'completed', 'failed', 'canceled'],
   paused: ['running', 'failed', 'canceled'],
   merging: ['running', 'paused', 'creating_pr', 'failed', 'canceled'],
   creating_pr: ['completed', 'failed', 'canceled'],

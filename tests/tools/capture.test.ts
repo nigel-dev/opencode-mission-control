@@ -37,11 +37,11 @@ describe('mc_capture', () => {
     });
 
     it('should have required arg: name', () => {
-      expect(mc_capture.args.name).toBeDefined();
+      expect(mc_capture.input.shape.name).toBeDefined();
     });
 
     it('should have optional arg: lines', () => {
-      expect(mc_capture.args.lines).toBeDefined();
+      expect(mc_capture.input.shape.lines).toBeDefined();
     });
   });
 
@@ -67,7 +67,7 @@ describe('mc_capture', () => {
     it('should return captured text', async () => {
       const result = await mc_capture.execute({ name: 'test-job' });
 
-      expect(result).toBe('test output\nline 2\nline 3');
+      expect(result.content).toBe('test output\nline 2\nline 3');
     });
 
     it('should use job tmuxTarget for capture', async () => {
@@ -135,7 +135,7 @@ describe('mc_capture', () => {
       });
 
       const result = await mc_capture.execute({ name: 'serve-job' });
-      const parsed = JSON.parse(result);
+      const parsed = JSON.parse(result.content);
 
       expect(parsed.job).toBe('serve-job');
       expect(parsed.mode).toBe('serve');
@@ -167,7 +167,7 @@ describe('mc_capture', () => {
       });
 
       const result = await mc_capture.execute({ name: 'serve-job', filter: 'file.edited' });
-      const parsed = JSON.parse(result);
+      const parsed = JSON.parse(result.content);
 
       expect(parsed.filter).toBe('file.edited');
       expect(parsed.events).toHaveLength(2);
@@ -194,7 +194,7 @@ describe('mc_capture', () => {
       });
 
       const result = await mc_capture.execute({ name: 'serve-job', filter: 'tool' });
-      const parsed = JSON.parse(result);
+      const parsed = JSON.parse(result.content);
 
       expect(parsed.filter).toBe('tool');
       expect(parsed.events).toHaveLength(1);
@@ -221,7 +221,7 @@ describe('mc_capture', () => {
       });
 
       const result = await mc_capture.execute({ name: 'serve-job', filter: 'file.edited' });
-      const parsed = JSON.parse(result);
+      const parsed = JSON.parse(result.content);
 
       expect(parsed.filter).toBe('file.edited');
       expect(parsed.events).toHaveLength(0);
@@ -241,7 +241,7 @@ describe('mc_capture', () => {
       });
 
       const result = await mc_capture.execute({ name: 'serve-job' });
-      const parsed = JSON.parse(result);
+      const parsed = JSON.parse(result.content);
 
       expect(parsed.job).toBe('serve-job');
       expect(parsed.mode).toBe('serve');
@@ -259,7 +259,7 @@ describe('mc_capture', () => {
 
       const result = await mc_capture.execute({ name: 'tui-job' });
 
-      expect(result).toBe('test output\nline 2\nline 3');
+      expect(result.content).toBe('test output\nline 2\nline 3');
       expect(mockCapturePane).toHaveBeenCalledWith('mc-tui-job', 100);
     });
 
@@ -273,12 +273,12 @@ describe('mc_capture', () => {
 
       const result = await mc_capture.execute({ name: 'tui-job', filter: 'file.edited' });
 
-      expect(result).toBe('test output\nline 2\nline 3');
+      expect(result.content).toBe('test output\nline 2\nline 3');
       expect(mockCapturePane).toHaveBeenCalledWith('mc-tui-job', 100);
     });
 
     it('should have filter arg in tool schema', () => {
-      expect(mc_capture.args.filter).toBeDefined();
+      expect(mc_capture.input.shape.filter).toBeDefined();
     });
 
     it('should use default filter "all" when not specified', async () => {
@@ -300,7 +300,7 @@ describe('mc_capture', () => {
       });
 
       const result = await mc_capture.execute({ name: 'serve-job' });
-      const parsed = JSON.parse(result);
+      const parsed = JSON.parse(result.content);
 
       expect(parsed.filter).toBe('all');
     });

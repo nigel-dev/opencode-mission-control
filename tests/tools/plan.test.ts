@@ -51,12 +51,12 @@ describe('mc_plan', () => {
     });
 
     it('should have required args: name, jobs', () => {
-      expect(mc_plan.args.name).toBeDefined();
-      expect(mc_plan.args.jobs).toBeDefined();
+      expect(mc_plan.input.shape.name).toBeDefined();
+      expect(mc_plan.input.shape.jobs).toBeDefined();
     });
 
     it('should have optional arg: mode', () => {
-      expect(mc_plan.args.mode).toBeDefined();
+      expect(mc_plan.input.shape.mode).toBeDefined();
     });
   });
 
@@ -140,8 +140,8 @@ describe('mc_plan', () => {
         mockContext,
       );
 
-      expect(result).toContain('pending approval');
-      expect(result).toContain('mc_plan_approve');
+      expect(result.content).toContain('pending approval');
+      expect(result.content).toContain('mc_plan_approve');
       expect(planState.savePlan).toHaveBeenCalled();
     });
 
@@ -158,9 +158,9 @@ describe('mc_plan', () => {
         mockContext,
       );
 
-      expect(result).toContain('job-a');
-      expect(result).toContain('job-b');
-      expect(result).toContain('depends on: job-a');
+      expect(result.content).toContain('job-a');
+      expect(result.content).toContain('job-b');
+      expect(result.content).toContain('depends on: job-a');
     });
   });
 
@@ -183,8 +183,8 @@ describe('mc_plan', () => {
         mockContext,
       );
 
-      expect(result).toContain('started');
-      expect(result).toContain('mc_plan_status');
+      expect(result.content).toContain('started');
+      expect(result.content).toContain('mc_plan_status');
       expect(mockStartPlan).toHaveBeenCalled();
     });
 
@@ -206,7 +206,7 @@ describe('mc_plan', () => {
         mockContext,
       );
 
-      expect(result).toContain('autopilot');
+      expect(result.content).toContain('autopilot');
     });
   });
 
@@ -229,8 +229,8 @@ describe('mc_plan', () => {
         mockContext,
       );
 
-      expect(result).toContain('ID:');
-      expect(result).toContain('Jobs:');
+      expect(result.content).toContain('ID:');
+      expect(result.content).toContain('Jobs:');
     });
 
     it('should include gh auth status in output', async () => {
@@ -245,7 +245,7 @@ describe('mc_plan', () => {
         mockContext,
       );
 
-      expect(result).toContain('gh auth: no');
+      expect(result.content).toContain('gh auth: no');
     });
   });
 });
