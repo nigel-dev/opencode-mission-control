@@ -630,12 +630,13 @@ mc_plan
   │
   ├─ Merge Train: merge each job into integration branch
   │   ├─ Merge (config mergeStrategy, default squash)
+  │   ├─ A job with no tracked changes merges as a no-op
   │   ├─ Run test command (if configured or detected)
   │   ├─ On failure → rollback merge, pause at on_error
   │   └─ On conflict → abort, pause at on_error
   │
   ├─ All jobs merged → push integration branch
-  └─ Create PR via gh CLI
+  └─ Create PR via gh CLI (fills the repo's PR template when it has one)
 ```
 
 ### Plan Control Tools
