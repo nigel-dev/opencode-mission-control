@@ -129,6 +129,27 @@ describe('MergeTrain', () => {
     expect(status).toBe('');
   });
 
+  it.each(['squash', 'ff-only'] as const)(
+    'merges a job with no tracked changes as a no-op (%s)',
+    async (mergeStrategy) => {
+      // The job's work went to ignored files only: its branch has no changes.
+      await mustExec(['git', 'branch', 'nothing-tracked', 'main'], testRepo.repoDir);
+      const headBefore = await mustExec(['git', 'rev-parse', 'HEAD'], testRepo.integrationWorktree);
+
+      const train = new MergeTrain(testRepo.integrationWorktree, { mergeStrategy });
+      train.enqueue(makeJob('nothing-tracked'));
+      const result = await train.processNext();
+
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.testReport.status).toBe('skipped');
+        expect(result.testReport.reason).toContain('no tracked changes');
+      }
+      expect(await mustExec(['git', 'rev-parse', 'HEAD'], testRepo.integrationWorktree)).toBe(headBefore);
+      expect(await mustExec(['git', 'status', '--porcelain'], testRepo.integrationWorktree)).toBe('');
+    },
+  );
+
   it('sequentially merges two non-conflicting jobs in FIFO order', async () => {
     await createBranchCommit(testRepo.repoDir, 'feature-a', 'a.txt', 'a\n');
     await createBranchCommit(testRepo.repoDir, 'feature-b', 'b.txt', 'b\n');

@@ -131,6 +131,25 @@ export async function checkMergeability(
   return { canMerge: true };
 }
 
+/** Whether a squash merge staged nothing (the job's branch adds no tracked changes). */
+async function nothingStaged(worktreePath: string): Promise<boolean> {
+  const diff = await gitCommand(['-C', worktreePath, 'diff', '--cached', '--quiet']);
+  return diff.exitCode === 0;
+}
+
+function noChangesMerged(jobName: string): MergeResult {
+  const reason = `Job ${jobName} added no tracked changes; nothing to merge`;
+  return {
+    success: true,
+    mergedAt: new Date().toISOString(),
+    testReport: {
+      status: 'skipped',
+      reason,
+      setup: { status: 'skipped', commands: [] },
+    },
+  };
+}
+
 async function rollbackMerge(worktreePath: string): Promise<void> {
   // Try merge --abort first
   await cleanupGit(['-C', worktreePath, 'merge', '--abort']);
@@ -519,6 +538,12 @@ export class MergeTrain {
         };
       }
 
+      // A job whose work is all in untracked or ignored files (shared through
+      // a symlinked directory, say) has nothing to merge: a no-op, not an error.
+      if (await nothingStaged(this.integrationWorktree)) {
+        return noChangesMerged(job.name);
+      }
+
       // Commit the squashed changes
       const commitResult = await gitCommand([
         '-C',
@@ -557,6 +582,12 @@ export class MergeTrain {
           type: 'conflict',
           files: conflicts.length > 0 ? conflicts : undefined,
         };
+      }
+
+      // A job whose work is all in untracked or ignored files (shared through
+      // a symlinked directory, say) has nothing to merge: a no-op, not an error.
+      if (await nothingStaged(this.integrationWorktree)) {
+        return noChangesMerged(job.name);
       }
 
       // Commit the squashed changes
