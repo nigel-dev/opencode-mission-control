@@ -1,40 +1,35 @@
 import { describe, it, expect, beforeEach, afterEach, vi, type MockInstance } from 'vitest';
 import type { Job } from '../../src/lib/job-state';
 import * as jobState from '../../src/lib/job-state';
-import * as tmux from '../../src/lib/tmux';
+import * as jobRuntime from '../../src/lib/job-runtime';
 
 const { mc_kill } = await import('../../src/tools/kill');
 
 let mockGetJobByName: MockInstance;
 let mockUpdateJob: MockInstance;
-let mockKillSession: MockInstance;
-let mockKillWindow: MockInstance;
+let mockStopJobSession: MockInstance;
 
-const mockContext = {
-  sessionID: 'test-session',
-  messageID: 'test-message',
-  agent: 'test-agent',
-  directory: '/test/dir',
-  worktree: '/test/worktree',
-  abort: new AbortController().signal,
-  metadata: vi.fn(),
-  ask: vi.fn(),
-} as any;
-
-function setupDefaultMocks() {
-  mockKillSession.mockResolvedValue(undefined);
-  mockKillWindow.mockResolvedValue(undefined);
-  mockUpdateJob.mockResolvedValue(undefined);
+function makeJob(overrides: Partial<Job> = {}): Job {
+  return {
+    id: 'job-1',
+    name: 'my-job',
+    worktreePath: '/tmp/worktree',
+    branch: 'mc/my-job',
+    status: 'running',
+    prompt: 'Do the thing',
+    createdAt: new Date().toISOString(),
+    sessionID: 'ses_job1',
+    ...overrides,
+  };
 }
 
 describe('mc_kill', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockGetJobByName = vi.spyOn(jobState, 'getJobByName').mockImplementation(() => undefined as any);
-    mockUpdateJob = vi.spyOn(jobState, 'updateJob').mockImplementation(() => undefined as any);
-    mockKillSession = vi.spyOn(tmux, 'killSession').mockImplementation(() => undefined as any);
-    mockKillWindow = vi.spyOn(tmux, 'killWindow').mockImplementation(() => undefined as any);
-    setupDefaultMocks();
+    mockGetJobByName = vi.spyOn(jobState, 'getJobByName').mockResolvedValue(undefined);
+    mockUpdateJob = vi.spyOn(jobState, 'updateJob').mockResolvedValue(undefined);
+    mockStopJobSession = vi.spyOn(jobRuntime, 'stopJobSession').mockResolvedValue(undefined);
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
   });
 
   afterEach(() => {
@@ -47,34 +42,26 @@ describe('mc_kill', () => {
     });
 
     it('should have required arg: name', () => {
-      expect(mc_kill.args.name).toBeDefined();
+      expect(mc_kill.input.shape.name).toBeDefined();
     });
 
     it('should have optional arg: force', () => {
-      expect(mc_kill.args.force).toBeDefined();
+      expect(mc_kill.input.shape.force).toBeDefined();
     });
   });
 
   describe('job lookup', () => {
     it('should throw error when job not found', async () => {
-      mockGetJobByName.mockResolvedValue(undefined);
-
-      await expect(
-        mc_kill.execute({ name: 'nonexistent' }, mockContext),
-      ).rejects.toThrow('Job "nonexistent" not found');
+      await expect(mc_kill.execute({ name: 'nonexistent' })).rejects.toThrow(
+        'Job "nonexistent" not found',
+      );
+      expect(mockStopJobSession).not.toHaveBeenCalled();
     });
 
     it('should call getJobByName with correct name', async () => {
-      mockGetJobByName.mockResolvedValue({
-        id: 'job-1',
-        name: 'my-job',
-        status: 'running',
-        placement: 'session',
-        tmuxTarget: 'mc-my-job',
-        worktreePath: '/tmp/worktree',
-      } as Job);
+      mockGetJobByName.mockResolvedValue(makeJob());
 
-      await mc_kill.execute({ name: 'my-job' }, mockContext);
+      await mc_kill.execute({ name: 'my-job' });
 
       expect(mockGetJobByName).toHaveBeenCalledWith('my-job');
     });
@@ -82,120 +69,89 @@ describe('mc_kill', () => {
 
   describe('already stopped job', () => {
     it('should return message when job is already stopped', async () => {
-      mockGetJobByName.mockResolvedValue({
-        id: 'job-1',
-        name: 'my-job',
-        status: 'stopped',
-        placement: 'session',
-        tmuxTarget: 'mc-my-job',
-        worktreePath: '/tmp/worktree',
-      } as Job);
+      mockGetJobByName.mockResolvedValue(makeJob({ status: 'stopped' }));
 
-      const result = await mc_kill.execute({ name: 'my-job' }, mockContext);
+      const result = await mc_kill.execute({ name: 'my-job' });
 
-      expect(result).toContain('already stopped');
-      expect(mockKillSession).not.toHaveBeenCalled();
+      expect(result.content).toContain('already stopped');
+      expect(mockStopJobSession).not.toHaveBeenCalled();
       expect(mockUpdateJob).not.toHaveBeenCalled();
     });
+
+    it.each(['completed', 'failed'] as const)(
+      'should leave a %s job as it is instead of rewriting it to stopped',
+      async (status) => {
+        mockGetJobByName.mockResolvedValue(makeJob({ status }));
+
+        const result = await mc_kill.execute({ name: 'my-job' });
+
+        expect(result.content).toContain(`not running (status: ${status})`);
+        expect(mockStopJobSession).not.toHaveBeenCalled();
+        expect(mockUpdateJob).not.toHaveBeenCalled();
+      },
+    );
   });
 
-  describe('session placement', () => {
-    it('should kill tmux session for session placement', async () => {
-      mockGetJobByName.mockResolvedValue({
-        id: 'job-1',
-        name: 'my-job',
-        status: 'running',
-        placement: 'session',
-        tmuxTarget: 'mc-my-job',
-        worktreePath: '/tmp/worktree',
-      } as Job);
+  describe('stopping the session', () => {
+    it("should interrupt the job's session", async () => {
+      mockGetJobByName.mockResolvedValue(makeJob());
 
-      await mc_kill.execute({ name: 'my-job' }, mockContext);
+      await mc_kill.execute({ name: 'my-job' });
 
-      expect(mockKillSession).toHaveBeenCalledWith('mc-my-job');
-      expect(mockKillWindow).not.toHaveBeenCalled();
+      expect(mockStopJobSession).toHaveBeenCalledTimes(1);
+      expect(mockStopJobSession).toHaveBeenCalledWith('ses_job1');
     });
 
-    it('should throw error when killSession fails', async () => {
-      mockGetJobByName.mockResolvedValue({
-        id: 'job-1',
-        name: 'my-job',
-        status: 'running',
-        placement: 'session',
-        tmuxTarget: 'mc-my-job',
-        worktreePath: '/tmp/worktree',
-      } as Job);
+    it('should mark the job stopped before interrupting its session', async () => {
+      mockGetJobByName.mockResolvedValue(makeJob());
+      const order: string[] = [];
+      mockUpdateJob.mockImplementation(async () => {
+        order.push('update');
+      });
+      mockStopJobSession.mockImplementation(async () => {
+        order.push('stop');
+      });
 
-      mockKillSession.mockRejectedValue(new Error('session not found'));
+      await mc_kill.execute({ name: 'my-job' });
 
-      await expect(
-        mc_kill.execute({ name: 'my-job' }, mockContext),
-      ).rejects.toThrow('Failed to kill tmux session');
-    });
-  });
-
-  describe('window placement', () => {
-    it('should kill tmux window for window placement', async () => {
-      mockGetJobByName.mockResolvedValue({
-        id: 'job-1',
-        name: 'my-job',
-        status: 'running',
-        placement: 'window',
-        tmuxTarget: 'main-session:my-job',
-        worktreePath: '/tmp/worktree',
-      } as Job);
-
-      await mc_kill.execute({ name: 'my-job' }, mockContext);
-
-      expect(mockKillWindow).toHaveBeenCalledWith('main-session', 'my-job');
-      expect(mockKillSession).not.toHaveBeenCalled();
+      expect(order).toEqual(['update', 'stop']);
     });
 
-    it('should throw error when killWindow fails', async () => {
-      mockGetJobByName.mockResolvedValue({
-        id: 'job-1',
-        name: 'my-job',
-        status: 'running',
-        placement: 'window',
-        tmuxTarget: 'main-session:my-job',
-        worktreePath: '/tmp/worktree',
-      } as Job);
+    it('should stop a job that has no session without calling the runtime', async () => {
+      mockGetJobByName.mockResolvedValue(makeJob({ sessionID: undefined }));
 
-      mockKillWindow.mockRejectedValue(new Error('window not found'));
+      const result = await mc_kill.execute({ name: 'my-job' });
 
-      await expect(
-        mc_kill.execute({ name: 'my-job' }, mockContext),
-      ).rejects.toThrow('Failed to kill tmux window');
+      expect(mockStopJobSession).not.toHaveBeenCalled();
+      expect(mockUpdateJob).toHaveBeenCalledWith('job-1', {
+        status: 'stopped',
+        completedAt: expect.any(String),
+      });
+      expect(result.content).toContain('stopped successfully');
     });
 
-    it('should throw error for invalid tmux target format', async () => {
-      mockGetJobByName.mockResolvedValue({
-        id: 'job-1',
-        name: 'my-job',
-        status: 'running',
-        placement: 'window',
-        tmuxTarget: 'invalid-format',
-        worktreePath: '/tmp/worktree',
-      } as Job);
+    it('should keep the job stopped and report a warning when the interrupt fails', async () => {
+      mockGetJobByName.mockResolvedValue(makeJob());
+      mockStopJobSession.mockRejectedValue(new Error('session not found'));
 
-      await expect(
-        mc_kill.execute({ name: 'my-job' }, mockContext),
-      ).rejects.toThrow('Invalid tmux target format');
+      const result = await mc_kill.execute({ name: 'my-job' });
+
+      expect(mockUpdateJob).toHaveBeenCalledTimes(1);
+      expect(mockUpdateJob).toHaveBeenCalledWith('job-1', {
+        status: 'stopped',
+        completedAt: expect.any(String),
+      });
+      expect(result.content).toContain('stopped successfully');
+      expect(result.content).toContain('Warning: could not interrupt session ses_job1');
+      expect(result.content).toContain('session not found');
     });
   });
 
   describe('job status update', () => {
     it('should update job status to stopped', async () => {
-      mockGetJobByName.mockResolvedValue({
-        id: 'job-1',
-        name: 'my-job',
-        status: 'running',
-        placement: 'session',
-        tmuxTarget: 'mc-my-job',
-        worktreePath: '/tmp/worktree',
-      } as Job);
+      mockGetJobByName.mockResolvedValue(makeJob());
 
-      await mc_kill.execute({ name: 'my-job' }, mockContext);
+      await mc_kill.execute({ name: 'my-job' });
 
       expect(mockUpdateJob).toHaveBeenCalledWith('job-1', {
         status: 'stopped',
@@ -204,99 +160,61 @@ describe('mc_kill', () => {
     });
 
     it('should set completedAt timestamp', async () => {
-      mockGetJobByName.mockResolvedValue({
-        id: 'job-1',
-        name: 'my-job',
-        status: 'running',
-        placement: 'session',
-        tmuxTarget: 'mc-my-job',
-        worktreePath: '/tmp/worktree',
-      } as Job);
+      mockGetJobByName.mockResolvedValue(makeJob());
 
       const beforeTime = Date.now();
-      await mc_kill.execute({ name: 'my-job' }, mockContext);
+      await mc_kill.execute({ name: 'my-job' });
       const afterTime = Date.now();
 
-      const updateCall = mockUpdateJob.mock.calls[0];
-      const completedAt = updateCall[1].completedAt;
-
+      const completedAt = mockUpdateJob.mock.calls[0][1].completedAt;
       const completedTime = new Date(completedAt).getTime();
       expect(completedTime).toBeGreaterThanOrEqual(beforeTime);
       expect(completedTime).toBeLessThanOrEqual(afterTime);
     });
 
-    it('should throw error when updateJob fails', async () => {
-      mockGetJobByName.mockResolvedValue({
-        id: 'job-1',
-        name: 'my-job',
-        status: 'running',
-        placement: 'session',
-        tmuxTarget: 'mc-my-job',
-        worktreePath: '/tmp/worktree',
-      } as Job);
-
+    it('should throw and leave the session alone when updateJob fails', async () => {
+      mockGetJobByName.mockResolvedValue(makeJob());
       mockUpdateJob.mockRejectedValue(new Error('state write failed'));
 
-      await expect(
-        mc_kill.execute({ name: 'my-job' }, mockContext),
-      ).rejects.toThrow('Failed to update job status');
+      await expect(mc_kill.execute({ name: 'my-job' })).rejects.toThrow(
+        'Failed to update job status: state write failed',
+      );
+      expect(mockStopJobSession).not.toHaveBeenCalled();
     });
   });
 
   describe('success response', () => {
     it('should return success message with job details', async () => {
-      mockGetJobByName.mockResolvedValue({
-        id: 'job-1',
-        name: 'my-job',
-        status: 'running',
-        placement: 'session',
-        tmuxTarget: 'mc-my-job',
-        worktreePath: '/tmp/worktree',
-      } as Job);
+      mockGetJobByName.mockResolvedValue(makeJob());
 
-      const result = await mc_kill.execute({ name: 'my-job' }, mockContext);
+      const result = await mc_kill.execute({ name: 'my-job' });
 
-      expect(result).toContain('Job "my-job" stopped successfully');
-      expect(result).toContain('job-1');
-      expect(result).toContain('stopped');
-      expect(result).toContain('session');
-      expect(result).toContain('/tmp/worktree');
+      expect(result.content).toContain('Job "my-job" stopped successfully');
+      expect(result.content).toContain('job-1');
+      expect(result.content).toContain('Status:    stopped');
+      expect(result.content).toContain('Session:   ses_job1');
+      expect(result.content).toContain('/tmp/worktree');
+      expect(result.content).not.toContain('Warning');
     });
 
     it('should mention worktree preservation in response', async () => {
-      mockGetJobByName.mockResolvedValue({
-        id: 'job-1',
-        name: 'my-job',
-        status: 'running',
-        placement: 'session',
-        tmuxTarget: 'mc-my-job',
-        worktreePath: '/tmp/worktree',
-      } as Job);
+      mockGetJobByName.mockResolvedValue(makeJob());
 
-      const result = await mc_kill.execute({ name: 'my-job' }, mockContext);
+      const result = await mc_kill.execute({ name: 'my-job' });
 
-      expect(result).toContain('Worktree is preserved');
-      expect(result).toContain('mc_cleanup');
+      expect(result.content).toContain('Worktree is preserved');
+      expect(result.content).toContain('mc_cleanup');
     });
   });
 
   describe('force flag', () => {
-    it('should accept force flag (even if not used)', async () => {
-      mockGetJobByName.mockResolvedValue({
-        id: 'job-1',
-        name: 'my-job',
-        status: 'running',
-        placement: 'session',
-        tmuxTarget: 'mc-my-job',
-        worktreePath: '/tmp/worktree',
-      } as Job);
+    it('should accept force flag', async () => {
+      mockGetJobByName.mockResolvedValue(makeJob());
 
-      const result = await mc_kill.execute(
-        { name: 'my-job', force: true },
-        mockContext,
-      );
+      const result = await mc_kill.execute({ name: 'my-job', force: true });
 
-      expect(result).toContain('stopped successfully');
+      expect(result.content).toContain('stopped successfully');
+      expect(mockStopJobSession).toHaveBeenCalledWith('ses_job1');
     });
   });
 });

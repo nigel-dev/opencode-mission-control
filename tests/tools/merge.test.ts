@@ -72,15 +72,15 @@ describe('mc_merge', () => {
     });
 
     it('should have name arg', () => {
-      expect(mc_merge.args.name).toBeDefined();
+      expect(mc_merge.input.shape.name).toBeDefined();
     });
 
     it('should have optional squash arg', () => {
-      expect(mc_merge.args.squash).toBeDefined();
+      expect(mc_merge.input.shape.squash).toBeDefined();
     });
 
     it('should have optional message arg', () => {
-      expect(mc_merge.args.message).toBeDefined();
+      expect(mc_merge.input.shape.message).toBeDefined();
     });
   });
 
@@ -139,17 +139,17 @@ describe('mc_merge', () => {
 
   describe('tool args validation', () => {
     it('should have name as required arg', () => {
-      const nameArg = mc_merge.args.name;
+      const nameArg = mc_merge.input.shape.name;
       expect(nameArg).toBeDefined();
     });
 
     it('should have squash as optional boolean arg', () => {
-      const squashArg = mc_merge.args.squash;
+      const squashArg = mc_merge.input.shape.squash;
       expect(squashArg).toBeDefined();
     });
 
     it('should have message as optional string arg', () => {
-      const messageArg = mc_merge.args.message;
+      const messageArg = mc_merge.input.shape.message;
       expect(messageArg).toBeDefined();
     });
   });

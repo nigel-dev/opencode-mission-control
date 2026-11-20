@@ -4,9 +4,7 @@ import { tmpdir } from 'os';
 import * as paths from '../../src/lib/paths';
 import {
   createIntegrationBranch,
-  getIntegrationWorktree,
   deleteIntegrationBranch,
-  refreshIntegrationFromMain,
 } from '../../src/lib/integration';
 
 const TEST_REPO_DIR = join(tmpdir(), '.tmp-integration-test-repo');
@@ -152,28 +150,6 @@ describe('integration', () => {
     });
   });
 
-  describe('getIntegrationWorktree', () => {
-    it('should return worktree path for existing integration branch', async () => {
-      const planId = 'test-plan-4';
-      const createResult = await createIntegrationBranch(planId);
-      const worktreePath = await getIntegrationWorktree(planId);
-
-      expect(worktreePath).toBe(createResult.worktreePath);
-    });
-
-    it('should throw when worktree does not exist', async () => {
-      const planId = 'non-existent-plan';
-
-      try {
-        await getIntegrationWorktree(planId);
-        expect.unreachable('Should have thrown');
-      } catch (e) {
-        expect(e instanceof Error).toBe(true);
-        expect((e as Error).message).toContain('not found');
-      }
-    });
-  });
-
   describe('deleteIntegrationBranch', () => {
     it('should delete integration branch and worktree', async () => {
       const planId = 'test-plan-5';
@@ -200,57 +176,6 @@ describe('integration', () => {
 
       await deleteIntegrationBranch(planId);
       await deleteIntegrationBranch(planId);
-    });
-  });
-
-  describe('refreshIntegrationFromMain', () => {
-    it('should refresh without conflicts', async () => {
-      const planId = 'test-plan-7';
-      await createIntegrationBranch(planId);
-
-      const filePath = join(mainRepoDir, 'test.txt');
-      const fs = await import('fs');
-      fs.writeFileSync(filePath, 'updated content');
-      await mustExec(['git', 'add', 'test.txt'], mainRepoDir);
-      await mustExec(['git', 'commit', '-m', 'update on main'], mainRepoDir);
-      await mustExec(['git', 'push', 'origin', 'main'], mainRepoDir);
-
-      const result = await refreshIntegrationFromMain(planId);
-
-      expect(result.success).toBe(true);
-      expect(result.conflicts).toBeUndefined();
-    });
-
-    it('should detect conflicts during refresh', async () => {
-      const planId = 'test-plan-8';
-      const createResult = await createIntegrationBranch(planId);
-
-      const filePath = join(mainRepoDir, 'test.txt');
-      const fs = await import('fs');
-      fs.writeFileSync(filePath, 'main version');
-      await mustExec(['git', 'add', 'test.txt'], mainRepoDir);
-      await mustExec(['git', 'commit', '-m', 'main change'], mainRepoDir);
-      await mustExec(['git', 'push', 'origin', 'main'], mainRepoDir);
-
-      const integrationFilePath = join(createResult.worktreePath, 'test.txt');
-      fs.writeFileSync(integrationFilePath, 'integration version');
-      await mustExec(['git', 'add', 'test.txt'], {
-        cwd: createResult.worktreePath,
-      });
-      await mustExec(['git', 'commit', '-m', 'integration change'], {
-        cwd: createResult.worktreePath,
-      });
-
-      const result = await refreshIntegrationFromMain(planId);
-
-      expect(result.success).toBe(false);
-      expect(result.conflicts).toBeDefined();
-      expect(result.conflicts!.length).toBeGreaterThan(0);
-
-      const { stdout } = await exec(['git', 'status', '--porcelain'], {
-        cwd: createResult.worktreePath,
-      });
-      expect(stdout).not.toContain('REBASE');
     });
   });
 });

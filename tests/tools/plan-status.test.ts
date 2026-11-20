@@ -32,7 +32,7 @@ describe('mc_plan_status', () => {
 
       const result = await mc_plan_status.execute({}, mockContext);
 
-      expect(result).toBe('No active plan.');
+      expect(result.content).toBe('No active plan.');
     });
   });
 
@@ -66,8 +66,8 @@ describe('mc_plan_status', () => {
 
       const result = await mc_plan_status.execute({}, mockContext);
 
-      expect(result).toContain('Plan: Feature Sprint (running)');
-      expect(result).toContain('Mode: autopilot');
+      expect(result.content).toContain('Plan: Feature Sprint (running)');
+      expect(result.content).toContain('Mode: autopilot');
     });
 
     it('should show progress as merged/total', async () => {
@@ -89,7 +89,7 @@ describe('mc_plan_status', () => {
 
       const result = await mc_plan_status.execute({}, mockContext);
 
-      expect(result).toContain('1/3 merged');
+      expect(result.content).toContain('1/3 merged');
     });
 
     it('should show job status indicators', async () => {
@@ -110,8 +110,8 @@ describe('mc_plan_status', () => {
 
       const result = await mc_plan_status.execute({}, mockContext);
 
-      expect(result).toContain('▶ running-job: running');
-      expect(result).toContain('○ queued-job: queued');
+      expect(result.content).toContain('▶ running-job: running');
+      expect(result.content).toContain('○ queued-job: queued');
     });
 
     it('should show dependency info for jobs', async () => {
@@ -138,7 +138,7 @@ describe('mc_plan_status', () => {
 
       const result = await mc_plan_status.execute({}, mockContext);
 
-      expect(result).toContain('deps: base');
+      expect(result.content).toContain('deps: base');
     });
 
     it('should show next actions summary', async () => {
@@ -159,8 +159,8 @@ describe('mc_plan_status', () => {
 
       const result = await mc_plan_status.execute({}, mockContext);
 
-      expect(result).toContain('1 job(s) running');
-      expect(result).toContain('1 job(s) queued');
+      expect(result.content).toContain('1 job(s) running');
+      expect(result.content).toContain('1 job(s) queued');
     });
 
     it('should show error info for failed jobs', async () => {
@@ -186,7 +186,7 @@ describe('mc_plan_status', () => {
 
       const result = await mc_plan_status.execute({}, mockContext);
 
-      expect(result).toContain('Error: tmux died');
+      expect(result.content).toContain('Error: tmux died');
     });
 
     it('should show PR URL when available', async () => {
@@ -205,7 +205,7 @@ describe('mc_plan_status', () => {
 
       const result = await mc_plan_status.execute({}, mockContext);
 
-      expect(result).toContain('PR: https://github.com/org/repo/pull/42');
+      expect(result.content).toContain('PR: https://github.com/org/repo/pull/42');
     });
   });
 });

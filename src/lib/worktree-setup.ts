@@ -7,9 +7,24 @@ export type CommandValidationResult = {
 };
 
 // Each entry: [regex pattern, human-readable warning message]
-const DANGEROUS_PATTERNS: [RegExp, string][] = [
-  [/`[^`]+`/, 'backtick command substitution'],
+
+/**
+ * Shell syntax that lets one command line run something else as well. A
+ * command containing any of these is never "safe", whatever it starts with.
+ */
+const SHELL_OPERATOR_PATTERNS: [RegExp, string][] = [
+  [/`/, 'backtick command substitution'],
   [/\$\(/, 'dollar-paren command substitution'],
+  [/;/, 'semicolon-chained commands'],
+  [/&&/, 'chained commands (&&)'],
+  [/\|\|/, 'chained commands (||)'],
+  [/\|(?!\|)/, 'pipe operator'],
+  [/(?<!&)&(?!&)/, 'background operator (&)'],
+  [/[<>]/, 'redirection'],
+  [/[\r\n]/, 'multiple command lines'],
+];
+
+const DANGEROUS_PATTERNS: [RegExp, string][] = [
   [/\beval\b/, 'eval execution'],
   [/\bexec\b/, 'exec execution'],
   [/\|\s*(sh|bash|zsh|dash)\b/, 'pipe to shell interpreter'],
@@ -21,9 +36,6 @@ const DANGEROUS_PATTERNS: [RegExp, string][] = [
   [/>\s*\/usr\//, 'redirect to /usr/'],
   [/>\s*\/sys\//, 'redirect to /sys/'],
   [/>\s*\/proc\//, 'redirect to /proc/'],
-  [/;/, 'semicolon-chained commands'],
-  [/&&/, 'chained commands (&&)'],
-  [/\|(?!\|)/, 'pipe operator'],
 ];
 
 const SAFE_COMMAND_PATTERNS: RegExp[] = [
@@ -46,25 +58,26 @@ const SAFE_COMMAND_PATTERNS: RegExp[] = [
   /^cmake\b/,
 ];
 
+function matchingWarnings(patterns: [RegExp, string][], command: string): string[] {
+  return patterns.filter(([pattern]) => pattern.test(command)).map(([, description]) => description);
+}
+
 export function validateCommand(command: string): CommandValidationResult {
   const trimmed = command.trim();
-  const warnings: string[] = [];
 
   if (trimmed.length === 0) {
     return { safe: false, warnings: ['empty command'] };
   }
 
-  for (const pattern of SAFE_COMMAND_PATTERNS) {
-    if (pattern.test(trimmed)) {
-      return { safe: true, warnings: [] };
-    }
+  const operatorWarnings = matchingWarnings(SHELL_OPERATOR_PATTERNS, trimmed);
+
+  // A well-known package-manager command is safe as a whole only when it is
+  // the whole command line: `bun install; rm -rf ~` starts safely and is not.
+  if (operatorWarnings.length === 0 && SAFE_COMMAND_PATTERNS.some((pattern) => pattern.test(trimmed))) {
+    return { safe: true, warnings: [] };
   }
 
-  for (const [pattern, description] of DANGEROUS_PATTERNS) {
-    if (pattern.test(trimmed)) {
-      warnings.push(description);
-    }
-  }
+  const warnings = [...operatorWarnings, ...matchingWarnings(DANGEROUS_PATTERNS, trimmed)];
 
   return {
     safe: warnings.length === 0,
@@ -79,6 +92,16 @@ export function validateCommands(
     command,
     result: validateCommand(command),
   }));
+}
+
+/**
+ * One line per risky command, for showing to whoever asked for the commands.
+ * Empty when every command is safe.
+ */
+export function describeCommandWarnings(commands: string[]): string[] {
+  return validateCommands(commands)
+    .filter(({ result }) => !result.safe)
+    .map(({ command, result }) => `"${command}" (${result.warnings.join(', ')})`);
 }
 
 const BUILTIN_SYMLINKS = ['.opencode'];

@@ -1,9 +1,11 @@
-import type { OpencodeClient } from '@opencode-ai/sdk';
+import { getSharedNotifyCallback } from './notify.js';
 import type { Job } from './job-state.js';
-import { createJobClient, sendPrompt } from './sdk-client.js';
+import { getRuntimeClient, type RuntimeClient } from './job-runtime.js';
+import { PERMISSION_ANSWER_TIMEOUT_MS, PERMISSION_TIMEOUT_MESSAGE } from './job-permissions.js';
+import { emitAttention } from './rpc-events.js';
 
 /**
- * A pending mcp_question from a serve-mode job's agent.
+ * A pending question asked by a job's agent through the `question` tool.
  * Keyed by `{jobId}:{partId}` for dedup.
  */
 export interface PendingQuestion {
@@ -12,8 +14,8 @@ export interface PendingQuestion {
   taskSummary: string;
   partId: string;
   callID: string;
-  remoteSessionID: string;
-  port: number;
+  /** The job's own session, where the question form lives. */
+  sessionID: string;
   question: string;
   options: Array<{ label: string; description?: string }>;
   header?: string;
@@ -64,18 +66,6 @@ export function getPendingQuestionsForJob(jobId: string): PendingQuestion[] {
 }
 
 /**
- * Get a specific pending question by job name (for mc_answer tool).
- */
-export function findPendingQuestionByJobName(jobName: string): PendingQuestion | undefined {
-  for (const q of pendingQuestions.values()) {
-    if (q.jobName === jobName) {
-      return q;
-    }
-  }
-  return undefined;
-}
-
-/**
  * Clear all pending questions for a job (cleanup).
  */
 export function clearPendingQuestionsForJob(jobId: string): void {
@@ -86,39 +76,18 @@ export function clearPendingQuestionsForJob(jobId: string): void {
   }
 }
 
-/**
- * Get count of all pending questions.
- */
-export function getPendingQuestionCount(): number {
-  return pendingQuestions.size;
-}
-
-/**
- * Answer a pending question by sending a user message to the job's session.
- * This unblocks the agent waiting on the mcp_question tool call.
- */
-export async function answerPendingQuestion(
-  question: PendingQuestion,
-  response: string,
-  password?: string,
-): Promise<void> {
-  const client = createJobClient(question.port, password);
-  await sendPrompt(client, question.remoteSessionID, response);
-  pendingQuestions.delete(pendingKey(question.jobId, question.partId));
-}
+export { findQuestionForm, buildFormAnswer } from './form-answer.js';
 
 /**
  * Build a notification message for relaying a question to the launching session.
  */
 export function buildQuestionRelayMessage(question: PendingQuestion): string {
   const parts: string[] = [
-    `❓ Job "${question.jobName}" is asking a question.`,
+    `❓ Job "${question.jobName}" is asking a question in its own session.`,
     `Task: ${question.taskSummary}`,
     '',
-    'IMPORTANT: You MUST use mcp_question to present this question to the user with the EXACT same options below,',
-    `plus one final option labeled "Attach to job" with description "Open the job's terminal to see full context before answering".`,
-    `If the user picks "Attach to job", run mc_attach(name: "${question.jobName}") instead of mc_answer.`,
-    `Otherwise, use mc_answer(name: "${question.jobName}", response: "<user's choice>") to send their answer back.`,
+    'This is an interactive form that can only be answered in the job\'s session.',
+    `Tell the user to open it: run mc_attach(name: "${question.jobName}"), or answer it from the Mission Control panel in the TUI.`,
     '',
   ];
 
@@ -130,7 +99,7 @@ export function buildQuestionRelayMessage(question: PendingQuestion): string {
 
   if (question.options.length > 0) {
     parts.push('');
-    parts.push('Options (pass these exactly to mcp_question):');
+    parts.push('Options:');
     for (const opt of question.options) {
       const desc = opt.description ? ` — ${opt.description}` : '';
       parts.push(`  - ${opt.label}${desc}`);
@@ -146,16 +115,19 @@ export function buildQuestionRelayMessage(question: PendingQuestion): string {
 }
 
 /**
- * Permission request from an SSE event
+ * A permission request raised by a job's session, as the monitor classified it.
  */
 export interface PermissionRequest {
   id: string;
   type: 'file_operation' | 'shell_command' | 'network' | 'mcp' | 'other';
+  /** Target of a file operation, absolute. Never set for shell commands. */
   path?: string;
   description: string;
   action?: string;
   target?: string;
   rawType?: string;
+  /** The command line of a shell request. */
+  command?: string;
 }
 
 /**
@@ -169,15 +141,6 @@ export interface QuestionContext {
 }
 
 /**
- * Result of handling a permission request
- */
-export interface PermissionResult {
-  approved: boolean;
-  autoApproved: boolean;
-  reason: string;
-}
-
-/**
  * Configuration for question relay behavior
  */
 export interface QuestionRelayConfig {
@@ -186,8 +149,8 @@ export interface QuestionRelayConfig {
 }
 
 const DEFAULT_CONFIG: QuestionRelayConfig = {
-  autoResponseTimeoutMs: 120_000, // 2 minutes
-  defaultResponse: 'use your best judgment',
+  autoResponseTimeoutMs: PERMISSION_ANSWER_TIMEOUT_MS,
+  defaultResponse: PERMISSION_TIMEOUT_MESSAGE,
 };
 
 /**
@@ -199,81 +162,6 @@ export function buildTaskSummary(prompt: string): string {
     return prompt;
   }
   return prompt.slice(0, maxLen - 3) + '...';
-}
-
-/**
- * Check if a path is inside the worktree
- */
-export function isPathInsideWorktree(path: string, worktreePath: string): boolean {
-  const normalizedPath = path.replace(/\\/g, '/');
-  const normalizedWorktree = worktreePath.replace(/\\/g, '/');
-  return normalizedPath.startsWith(normalizedWorktree);
-}
-
-/**
- * Determine if a permission request should be auto-approved
- */
-export function shouldAutoApprove(
-  permission: PermissionRequest,
-  worktreePath: string,
-): PermissionResult {
-  // MCP tool execution: auto-approve
-  if (permission.type === 'mcp') {
-    return {
-      approved: true,
-      autoApproved: true,
-      reason: 'MCP tool execution is auto-approved',
-    };
-  }
-
-  // File operations: check if inside worktree
-  if (permission.type === 'file_operation' && permission.path) {
-    if (isPathInsideWorktree(permission.path, worktreePath)) {
-      return {
-        approved: true,
-        autoApproved: true,
-        reason: 'File operation inside worktree is auto-approved',
-      };
-    }
-    return {
-      approved: false,
-      autoApproved: false,
-      reason: 'File operation outside worktree requires user approval',
-    };
-  }
-
-  // Shell commands: check if inside worktree context
-  if (permission.type === 'shell_command') {
-    // Shell commands are generally safe inside worktree, but check if path is specified
-    if (!permission.path || isPathInsideWorktree(permission.path, worktreePath)) {
-      return {
-        approved: true,
-        autoApproved: true,
-        reason: 'Shell command inside worktree is auto-approved',
-      };
-    }
-    return {
-      approved: false,
-      autoApproved: false,
-      reason: 'Shell command outside worktree requires user approval',
-    };
-  }
-
-  // Network/dangerous operations: always relay to user
-  if (permission.type === 'network') {
-    return {
-      approved: false,
-      autoApproved: false,
-      reason: 'Network operation requires user approval',
-    };
-  }
-
-  // Unknown/other types: relay to user
-  return {
-    approved: false,
-    autoApproved: false,
-    reason: 'Unknown permission type requires user approval',
-  };
 }
 
 /**
@@ -298,71 +186,77 @@ export function buildQuestionPrompt(context: QuestionContext): string {
     if (context.permissionRequest.path) {
       parts.push(`  Path: ${context.permissionRequest.path}`);
     }
+    if (context.permissionRequest.command) {
+      parts.push(`  Command: ${context.permissionRequest.command}`);
+    }
   }
 
   parts.push('');
   parts.push('Options:');
-  parts.push('  - Reply "yes" to approve');
-  parts.push('  - Reply "no" to deny');
-  parts.push('  - Reply with specific instructions');
-  parts.push('  - Let it decide: use its best judgment (auto-response after timeout)');
+  parts.push(`  - Approve or deny it in the job's session: run mc_attach(name: "${context.jobName}"), or use the Mission Control dashboard`);
+  parts.push('  - If nobody answers before the timeout, the request is denied and the job continues without it');
 
   return parts.join('\n');
 }
 
 /**
- * Question relay handler for managing permission requests
+ * Relays permission requests the policy wants a human to decide, and denies
+ * the ones nobody answers in time.
  */
 export class QuestionRelay {
   private config: QuestionRelayConfig;
-  private pendingResponses: Map<string, Timer> = new Map();
-  private clients: Map<number, OpencodeClient> = new Map();
 
   constructor(config: Partial<QuestionRelayConfig> = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config };
   }
 
   /**
-   * Get or create a client for a job's port
-   */
-  private getClient(port: number, password?: string): OpencodeClient {
-    const key = port;
-    if (!this.clients.has(key)) {
-      this.clients.set(key, createJobClient(port, password));
-    }
-    return this.clients.get(key)!;
-  }
-
-  /**
-   * Handle a permission request from an SSE event
-   * Returns true if auto-approved, false if relayed to user
+   * Hand a permission request to the user. The policy said "ask-user", so
+   * nothing is approved here: the request is announced (to the launching
+   * session when there is one, and always to connected clients), and it is
+   * denied when nobody answers before the timeout.
    */
   async handlePermissionRequest(
     job: Job,
     permission: PermissionRequest,
     currentFile?: string,
-  ): Promise<PermissionResult> {
-    const result = shouldAutoApprove(permission, job.worktreePath);
+  ): Promise<void> {
+    if (!job.sessionID) {
+      console.warn(`[QuestionRelay] Job ${job.name} has no session; its permission request cannot be answered.`);
+      return;
+    }
 
-    if (result.autoApproved) {
-      // Auto-approve the permission
-      if (job.port) {
-        try {
-          const client = this.getClient(job.port);
-          await this.replyToPermission(client, permission.id, true);
-        } catch (error) {
-          console.error(`[QuestionRelay] Failed to auto-approve permission for job ${job.name}:`, error);
-        }
+    // The denial of an unanswered request is armed by the permission gate in
+    // the job's own location (installPermissionGate): only a plugin instance
+    // there can answer the job's permission requests.
+
+    if (job.launchSessionID) {
+      const prompt = buildQuestionPrompt({
+        jobName: job.name,
+        taskSummary: buildTaskSummary(job.prompt),
+        currentFile,
+        permissionRequest: permission,
+      });
+      // Relay through the shared notifier so the request reaches the launching
+      // session the same way every other Mission Control notification does.
+      const notify = getSharedNotifyCallback();
+      if (notify) {
+        notify(prompt, job.launchSessionID);
+      } else {
+        console.warn(
+          `[QuestionRelay] No control-center notifier available; permission request for job ${job.name} was not relayed to its launching session.`,
+        );
       }
-      return result;
     }
 
-    // Relay to launching session
-    if (job.launchSessionID && job.port) {
-      await this.relayToLaunchingSession(job, permission, currentFile);
-    }
-
-    return result;
+    // Best-effort and never throws: clients show it as a toast and a system notification.
+    await emitAttention({
+      kind: 'question',
+      title: `Job "${job.name}" needs permission`,
+      message: `${permission.description} Denied automatically if nobody answers in ${Math.round(this.config.autoResponseTimeoutMs / 1000)}s.`,
+      jobName: job.name,
+      sessionID: job.sessionID,
+    });
   }
 
   async respondToPermission(
@@ -371,186 +265,28 @@ export class QuestionRelay {
     approved: boolean,
     message?: string,
   ): Promise<void> {
-    if (!job.port) {
+    if (!job.sessionID) {
       return;
     }
 
-    const client = this.getClient(job.port);
-    await this.replyToPermission(client, permissionId, approved, message);
-  }
-
-  /**
-   * Relay a question to the launching session
-   */
-  private async relayToLaunchingSession(
-    job: Job,
-    permission: PermissionRequest,
-    currentFile?: string,
-  ): Promise<void> {
-    if (!job.launchSessionID || !job.port) {
-      console.warn(`[QuestionRelay] Cannot relay: missing launchSessionID or port for job ${job.name}`);
-      return;
-    }
-
-    const context: QuestionContext = {
-      jobName: job.name,
-      taskSummary: buildTaskSummary(job.prompt),
-      currentFile,
-      permissionRequest: permission,
-    };
-
-    const prompt = buildQuestionPrompt(context);
-
-    try {
-      const client = this.getClient(job.port);
-      await client.session.prompt({
-        path: { id: job.launchSessionID },
-        body: {
-          parts: [{ type: 'text', text: prompt }],
-          noReply: false,
-        },
-      });
-
-      // Set up auto-response timeout
-      this.setupAutoResponse(job.id, permission.id, client);
-    } catch (error) {
-      console.error(`[QuestionRelay] Failed to relay question for job ${job.name}:`, error);
-    }
-  }
-
-  /**
-   * Set up automatic response after timeout
-   */
-  private setupAutoResponse(
-    jobId: string,
-    permissionId: string,
-    client: OpencodeClient,
-  ): void {
-    // Clear any existing timeout for this permission
-    const existingKey = `${jobId}:${permissionId}`;
-    if (this.pendingResponses.has(existingKey)) {
-      clearTimeout(this.pendingResponses.get(existingKey)!);
-    }
-
-    // Set new timeout
-    const timeoutId = setTimeout(async () => {
-      try {
-        await this.replyToPermission(client, permissionId, true, this.config.defaultResponse);
-        console.log(`[QuestionRelay] Auto-responded to permission ${permissionId} for job ${jobId}`);
-      } catch (error) {
-        console.error(`[QuestionRelay] Failed to auto-respond for job ${jobId}:`, error);
-      } finally {
-        this.pendingResponses.delete(existingKey);
-      }
-    }, this.config.autoResponseTimeoutMs);
-
-    this.pendingResponses.set(existingKey, timeoutId);
+    await this.replyToPermission(getRuntimeClient(), job.sessionID, permissionId, approved, message);
   }
 
   /**
    * Reply to a permission request
    */
   private async replyToPermission(
-    client: OpencodeClient,
+    client: RuntimeClient,
+    sessionID: string,
     permissionId: string,
     approved: boolean,
     message?: string,
   ): Promise<void> {
-    // Note: The actual SDK endpoint for replying to permissions may vary
-    // This is a placeholder based on typical SDK patterns
-    // The SDK might have client.permission.reply or similar
-    try {
-      // Using a generic approach - actual implementation depends on SDK
-      const response = await fetch(`${(client as any).baseUrl}/permission/${permissionId}/reply`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...((client as any).headers || {}),
-        },
-        body: JSON.stringify({
-          approved,
-          message: message || (approved ? 'Approved' : 'Denied'),
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${await response.text()}`);
-      }
-    } catch (error) {
-      console.error(`[QuestionRelay] Failed to reply to permission ${permissionId}:`, error);
-      throw error;
-    }
-  }
-
-  /**
-   * Handle user response to a relayed question
-   * Called when the user replies in the launching session
-   */
-  async handleUserResponse(
-    job: Job,
-    permissionId: string,
-    response: string,
-  ): Promise<void> {
-    // Clear the auto-response timeout
-    const key = `${job.id}:${permissionId}`;
-    if (this.pendingResponses.has(key)) {
-      clearTimeout(this.pendingResponses.get(key)!);
-      this.pendingResponses.delete(key);
-    }
-
-    if (!job.port) {
-      return;
-    }
-
-    // Parse user response
-    const normalizedResponse = response.toLowerCase().trim();
-    let approved: boolean;
-    let message: string;
-
-    if (normalizedResponse === 'yes' || normalizedResponse === 'y' || normalizedResponse === 'approve') {
-      approved = true;
-      message = 'Approved by user';
-    } else if (normalizedResponse === 'no' || normalizedResponse === 'n' || normalizedResponse === 'deny') {
-      approved = false;
-      message = 'Denied by user';
-    } else if (normalizedResponse.includes('let it decide') || normalizedResponse.includes('best judgment')) {
-      approved = true;
-      message = 'Let agent use best judgment';
-    } else {
-      // Treat as specific instructions - approve with the message
-      approved = true;
-      message = response;
-    }
-
-    try {
-      const client = this.getClient(job.port);
-      await this.replyToPermission(client, permissionId, approved, message);
-    } catch (error) {
-      console.error(`[QuestionRelay] Failed to send user response for job ${job.name}:`, error);
-    }
-  }
-
-  /**
-   * Clean up resources for a job
-   */
-  cleanup(jobId: string): void {
-    // Clear all pending timeouts for this job
-    for (const [key, timeoutId] of this.pendingResponses) {
-      if (key.startsWith(`${jobId}:`)) {
-        clearTimeout(timeoutId);
-        this.pendingResponses.delete(key);
-      }
-    }
-  }
-
-  /**
-   * Clean up all resources
-   */
-  dispose(): void {
-    for (const timeoutId of this.pendingResponses.values()) {
-      clearTimeout(timeoutId);
-    }
-    this.pendingResponses.clear();
-    this.clients.clear();
+    await client.permission.reply({
+      sessionID,
+      requestID: permissionId,
+      decision: approved ? "once" : "reject",
+      message: message || (approved ? "Approved" : "Denied"),
+    });
   }
 }

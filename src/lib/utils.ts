@@ -1,3 +1,5 @@
+import { randomUUID } from 'crypto';
+import * as fs from 'fs';
 /**
  * Shared utility functions used across the codebase
  */
@@ -7,10 +9,10 @@
  * Ensures data integrity by writing to a temp file first, then renaming atomically.
  */
 export async function atomicWrite(filePath: string, data: string): Promise<void> {
-  const tempPath = `${filePath}.tmp`;
+  // Unique per write: concurrent writers must never share a temp file.
+  const tempPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
   await Bun.write(tempPath, data);
   // Use fs.renameSync for atomic rename operation
-  const fs = await import('fs');
   fs.renameSync(tempPath, filePath);
 }
 
@@ -95,4 +97,22 @@ export function formatDurationMs(ms: number): string {
   if (hours > 0) return `${hours}h ${minutes % 60}m`;
   if (minutes > 0) return `${minutes}m ${seconds % 60}s`;
   return `${seconds}s`;
+}
+
+/**
+ * Read a state file in one open-and-read, or null when it does not exist.
+ *
+ * State files are replaced by atomic rename while other code reads them.
+ * Checking existence, sizing and reading as separate steps can pair the old
+ * file's size with the new file's content and return truncated JSON.
+ */
+export function readFileIfExists(filePath: string): string | null {
+  try {
+    return fs.readFileSync(filePath, 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return null;
+    }
+    throw error;
+  }
 }

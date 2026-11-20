@@ -4,88 +4,87 @@ import { getDataDir } from './paths';
 import { GitMutex } from './git-mutex';
 import { isValidJobTransition, VALID_JOB_TRANSITIONS } from './plan-types';
 import type { JobStatus } from './plan-types';
-import { JobSchema, JobStateSchema } from './schemas';
-import { atomicWrite } from './utils';
+import { JobSchema, JobStateSchema, JOB_STATE_VERSION } from './schemas';
+import { atomicWrite, readFileIfExists } from './utils';
 
 export type Job = z.infer<typeof JobSchema>;
 export type JobState = z.infer<typeof JobStateSchema>;
 
-export function migrateV2ToV3(state: Record<string, unknown>): JobState {
-  const jobs = (state.jobs as Job[]) ?? [];
-  const migrated = {
-    version: 3 as const,
-    jobs: jobs.map((job) => ({ ...job, launchSessionID: job.launchSessionID ?? undefined })),
-    updatedAt: (state.updatedAt as string) ?? new Date().toISOString(),
-  };
-  return JobStateSchema.parse(migrated);
-}
-
+/**
+ * Bring a state file written by an older release up to the current version.
+ *
+ * Versions 1-3 hosted every job in tmux (optionally with a per-job
+ * `opencode serve`). Those hosts no longer exist, so jobs that were `running`
+ * cannot be resumed: they become `stopped`. Everything else is kept so
+ * `mc_cleanup` can still remove their worktrees and branches. Fields that no
+ * longer exist (tmuxTarget, placement, mode, planFile, port, serverUrl,
+ * serverPassword, exitCode, remoteSessionID) are dropped by the schema, which
+ * strips unknown keys. A legacy `remoteSessionID` is deliberately not carried
+ * over as `sessionID`: it named a session on a per-job server that is gone.
+ */
 export function migrateJobState(state: Record<string, unknown>): JobState {
-  const version = (state.version as number) ?? 1;
+  const version = typeof state.version === 'number' ? state.version : 1;
 
-  if (version < 2) {
-    const jobs = (state.jobs as Job[]) ?? [];
-    const migrated = {
-      version: 2 as const,
-      jobs: jobs.map((job) => ({ ...job, planId: job.planId ?? undefined })),
-      updatedAt: (state.updatedAt as string) ?? new Date().toISOString(),
+  if (version >= JOB_STATE_VERSION) {
+    return JobStateSchema.parse(state);
+  }
+
+  const now = new Date().toISOString();
+  const rawJobs: unknown[] = Array.isArray(state.jobs) ? state.jobs : [];
+  const jobs = rawJobs.map((raw) => {
+    if (!raw || typeof raw !== 'object') {
+      return raw;
+    }
+    const job = raw as Record<string, unknown>;
+    if (job.status !== 'running') {
+      return job;
+    }
+    return {
+      ...job,
+      status: 'stopped',
+      completedAt: typeof job.completedAt === 'string' ? job.completedAt : now,
     };
-    // Continue to v3 migration
-    return migrateV2ToV3(migrated as unknown as Record<string, unknown>);
-  }
+  });
 
-  if (version < 3) {
-    return migrateV2ToV3(state);
-  }
-
-  return JobStateSchema.parse(state);
+  return JobStateSchema.parse({
+    version: JOB_STATE_VERSION,
+    jobs,
+    updatedAt: typeof state.updatedAt === 'string' ? state.updatedAt : now,
+  });
 }
 
 const STATE_FILE = 'jobs.json';
 
 /**
- * In-process mutex for serializing job state operations.
- * Prevents concurrent read-modify-write cycles from losing updates
- * within the same process.
- *
- * LIMITATION: This mutex only protects within a single process.
- * If multiple processes (e.g., mc_plan_cancel and mc_cleanup from
- * different sessions) access jobs.json concurrently, they each have
- * their own mutex instance and can race. The atomicWrite with
- * renameSync makes individual writes atomic, but the full
- * read-modify-write cycle is unprotected across processes.
- *
- * In practice, this manifests as a brief window where mc_jobs may
- * show a stale entry immediately after mc_cleanup completes.
- * A subsequent mc_jobs call will show the correct state.
- * See: E2E_TEST_FINDINGS.md, FINDING 1.
+ * Serializes read-modify-write cycles on jobs.json. Every writer is in this
+ * one process: the plugin instances of all projects and of all job worktrees
+ * are loaded into the same OpenCode server and share this module, so an
+ * in-process mutex covers them all. (It is shared between projects too, which
+ * only costs a little waiting: each cycle is a small file read and write.)
  */
 const stateMutex = new GitMutex();
 
-async function getStateFilePath(): Promise<string> {
-  const dataDir = await getDataDir();
+async function getStateFilePath(cwd?: string): Promise<string> {
+  const dataDir = await getDataDir(cwd);
   return join(dataDir, STATE_FILE);
 }
 
 
 
-export async function loadJobState(): Promise<JobState> {
-  const filePath = await getStateFilePath();
-  const file = Bun.file(filePath);
-  const exists = await file.exists();
-
-  if (!exists) {
+export async function loadJobState(cwd?: string): Promise<JobState> {
+  const filePath = await getStateFilePath(cwd);
+  const content = readFileIfExists(filePath);
+  if (content === null) {
     return {
-      version: 3,
+      version: JOB_STATE_VERSION,
       jobs: [],
       updatedAt: new Date().toISOString(),
     };
   }
 
   try {
-    const content = await file.text();
     const parsed = JSON.parse(content);
-    if (!parsed.version || parsed.version < 3) {
+    if (!parsed.version || parsed.version < JOB_STATE_VERSION) {
       return migrateJobState(parsed);
     }
     return JobStateSchema.parse(parsed);
@@ -101,7 +100,7 @@ export async function saveJobState(state: JobState): Promise<void> {
   const filePath = await getStateFilePath();
   const updatedState: JobState = {
     ...state,
-    version: 3,
+    version: JOB_STATE_VERSION,
     updatedAt: new Date().toISOString(),
   };
 

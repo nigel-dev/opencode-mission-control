@@ -1,6 +1,6 @@
 /**
  * Integration branch lifecycle management.
- * Handles creation, worktree setup, cleanup, and refresh of integration branches
+ * Handles creation, worktree setup and cleanup of integration branches
  * used for orchestrated merge trains.
  */
 
@@ -9,7 +9,6 @@ import { gitCommand, getDefaultBranch } from './git';
 import { getProjectId, getXdgDataDir } from './paths';
 import { createWorktree, removeWorktree } from './worktree';
 import type { PostCreateHook } from './providers/worktree-provider';
-import { extractConflicts } from './utils';
 
 const XDG_DATA_DIR = getXdgDataDir();
 
@@ -38,8 +37,10 @@ export async function createIntegrationBranch(
     // Clean up the old branch and worktree
     try {
       await deleteIntegrationBranch(planId);
-    } catch (e) {
-      // Ignore errors during cleanup of failed run
+    } catch (error) {
+      // Leftovers of a failed run. If they are really in the way, creating the
+      // branch below fails with the reason.
+      console.warn(`[Mission Control] Could not remove the old integration branch ${branchName}:`, error);
     }
   }
 
@@ -73,30 +74,6 @@ export async function createIntegrationBranch(
 }
 
 /**
- * Get the worktree path for an integration branch.
- * Throws if the worktree doesn't exist.
- *
- * @param planId - The plan ID
- * @returns Promise with the worktree path
- */
-export async function getIntegrationWorktree(planId: string): Promise<string> {
-  const projectId = await getProjectId();
-  const worktreePath = join(XDG_DATA_DIR, projectId, `mc-integration-${planId}`);
-
-  // Verify the worktree exists by checking if it's in the worktree list
-  const listResult = await gitCommand(['worktree', 'list', '--porcelain']);
-  if (listResult.exitCode !== 0) {
-    throw new Error('Failed to list worktrees');
-  }
-
-  if (!listResult.stdout.includes(worktreePath)) {
-    throw new Error(`Integration worktree not found for plan ${planId}`);
-  }
-
-  return worktreePath;
-}
-
-/**
  * Delete an integration branch and its worktree.
  * Handles "already deleted" gracefully (no error if missing).
  *
@@ -110,8 +87,9 @@ export async function deleteIntegrationBranch(planId: string): Promise<void> {
   // Remove the worktree (force to handle any uncommitted changes)
   try {
     await removeWorktree(worktreePath, true);
-  } catch (e) {
-    // Ignore if worktree doesn't exist
+  } catch {
+    // The worktree is already gone (never created, or removed by hand):
+    // deleting the branch below is all that is left to do.
   }
 
   // Delete the branch
@@ -123,42 +101,3 @@ export async function deleteIntegrationBranch(planId: string): Promise<void> {
     }
   }
 }
-
-/**
- * Refresh the integration branch from main.
- * Fetches latest main from origin and attempts to rebase the integration branch.
- * On conflict: aborts rebase and returns conflict info.
- * On success: returns success status.
- *
- * @param planId - The plan ID
- * @returns Promise with success status and optional conflicts
- */
-export async function refreshIntegrationFromMain(
-  planId: string,
-): Promise<{ success: boolean; conflicts?: string[] }> {
-  const projectId = await getProjectId();
-  const worktreePath = join(XDG_DATA_DIR, projectId, `mc-integration-${planId}`);
-
-  // Fetch latest main from origin
-  const fetchResult = await gitCommand(['-C', worktreePath, 'fetch', 'origin']);
-  if (fetchResult.exitCode !== 0) {
-    return { success: false, conflicts: ['Failed to fetch from origin'] };
-  }
-
-  // Attempt to rebase onto the default branch
-  const defaultBranch = await getDefaultBranch();
-  const rebaseResult = await gitCommand(['-C', worktreePath, 'rebase', `origin/${defaultBranch}`]);
-
-  if (rebaseResult.exitCode !== 0) {
-    // Extract conflicts from stderr
-    const conflicts = extractConflicts(rebaseResult.stderr);
-
-    // Abort the rebase to leave worktree clean
-    await gitCommand(['-C', worktreePath, 'rebase', '--abort']).catch(() => {});
-
-    return { success: false, conflicts };
-  }
-
-  return { success: true };
-}
-

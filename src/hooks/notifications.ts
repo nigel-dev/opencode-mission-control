@@ -1,15 +1,18 @@
-import type { PluginInput } from '@opencode-ai/plugin';
+import type { Plugin } from '@opencode/plugin';
 import type { Job } from '../lib/job-state';
 import { readReport } from '../lib/reports';
 import { formatElapsed } from '../lib/utils';
 import { type PendingQuestion, buildQuestionRelayMessage } from '../lib/question-relay';
+import { showToast } from '../lib/toast';
+import { emitAttention, hasRpcEventEmitter } from '../lib/rpc-events';
+import type { AttentionKind } from '../rpc';
 
-type Client = PluginInput['client'];
+type Client = Plugin.Context;
 type NotificationEvent = 'complete' | 'failed' | 'blocked' | 'needs_review' | 'awaiting_input' | 'question';
 
 // Tracks when we last annotated a title per session. Resets are suppressed
-// for a cooldown period because sendMessage triggers chat.message hooks
-// asynchronously, which would immediately undo the annotation we just set.
+// for a cooldown period because the notification message itself triggers the
+// session's prompt hook, which would immediately undo the annotation just set.
 const TITLE_RESET_COOLDOWN_MS = 5_000;
 const lastAnnotationTime = new Map<string, number>();
 
@@ -29,7 +32,6 @@ interface SetupNotificationsOptions {
   client: Client;
   monitor: JobMonitorLike;
   getActiveSessionID: () => Promise<string | undefined>;
-  isSubagent: () => Promise<boolean>;
 }
 
 interface SessionTitleState {
@@ -39,19 +41,10 @@ interface SessionTitleState {
 
 const titleState = new Map<string, SessionTitleState>();
 
-function extractSessionTitle(response: unknown): string | undefined {
-  if (!response || typeof response !== 'object') return undefined;
-  const obj = response as Record<string, unknown>;
-
-  // SDK may wrap in { data: { ... } } or return flat
-  if (obj.data && typeof obj.data === 'object') {
-    const data = obj.data as Record<string, unknown>;
-    if (typeof data.title === 'string') return data.title;
-  }
-
-  if (typeof obj.title === 'string') return obj.title;
-
-  return undefined;
+function extractSessionTitle(session: unknown): string | undefined {
+  if (!session || typeof session !== 'object') return undefined;
+  const title = (session as { title?: unknown }).title;
+  return typeof title === 'string' ? title : undefined;
 }
 
 const STATUS_ICONS: Record<string, string> = {
@@ -84,7 +77,7 @@ export async function annotateSessionTitle(
 
   try {
     if (!titleState.has(sessionID)) {
-      const session = await client.session.get({ path: { id: sessionID } });
+      const session = await client.session.get({ sessionID });
       let originalTitle = extractSessionTitle(session) ?? '';
       if (originalTitle.startsWith('[MC] ')) {
         originalTitle = originalTitle.slice(5);
@@ -99,10 +92,7 @@ export async function annotateSessionTitle(
     state.annotations.set(jobName, statusText);
     const annotatedTitle = buildAnnotatedTitle(state, sessionID);
 
-    await client.session.update({
-      path: { id: sessionID },
-      body: { title: annotatedTitle },
-    });
+    await client.session.update({ sessionID, title: annotatedTitle });
     lastAnnotationTime.set(sessionID, Date.now());
   } catch {
     // Fire-and-forget: don't block on title update failures
@@ -118,10 +108,7 @@ export async function resetSessionTitle(client: Client, sessionID: string): Prom
   titleState.delete(sessionID);
 
   try {
-    await client.session.update({
-      path: { id: sessionID },
-      body: { title: resetTitle },
-    });
+    await client.session.update({ sessionID, title: resetTitle });
   } catch {
     // Fire-and-forget: don't block on title reset failures
   }
@@ -141,21 +128,16 @@ export async function ensureMCPrefix(client: Client, sessionID: string | undefin
     if (titleState.has(sessionID)) {
       const state = titleState.get(sessionID)!;
       const annotatedTitle = buildAnnotatedTitle(state, sessionID);
-      await client.session.update({
-        path: { id: sessionID },
-        body: { title: annotatedTitle },
-      });
+      await client.session.update({ sessionID, title: annotatedTitle });
     } else {
-      const session = await client.session.get({ path: { id: sessionID } });
+      const session = await client.session.get({ sessionID });
       const currentTitle = extractSessionTitle(session) ?? '';
       if (currentTitle.startsWith('[MC]')) return;
 
-      await client.session.update({
-        path: { id: sessionID },
-        body: { title: `[MC] ${currentTitle}` },
-      });
+      await client.session.update({ sessionID, title: `[MC] ${currentTitle}` });
     }
   } catch {
+    // Fire-and-forget: don't block on title prefix failures
   }
 }
 
@@ -169,13 +151,11 @@ export function _getMCPrefixedSessionsForTesting(): Set<string> {
 }
 
 async function sendMessage(client: Client, sessionID: string, text: string, expectReply = false): Promise<void> {
-  await client.session.prompt({
-    path: { id: sessionID },
-    body: {
-      noReply: !expectReply,
-      parts: [{ type: 'text' as const, text, ...(!expectReply && { ignored: true }) }],
-    },
-  });
+  if (expectReply) {
+    await client.session.prompt({ sessionID, text });
+  } else {
+    await client.session.synthetic({ sessionID, text, resume: false });
+  }
 }
 
 function getDedupKey(event: NotificationEvent, job: Job, reportTimestamp?: string): string {
@@ -189,7 +169,7 @@ function getDedupKey(event: NotificationEvent, job: Job, reportTimestamp?: strin
 }
 
 export function setupNotifications(options: SetupNotificationsOptions): void {
-  const { client, monitor, getActiveSessionID, isSubagent } = options;
+  const { client, monitor, getActiveSessionID } = options;
   const sent = new Set<string>();
   let pending: Promise<void> = Promise.resolve();
 
@@ -203,17 +183,14 @@ export function setupNotifications(options: SetupNotificationsOptions): void {
       return;
     }
 
-    // Skip notifications in subagent sessions
-    try {
-      if (await isSubagent()) return;
-    } catch {
-      // If detection fails, continue sending (safer default)
-    }
-
-    const sessionID = job.launchSessionID ?? await getActiveSessionID();
-    if (!sessionID || !sessionID.startsWith('ses')) {
-      return;
-    }
+    // The launching session gets the message. A job launched from the TUI
+    // dashboard has none: connected clients are still told below.
+    const target = job.launchSessionID ?? await getActiveSessionID();
+    const sessionID = target && target.startsWith('ses') ? target : undefined;
+    const uncommitted = event === 'needs_review' ? job.uncommittedChanges ?? [] : [];
+    const uncommittedNote = uncommitted.length > 0
+      ? `It finished with ${uncommitted.length} uncommitted file(s) in ${job.worktreePath} that are not on its branch: ${uncommitted.slice(0, 10).join(', ')}${uncommitted.length > 10 ? ', ...' : ''}.`
+      : '';
 
     const duration = formatElapsed(job.createdAt);
     let message = '';
@@ -223,30 +200,29 @@ export function setupNotifications(options: SetupNotificationsOptions): void {
     } else if (event === 'complete') {
       message = `🟢 Job '${job.name}' completed in ${duration}. Branch: ${job.branch}. Next: run mc_diff(name: '${job.name}') to review changes, then mc_pr or mc_merge.`;
     } else if (event === 'failed') {
-      message = `🔴 Job '${job.name}' failed after ${duration}. Branch: ${job.branch}. Next: run mc_capture(name: '${job.name}') for logs, then mc_attach(name: '${job.name}') to investigate.`;
+      const why = job.failureReason ? ` Reason: ${job.failureReason}.` : '';
+      message = `🔴 Job '${job.name}' failed after ${duration}.${why} Branch: ${job.branch}. Next: run mc_capture(name: '${job.name}') for logs, then mc_attach(name: '${job.name}') to investigate.`;
     } else if (event === 'blocked') {
       const detail = report?.message ? ` Agent says: ${report.message}` : '';
-      message = `⚠️ Job '${job.name}' is blocked (${duration} elapsed). Branch: ${job.branch}.${detail} Next: run mc_status(name: '${job.name}') and unblock, then continue or relaunch.`;
+      message = `⚠️ Job '${job.name}' is blocked (${duration} elapsed). Branch: ${job.branch}.${detail} Next: reply with mc_answer(name: '${job.name}', response: '<answer>') to resume it, or mc_kill(name: '${job.name}') to abort.`;
     } else if (event === 'awaiting_input') {
-      message = `❓ Job '${job.name}' is waiting for input (${duration} elapsed). The agent asked a clarifying question. Next: run mc_attach(name: '${job.name}') to answer the question, or mc_kill(name: '${job.name}') to abort.`;
+      message = `❓ Job '${job.name}' is waiting for input (${duration} elapsed). It is waiting on a question or permission request in its own session. Next: run mc_attach(name: '${job.name}') to open it and answer, or mc_kill(name: '${job.name}') to abort.`;
+    } else if (uncommittedNote) {
+      message = `👀 Job '${job.name}' needs review (${duration} elapsed). Branch: ${job.branch}. ${uncommittedNote} Next: commit them in the worktree if they belong to the job, then review with mc_diff(name: '${job.name}').`;
     } else {
       const detail = report?.message ? ` Reviewer note: ${report.message}` : '';
       message = `👀 Job '${job.name}' needs review (${duration} elapsed). Branch: ${job.branch}.${detail} Next: run mc_diff(name: '${job.name}') and mc_capture(name: '${job.name}') before approving next steps.`;
     }
 
-    let sessionLabel = sessionID;
-    try {
-      const sessionInfo = await client.session.get({ path: { id: sessionID } });
-      const data = (sessionInfo as any)?.data ?? sessionInfo;
-      sessionLabel = data?.title ?? data?.slug ?? sessionID;
-    } catch {
-      // Fall back to raw session ID
-    }
+    let sessionLabel = sessionID ?? 'the launching session';
+    if (sessionID) {
+      try {
+        const sessionInfo = await client.session.get({ sessionID });
+        sessionLabel = sessionInfo?.title ?? sessionID;
+      } catch {
+        // Fall back to raw session ID
+      }
 
-    const annotatedEvents: NotificationEvent[] = [
-      'complete', 'failed', 'blocked', 'needs_review', 'awaiting_input', 'question',
-    ];
-    if (annotatedEvents.includes(event)) {
       await annotateSessionTitle(client, sessionID, job.name, event);
     }
 
@@ -259,27 +235,44 @@ export function setupNotifications(options: SetupNotificationsOptions): void {
       question: { variant: 'warning', title: `Job "${job.name}" has a question` },
     };
     const toast = toastMap[event];
-    if (toast) {
-      try {
-        await client.tui.showToast({
-          body: {
-            title: toast.title,
-            message: `Switch to session "${sessionLabel}" to respond`,
-            variant: toast.variant,
-            duration: event === 'question' ? 10000 : 5000,
-          },
-        });
-      } catch {
-        // Toast may not be available in all environments
-      }
+    if (toast && hasRpcEventEmitter()) {
+      // The TUI turns an attention event into its own toast (plus a system
+      // notification), so the plain toast below is only the fallback.
+      const attentionKinds: Record<NotificationEvent, AttentionKind> = {
+        complete: 'complete',
+        failed: 'failed',
+        blocked: 'blocked',
+        needs_review: 'needs_review',
+        awaiting_input: 'question',
+        question: 'question',
+      };
+      await emitAttention({
+        kind: attentionKinds[event],
+        title: toast.title,
+        message: questionData?.question ?? (uncommittedNote || undefined) ?? report?.message ?? job.failureReason ?? `Branch: ${job.branch}`,
+        jobName: job.name,
+        ...(job.sessionID ? { sessionID: job.sessionID } : {}),
+      });
+    } else if (toast) {
+      await showToast({
+        title: toast.title,
+        message: `Switch to session "${sessionLabel}" to respond`,
+        variant: toast.variant,
+        duration: event === 'question' ? 10000 : 5000,
+      });
     }
 
-    await sendMessage(client, sessionID, message, event === 'question');
+    if (sessionID) {
+      await sendMessage(client, sessionID, message, event === 'question');
+    }
     sent.add(dedupKey);
   };
 
   const enqueue = (event: NotificationEvent, job: Job, extra?: unknown): void => {
-    pending = pending.then(() => notify(event, job, extra)).catch(() => {});
+    pending = pending.then(() => notify(event, job, extra)).catch((error: unknown) => {
+      // One failed notification must not stop the ones queued behind it.
+      console.warn(`[Mission Control] Could not send the "${event}" notification for job ${job.name}:`, error);
+    });
   };
 
   monitor.on('complete', (job) => enqueue('complete', job));

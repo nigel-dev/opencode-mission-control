@@ -1,6 +1,7 @@
-import { tool, type ToolDefinition } from '@opencode-ai/plugin';
+import { z } from 'zod';
 import { loadJobState, type Job } from '../lib/job-state';
 import { formatTimeAgo } from '../lib/utils';
+import { getJobUsage, type JobUsage } from '../lib/job-runtime';
 
 
 
@@ -49,7 +50,29 @@ function groupJobsByStatus(
   return grouped;
 }
 
-function formatJobsOutput(grouped: Record<string, Job[]>): string {
+function formatUsage(usage: JobUsage): string {
+  return `Cost: $${usage.cost.toFixed(4)} | Tokens: ${usage.inputTokens} in / ${usage.outputTokens} out`;
+}
+
+async function loadUsage(jobs: Job[]): Promise<Map<string, JobUsage>> {
+  const usageByJob = new Map<string, JobUsage>();
+  await Promise.all(
+    jobs.map(async (job) => {
+      if (job.status !== 'running' || !job.sessionID) return;
+      try {
+        usageByJob.set(job.id, await getJobUsage(job.sessionID));
+      } catch {
+        // Usage is informational: omit it when the session cannot be read.
+      }
+    }),
+  );
+  return usageByJob;
+}
+
+function formatJobsOutput(
+  grouped: Record<string, Job[]>,
+  usageByJob: Map<string, JobUsage>,
+): string {
   const lines: string[] = ['Mission Control Jobs', '====================', ''];
 
   let hasJobs = false;
@@ -74,8 +97,22 @@ function formatJobsOutput(grouped: Record<string, Job[]>): string {
         `• ${job.name} [${job.status}] ${indicator} - "${truncatedPrompt}"`,
       );
       lines.push(
-        `  Branch: ${job.branch} | Mode: ${job.mode} | ${durationLabel}`,
+        `  Branch: ${job.branch} | ${durationLabel}`,
       );
+
+      const sessionParts = [
+        ...(job.sessionID ? [`Session: ${job.sessionID}`] : []),
+        ...(job.agent ? [`Agent: ${job.agent}`] : []),
+        ...(job.model ? [`Model: ${job.model}`] : []),
+      ];
+      if (sessionParts.length > 0) {
+        lines.push(`  ${sessionParts.join(' | ')}`);
+      }
+
+      const usage = usageByJob.get(job.id);
+      if (usage) {
+        lines.push(`  ${formatUsage(usage)}`);
+      }
     });
 
     lines.push('');
@@ -88,17 +125,16 @@ function formatJobsOutput(grouped: Record<string, Job[]>): string {
   return lines.join('\n');
 }
 
-export const mc_jobs: ToolDefinition = tool({
+export const mc_jobs = {
+  name: 'mc_jobs',
   description: 'List all Mission Control jobs with status',
-  args: {
-    status: tool.schema
-      .enum(['all', 'running', 'completed', 'failed'])
-      .optional()
-      .describe('Filter by status (default: all)'),
-  },
-  async execute(args) {
+  input: z.object({
+    status: z.enum(['all', 'running', 'completed', 'failed']).optional().describe('Filter by status (default: all)'),
+  }).strict(),
+  async execute(args: { status?: 'all' | 'running' | 'completed' | 'failed' }) {
     const state = await loadJobState();
     const grouped = groupJobsByStatus(state.jobs, args.status);
-    return formatJobsOutput(grouped);
+    const usageByJob = await loadUsage(grouped.running);
+    return { content: formatJobsOutput(grouped, usageByJob) };
   },
-});
+};

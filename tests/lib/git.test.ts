@@ -95,6 +95,30 @@ describe('gitCommand', () => {
     expect(result.stdout).not.toMatch(/\s$/);
   });
 
+  it('should return stdout untouched when asked for raw output', async () => {
+    const { writeFileSync } = await import('fs');
+    writeFileSync(join(testRepo, 'new.txt'), 'x');
+
+    const raw = await gitCommand(['status', '--porcelain', '-z'], { cwd: testRepo, raw: true });
+    const trimmed = await gitCommand(['status', '--porcelain'], { cwd: testRepo });
+
+    // NUL-terminated, nothing stripped: column-aligned statuses such as
+    // " M file" keep their leading space.
+    expect(raw.stdout).toBe('?? new.txt\0');
+    expect(trimmed.stdout).toBe('?? new.txt');
+  });
+
+  it('should run with terminal prompts disabled', async () => {
+    // The server has no terminal. A credential prompt would block the command
+    // and, behind the mutex, every other git operation of every project.
+    const result = await gitCommand(
+      ['-c', 'alias.show-prompt-setting=!echo $GIT_TERMINAL_PROMPT', 'show-prompt-setting'],
+      { cwd: testRepo },
+    );
+
+    expect(result.stdout).toBe('0');
+  });
+
   it('should work with cwd option', async () => {
     const result = await gitCommand(['rev-parse', '--show-toplevel'], { cwd: testRepo });
     expect(result.exitCode).toBe(0);

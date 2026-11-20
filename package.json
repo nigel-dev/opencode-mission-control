@@ -3,33 +3,55 @@
   "version": "0.1.0",
   "description": "OpenCode plugin for parallel AI coding sessions in isolated git worktrees",
   "type": "module",
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
   "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "default": "./dist/index.js"
-    }
+    ".": "./src/index.ts",
+    "./tui": "./src/tui.tsx",
+    "./rpc": "./src/rpc.ts"
   },
   "publishConfig": {
     "access": "public",
     "provenance": true
   },
-  "files": ["dist"],
+  "files": [
+    "src"
+  ],
   "scripts": {
-    "build": "bun build ./src/index.ts --outdir ./dist --target bun",
-    "test": "bun test",
-    "release": "semantic-release",
-    "prepublishOnly": "bun run build"
+    "build": "bun build ./src/index.ts ./src/rpc.ts --outdir ./dist --target bun",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test --parallel",
+    "release": "semantic-release"
   },
   "dependencies": {
-    "@opencode-ai/plugin": "^1.0.85",
-    "@opencode-ai/sdk": "^1.1.53",
+    "@opencode/client": "^2.3.0",
+    "@opencode/plugin": "^2.3.0",
     "zod": "^4.3.6"
   },
+  "peerDependencies": {
+    "@opentui/core": ">=0.8.4",
+    "@opentui/solid": ">=0.8.4",
+    "solid-js": ">=1.9.0"
+  },
+  "peerDependenciesMeta": {
+    "@opentui/core": {
+      "optional": true
+    },
+    "@opentui/solid": {
+      "optional": true
+    },
+    "solid-js": {
+      "optional": true
+    }
+  },
   "devDependencies": {
+    "@opencode/theme": "2.3.0",
+    "@opentui/core": "0.8.4",
+    "@opentui/solid": "0.8.4",
     "@types/bun": "latest",
+    "conventional-changelog-conventionalcommits": "^9.3.1",
     "semantic-release": "^25.0.3",
+    "solid-js": "^1.9.0",
     "typescript": "^5.0.0"
   },
   "author": "Nigel Bazzeghin <nbazzeghin@gmail.com>",
@@ -42,10 +64,11 @@
     "opencode",
     "opencode-plugin",
     "worktree",
-    "tmux",
     "parallel",
     "ai-coding",
-    "git"
+    "git",
+    "orchestration",
+    "merge-train"
   ],
   "repository": {
     "type": "git",

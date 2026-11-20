@@ -165,7 +165,6 @@ describe('auto-status hook', () => {
       expect(result).toContain('📊 Mission Control Status');
       expect(result).toContain('Running jobs: 1');
       expect(result).toContain('feature-auth');
-      expect(result).toContain('plan');
     });
 
     it('should format multiple running jobs', async () => {
@@ -194,21 +193,21 @@ describe('auto-status hook', () => {
       expect(result).toContain('refactor-api');
     });
 
-    it('should include job mode in output', async () => {
+    it('should list each job as name and duration, without a mode', async () => {
       const now = new Date().toISOString();
       mockGetRunningJobs.mockResolvedValue([
         {
           id: 'job-1',
           name: 'test-job',
           status: 'running',
-          mode: 'vanilla',
           createdAt: now,
         } as Job,
       ]);
 
       const result = await getAutoStatusMessage();
 
-      expect(result).toContain('vanilla');
+      expect(result).toMatch(/^ {2}• test-job - \d+s$/m);
+      expect(result).not.toContain('(');
     });
 
     it('should calculate duration correctly for recent jobs', async () => {

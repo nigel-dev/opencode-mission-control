@@ -1,45 +1,29 @@
-import { tool, type ToolDefinition } from '@opencode-ai/plugin';
+import { existsSync } from 'fs';
+import { z } from 'zod';
+import { loadPrTemplate } from '../lib/pr-template';
 import { getDefaultBranch } from '../lib/git';
 import { getJobByName, type Job } from '../lib/job-state';
+import { assertToolPermission, type ToolCallContext } from '../lib/job-runtime';
+import { getProjectDirectory } from '../lib/project-context';
 
 export async function executeGhCommand(args: string[]): Promise<string> {
   const proc = Bun.spawn(['gh', 'pr', 'create', ...args], {
+    cwd: getProjectDirectory(),
     stdout: 'pipe',
     stderr: 'pipe',
   });
 
-  const stdout = await new Response(proc.stdout).text();
-  const stderr = await new Response(proc.stderr).text();
-  const exitCode = await proc.exited;
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ]);
 
   if (exitCode !== 0) {
     throw new Error(`gh pr create failed: ${stderr || stdout}`);
   }
 
   return stdout.trim();
-}
-
-async function loadPrTemplate(cwd?: string): Promise<string | null> {
-  const candidates = [
-    '.github/pull_request_template.md',
-    '.github/PULL_REQUEST_TEMPLATE.md',
-    'pull_request_template.md',
-    'PULL_REQUEST_TEMPLATE.md',
-    '.github/PULL_REQUEST_TEMPLATE/pull_request_template.md',
-  ];
-
-  for (const candidate of candidates) {
-    try {
-      const fullPath = cwd ? `${cwd}/${candidate}` : candidate;
-      const file = Bun.file(fullPath);
-      if (await file.exists()) {
-        return await file.text();
-      }
-    } catch {
-      continue;
-    }
-  }
-  return null;
 }
 
 function buildDefaultBody(job: Job): string {
@@ -58,44 +42,44 @@ function buildDefaultBody(job: Job): string {
   ].join('\n');
 }
 
-export const mc_pr: ToolDefinition = tool({
+export const mc_pr = {
+  name: 'mc_pr',
   description: 'Create a pull request from a job\'s branch',
-  args: {
-    name: tool.schema
-      .string()
-      .describe('Job name'),
-    title: tool.schema
-      .string()
-      .optional()
-      .describe('PR title — use Conventional Commits format (e.g. "feat: add login", "fix: resolve timeout"). Defaults to job name.'),
-    body: tool.schema
-      .string()
-      .optional()
-      .describe('PR body (defaults to PR template or generated summary)'),
-    draft: tool.schema
-      .boolean()
-      .optional()
-      .describe('Create as draft PR'),
-    baseBranch: tool.schema
-      .string()
-      .optional()
-      .describe('Target branch for the PR (defaults to the job\'s base branch, or the repo default branch)'),
-  },
-  async execute(args) {
+  input: z.object({
+    name: z.string().describe('Job name'),
+    title: z.string().optional().describe('PR title — use Conventional Commits format (e.g. "feat: add login", "fix: resolve timeout"). Defaults to job name.'),
+    body: z.string().optional().describe('PR body (defaults to PR template or generated summary)'),
+    draft: z.boolean().optional().describe('Create as draft PR'),
+    baseBranch: z.string().optional().describe('Target branch for the PR (defaults to the job\'s base branch, or the repo default branch)'),
+  }).strict(),
+  async execute(
+    args: { name: string; title?: string; body?: string; draft?: boolean; baseBranch?: string },
+    context?: ToolCallContext,
+  ) {
     // 1. Get job by name
     const job = await getJobByName(args.name);
     if (!job) {
       throw new Error(`Job "${args.name}" not found`);
     }
 
+    // Pushing and opening a PR publishes the user's code: ask first.
+    await assertToolPermission(context, 'mission-control.pr', [job.branch]);
+
+    // The job's worktree when it still exists (it has the PR template of the
+    // branch), otherwise the project itself. Never the server's own cwd.
+    const cwd = job.worktreePath && existsSync(job.worktreePath) ? job.worktreePath : getProjectDirectory();
+
     // 2. Push branch to remote before creating PR
     const pushProc = Bun.spawn(['git', 'push', 'origin', job.branch], {
-      cwd: job.worktreePath || undefined,
+      cwd,
       stdout: 'pipe',
       stderr: 'pipe',
     });
-    const pushStderr = await new Response(pushProc.stderr).text();
-    const pushExitCode = await pushProc.exited;
+    const [, pushStderr, pushExitCode] = await Promise.all([
+      new Response(pushProc.stdout).text(),
+      new Response(pushProc.stderr).text(),
+      pushProc.exited,
+    ]);
     if (pushExitCode !== 0) {
       throw new Error(`Failed to push branch "${job.branch}": ${pushStderr}`);
     }
@@ -104,7 +88,7 @@ export const mc_pr: ToolDefinition = tool({
     const prTitle = args.title || job.name;
 
     // 4. Build gh pr create arguments
-    const baseBranch = args.baseBranch ?? job.baseBranch ?? await getDefaultBranch(job.worktreePath);
+    const baseBranch = args.baseBranch ?? job.baseBranch ?? await getDefaultBranch(cwd);
     const ghArgs: string[] = [
       '--title', prTitle,
       '--head', job.branch,
@@ -116,7 +100,7 @@ export const mc_pr: ToolDefinition = tool({
     if (args.body) {
       ghArgs.push('--body', args.body + mcAttribution);
     } else {
-      const template = await loadPrTemplate(job.worktreePath);
+      const template = await loadPrTemplate(cwd);
       if (template) {
         ghArgs.push('--body', template + mcAttribution);
       } else {
@@ -132,6 +116,6 @@ export const mc_pr: ToolDefinition = tool({
     // 7. Execute gh pr create
     const prUrl = await executeGhCommand(ghArgs);
 
-    return prUrl;
+    return { content: prUrl };
   },
-});
+};

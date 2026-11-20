@@ -1,24 +1,18 @@
-import { tool, type ToolDefinition } from '@opencode-ai/plugin';
+import { z } from 'zod';
 import { getJobByName } from '../lib/job-state';
-import {
-  findPendingQuestionByJobName,
-  answerPendingQuestion,
-  getPendingQuestionsForJob,
-} from '../lib/question-relay';
-import { loadConfig } from '../lib/config';
+import { getPendingQuestionsForJob } from '../lib/question-relay';
+import { promptJobSession } from '../lib/job-runtime';
+import { writeReport } from '../lib/reports';
 
-export const mc_answer: ToolDefinition = tool({
+export const mc_answer = {
+  name: 'mc_answer',
   description:
-    'Answer a pending question from a background job. When a serve-mode job\'s agent asks a question via mcp_question, it gets relayed to this session. Use this tool to respond and unblock the agent.',
-  args: {
-    name: tool.schema
-      .string()
-      .describe('Job name that asked the question'),
-    response: tool.schema
-      .string()
-      .describe('Your answer to the question. For option-based questions, provide the option label(s). For open-ended questions, provide your response text.'),
-  },
-  async execute(args) {
+    'Send an answer or further instructions to a running background job. Use this when a job reports it is blocked or needs input: the message is delivered to the job\'s session and resumes it.',
+  input: z.object({
+    name: z.string().describe('Job name to answer'),
+    response: z.string().describe('Your answer or instructions for the job\'s agent.'),
+  }).strict(),
+  async execute(args: { name: string; response: string }) {
     const job = await getJobByName(args.name);
     if (!job) {
       throw new Error(`Job "${args.name}" not found.`);
@@ -28,34 +22,30 @@ export const mc_answer: ToolDefinition = tool({
       throw new Error(`Job "${args.name}" is not running (status: ${job.status}).`);
     }
 
-    if (!job.remoteSessionID || !job.port) {
-      throw new Error(`Job "${args.name}" is not a serve-mode job or missing session info.`);
+    if (!job.sessionID) {
+      throw new Error(`Job "${args.name}" has no session to answer.`);
     }
 
-    const pending = findPendingQuestionByJobName(args.name);
-    if (!pending) {
-      const allForJob = getPendingQuestionsForJob(job.id);
-      if (allForJob.length === 0) {
-        throw new Error(`No pending question found for job "${args.name}". The question may have already been answered or timed out.`);
-      }
+    if (getPendingQuestionsForJob(job.id).length > 0) {
+      throw new Error(
+        `Job "${args.name}" is waiting on an interactive question form, which can only be answered in its own session. Open it with mc_attach(name: "${args.name}").`,
+      );
     }
 
-    const config = await loadConfig();
-    const question = pending ?? {
+    // Deliver the answer first. Only once the session has it may the
+    // "blocked" report be superseded: if the report went first and the prompt
+    // then failed (or a monitor pass ran in between), the job would be idle
+    // without a blocked report and be taken for finished.
+    await promptJobSession(job.sessionID, args.response);
+
+    await writeReport({
       jobId: job.id,
       jobName: job.name,
-      taskSummary: '',
-      partId: 'direct',
-      callID: 'direct',
-      remoteSessionID: job.remoteSessionID,
-      port: job.port,
-      question: '',
-      options: [],
-      detectedAt: Date.now(),
-    };
+      status: 'working',
+      message: 'Answer received',
+      timestamp: new Date().toISOString(),
+    });
 
-    await answerPendingQuestion(question, args.response, config.serverPassword);
-
-    return `Answer sent to job "${args.name}": "${args.response}"`;
+    return { content: `Answer sent to job "${args.name}": "${args.response}"` };
   },
-});
+};

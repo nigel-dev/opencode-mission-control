@@ -3,6 +3,7 @@ import * as jobState from '../../src/lib/job-state';
 import * as planState from '../../src/lib/plan-state';
 import * as reports from '../../src/lib/reports';
 import * as orchestratorSingleton from '../../src/lib/orchestrator-singleton';
+import * as jobRuntime from '../../src/lib/job-runtime';
 
 const { mc_overview } = await import('../../src/tools/overview');
 
@@ -11,6 +12,7 @@ let mockGetRunningJobs: Mock;
 let mockLoadPlan: Mock;
 let mockReadAllReports: Mock;
 let mockGetSharedMonitor: Mock;
+let mockGetJobUsage: Mock;
 
 function createMockJob(overrides?: Partial<jobState.Job>): jobState.Job {
   return {
@@ -18,11 +20,8 @@ function createMockJob(overrides?: Partial<jobState.Job>): jobState.Job {
     name: 'test-job',
     worktreePath: '/tmp/mc-worktrees/test-job',
     branch: 'mc/test-job',
-    tmuxTarget: 'mc-test-job',
-    placement: 'session',
     status: 'running',
     prompt: 'Test prompt',
-    mode: 'vanilla',
     createdAt: new Date(Date.now() - 3600000).toISOString(),
     ...overrides,
   };
@@ -47,6 +46,12 @@ describe('mc_overview', () => {
     mockGetSharedMonitor = vi.spyOn(orchestratorSingleton, 'getSharedMonitor').mockReturnValue({
       getEventAccumulator: vi.fn().mockReturnValue(undefined),
     } as any) as unknown as Mock;
+
+    mockGetJobUsage = vi.spyOn(jobRuntime, 'getJobUsage').mockResolvedValue({
+      cost: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+    }) as unknown as Mock;
   });
 
   describe('tool definition', () => {
@@ -55,7 +60,7 @@ describe('mc_overview', () => {
     });
 
     it('should have no required args', () => {
-      expect(Object.keys(mc_overview.args)).toHaveLength(0);
+      expect(Object.keys(mc_overview.input.shape)).toHaveLength(0);
     });
   });
 
@@ -63,29 +68,29 @@ describe('mc_overview', () => {
     it('should show dashboard header with timestamp', async () => {
       const result = await mc_overview.execute({});
 
-      expect(result).toContain('Mission Control Dashboard');
-      expect(result).toContain('Timestamp:');
+      expect(result.content).toContain('Mission Control Dashboard');
+      expect(result.content).toContain('Timestamp:');
     });
 
     it('should show no active plan', async () => {
       const result = await mc_overview.execute({});
 
-      expect(result).toContain('Active Plan');
-      expect(result).toContain('- None');
+      expect(result.content).toContain('Active Plan');
+      expect(result.content).toContain('- None');
     });
 
     it('should show zero jobs summary', async () => {
       const result = await mc_overview.execute({});
 
-      expect(result).toContain('Jobs Summary');
-      expect(result).toContain('0 running, 0 completed, 0 failed');
+      expect(result.content).toContain('Jobs Summary');
+      expect(result.content).toContain('0 running, 0 completed, 0 failed');
     });
 
     it('should show no running jobs', async () => {
       const result = await mc_overview.execute({});
 
-      expect(result).toContain('Running Jobs');
-      expect(result).toContain('- None');
+      expect(result.content).toContain('Running Jobs');
+      expect(result.content).toContain('- None');
     });
   });
 
@@ -112,8 +117,8 @@ describe('mc_overview', () => {
 
       const result = await mc_overview.execute({});
 
-      expect(result).toContain('serve-job');
-      expect(result).toContain('streaming');
+      expect(result.content).toContain('serve-job');
+      expect(result.content).toContain('streaming');
     });
 
     it('should show serve-mode jobs as idle when no current tool', async () => {
@@ -136,8 +141,8 @@ describe('mc_overview', () => {
 
       const result = await mc_overview.execute({});
 
-      expect(result).toContain('idle-job');
-      expect(result).toContain('idle');
+      expect(result.content).toContain('idle-job');
+      expect(result.content).toContain('idle');
     });
 
     it('should show TUI-mode jobs with report info', async () => {
@@ -161,8 +166,8 @@ describe('mc_overview', () => {
 
       const result = await mc_overview.execute({});
 
-      expect(result).toContain('tui-job');
-      expect(result).toContain('working: Processing files');
+      expect(result.content).toContain('tui-job');
+      expect(result.content).toContain('working: Processing files');
     });
 
     it('should show activity timestamp for serve-mode jobs', async () => {
@@ -187,8 +192,8 @@ describe('mc_overview', () => {
 
       const result = await mc_overview.execute({});
 
-      expect(result).toContain('active-job');
-      expect(result).toContain('streaming');
+      expect(result.content).toContain('active-job');
+      expect(result.content).toContain('streaming');
     });
 
     it('should handle multiple running jobs with mixed modes', async () => {
@@ -232,10 +237,64 @@ describe('mc_overview', () => {
 
       const result = await mc_overview.execute({});
 
-      expect(result).toContain('serve-job');
-      expect(result).toContain('streaming');
-      expect(result).toContain('tui-job');
-      expect(result).toContain('working: Working hard');
+      expect(result.content).toContain('serve-job');
+      expect(result.content).toContain('streaming');
+      expect(result.content).toContain('tui-job');
+      expect(result.content).toContain('working: Working hard');
+    });
+  });
+
+  describe('running job details', () => {
+    it('should show cost and tokens for a running job with a session', async () => {
+      mockGetRunningJobs.mockResolvedValue([
+        createMockJob({ id: 'job-1', name: 'priced-job', sessionID: 'ses_priced' }),
+      ]);
+      mockGetJobUsage.mockResolvedValue({ cost: 0.5, inputTokens: 2000, outputTokens: 300 });
+
+      const result = await mc_overview.execute();
+
+      expect(mockGetJobUsage).toHaveBeenCalledWith('ses_priced');
+      expect(result.content).toContain('$0.5000, 2000 in / 300 out');
+    });
+
+    it('should omit usage when it cannot be read', async () => {
+      mockGetRunningJobs.mockResolvedValue([
+        createMockJob({ id: 'job-1', name: 'priced-job', sessionID: 'ses_priced' }),
+      ]);
+      mockGetJobUsage.mockRejectedValue(new Error('session not found'));
+
+      const result = await mc_overview.execute();
+
+      expect(result.content).toContain('- priced-job | idle | ');
+      expect(result.content).toContain('| mc/test-job | last report: none');
+      expect(result.content).not.toContain('$');
+    });
+
+    it('should not ask for usage of a job without a session', async () => {
+      mockGetRunningJobs.mockResolvedValue([createMockJob({ id: 'job-1', name: 'old-job' })]);
+
+      await mc_overview.execute();
+
+      expect(mockGetJobUsage).not.toHaveBeenCalled();
+    });
+
+    it('should show agent and model when set', async () => {
+      mockGetRunningJobs.mockResolvedValue([
+        createMockJob({ id: 'job-1', name: 'custom-job', agent: 'build', model: 'openai/gpt-5' }),
+      ]);
+
+      const result = await mc_overview.execute();
+
+      expect(result.content).toContain('agent: build');
+      expect(result.content).toContain('model: openai/gpt-5');
+    });
+
+    it('should not mention tmux for running jobs', async () => {
+      mockGetRunningJobs.mockResolvedValue([createMockJob({ id: 'job-1', name: 'plain-job' })]);
+
+      const result = await mc_overview.execute();
+
+      expect(result.content).not.toContain('tmux');
     });
   });
 
@@ -258,11 +317,11 @@ describe('mc_overview', () => {
 
       const result = await mc_overview.execute({});
 
-      expect(result).toContain('Active Plan');
-      expect(result).toContain('Name: test-plan');
-      expect(result).toContain('Status: running');
-      expect(result).toContain('Progress: 1/3 merged');
-      expect(result).toContain('Mode: autopilot');
+      expect(result.content).toContain('Active Plan');
+      expect(result.content).toContain('Name: test-plan');
+      expect(result.content).toContain('Status: running');
+      expect(result.content).toContain('Progress: 1/3 merged');
+      expect(result.content).toContain('Mode: autopilot');
     });
 
     it('should show copilot mode pending plan', async () => {
@@ -279,8 +338,8 @@ describe('mc_overview', () => {
 
       const result = await mc_overview.execute({});
 
-      expect(result).toContain('Mode: copilot');
-      expect(result).toContain('Plan is pending approval');
+      expect(result.content).toContain('Mode: copilot');
+      expect(result.content).toContain('Plan is pending approval');
     });
 
     it('should show supervisor checkpoint', async () => {
@@ -298,7 +357,7 @@ describe('mc_overview', () => {
 
       const result = await mc_overview.execute({});
 
-      expect(result).toContain('Plan paused at pre_merge');
+      expect(result.content).toContain('Plan paused at pre_merge');
     });
   });
 
@@ -316,9 +375,9 @@ describe('mc_overview', () => {
 
       const result = await mc_overview.execute({});
 
-      expect(result).toContain('Alerts');
-      expect(result).toContain('blocked-job [blocked]:');
-      expect(result).toContain('Waiting for user input');
+      expect(result.content).toContain('Alerts');
+      expect(result.content).toContain('blocked-job [blocked]:');
+      expect(result.content).toContain('Waiting for user input');
     });
 
     it('should show needs_review alerts', async () => {
@@ -334,7 +393,7 @@ describe('mc_overview', () => {
 
       const result = await mc_overview.execute({});
 
-      expect(result).toContain('review-job [needs_review]:');
+      expect(result.content).toContain('review-job [needs_review]:');
     });
 
     it('should suggest actions based on job states', async () => {
@@ -364,11 +423,11 @@ describe('mc_overview', () => {
 
       const result = await mc_overview.execute({});
 
-      expect(result).toContain('Suggested Actions');
-      expect(result).toContain('blocked');
-      expect(result).toContain('completed');
-      expect(result).toContain('failed');
-      expect(result).toContain('running');
+      expect(result.content).toContain('Suggested Actions');
+      expect(result.content).toContain('blocked');
+      expect(result.content).toContain('completed');
+      expect(result.content).toContain('failed');
+      expect(result.content).toContain('running');
     });
   });
 
@@ -393,8 +452,8 @@ describe('mc_overview', () => {
 
       const result = await mc_overview.execute({});
 
-      expect(result).toContain('Recent Completions');
-      expect(result).toContain('completed-job');
+      expect(result.content).toContain('Recent Completions');
+      expect(result.content).toContain('completed-job');
     });
 
     it('should show recent failed jobs', async () => {
@@ -413,8 +472,28 @@ describe('mc_overview', () => {
 
       const result = await mc_overview.execute({});
 
-      expect(result).toContain('Recent Failures');
-      expect(result).toContain('failed-job');
+      expect(result.content).toContain('Recent Failures');
+      expect(result.content).toContain('failed-job');
+    });
+
+    it('should say why a job failed', async () => {
+      mockLoadJobState.mockResolvedValue({
+        version: 4,
+        jobs: [
+          createMockJob({
+            id: 'job-1',
+            name: 'failed-job',
+            status: 'failed',
+            completedAt: new Date().toISOString(),
+            failureReason: 'its session ended with an error',
+          }),
+        ],
+        updatedAt: new Date().toISOString(),
+      });
+
+      const result = await mc_overview.execute({});
+
+      expect(result.content).toMatch(/- failed-job \| failed .* \| mc\/\S+ \| its session ended with an error/);
     });
   });
 });

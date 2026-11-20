@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import {
   PermissionPolicy,
+  resolveAgainstWorktree,
   type PermissionPolicyConfig,
 } from '../../src/lib/permission-policy';
 
@@ -187,5 +188,70 @@ describe('PermissionPolicy', () => {
     expect(log[0].policyDecision).toBe('auto-approve');
     expect(log[1].policyDecision).toBe('deny');
     expect(log[1].reason.length).toBeGreaterThan(0);
+  });
+
+  describe('paths', () => {
+    it("resolves a relative path against the worktree, not the process's working directory", () => {
+      expect(resolveAgainstWorktree('src/index.ts', WORKTREE)).toBe('/tmp/project/src/index.ts');
+      expect(resolveAgainstWorktree('./src/index.ts', WORKTREE)).toBe('/tmp/project/src/index.ts');
+      expect(resolveAgainstWorktree('../other/file.ts', WORKTREE)).toBe('/tmp/other/file.ts');
+      expect(resolveAgainstWorktree('/etc/hosts', WORKTREE)).toBe('/etc/hosts');
+    });
+
+    it('expands a home-relative path', () => {
+      const resolved = resolveAgainstWorktree('~/.ssh/id_rsa', WORKTREE);
+
+      expect(resolved.endsWith('/.ssh/id_rsa')).toBe(true);
+      expect(resolved.startsWith('/tmp/project')).toBe(false);
+    });
+
+    it('treats a relative file path as inside the worktree and one that climbs out as outside', () => {
+      const policy = PermissionPolicy.loadPolicy(PermissionPolicy.getDefaultPolicy());
+
+      expect(policy.evaluate({ type: 'file_operation', path: 'src/index.ts' }, { worktreePath: WORKTREE })).toBe(
+        'auto-approve',
+      );
+      expect(policy.evaluate({ type: 'file_operation', path: '../../etc/hosts' }, { worktreePath: WORKTREE })).toBe(
+        'deny',
+      );
+      expect(policy.evaluate({ type: 'file_operation', path: '/tmp/project-evil/x.ts' }, { worktreePath: WORKTREE })).toBe(
+        'deny',
+      );
+    });
+  });
+
+  describe('shell commands', () => {
+    const policy = (): PermissionPolicy => PermissionPolicy.loadPolicy(PermissionPolicy.getDefaultPolicy());
+
+    it('decides a command without a working directory by the rule for commands run from the worktree', () => {
+      const decided = policy();
+
+      expect(decided.evaluate({ type: 'shell_command', command: 'rm -rf /etc' }, { worktreePath: WORKTREE })).toBe(
+        'auto-approve',
+      );
+      expect(decided.getDecisionLog().at(-1)).toMatchObject({
+        permissionType: 'shellCommand',
+        reason: 'Shell command target is inside worktree',
+        target: 'rm -rf /etc',
+      });
+    });
+
+    it('still honours an explicit working directory outside the worktree', () => {
+      expect(
+        policy().evaluate({ type: 'shell_command', command: 'ls', path: '/var/log' }, { worktreePath: WORKTREE }),
+      ).toBe('ask-user');
+    });
+
+    it('recognizes a package install from the command line itself', () => {
+      const decided = policy();
+
+      expect(
+        decided.evaluate(
+          { type: 'shell_command', command: 'bun add left-pad', description: 'Run a command', action: 'bash' },
+          { worktreePath: WORKTREE },
+        ),
+      ).toBe('ask-user');
+      expect(decided.getDecisionLog().at(-1)?.permissionType).toBe('installPackages');
+    });
   });
 });

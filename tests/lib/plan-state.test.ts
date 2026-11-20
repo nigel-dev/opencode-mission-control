@@ -11,7 +11,6 @@ const paths = await import('../../src/lib/paths');
 const {
   loadPlan,
   savePlan,
-  getActivePlan,
   updatePlanJob,
   updatePlanFields,
   clearPlan,
@@ -83,6 +82,40 @@ describe('plan-state', () => {
       expect(loaded!.id).toBe('plan-1');
       expect(loaded!.name).toBe('Test Plan');
     });
+
+    it('keeps the base branch, the plan model and the checkpoint reason through a save and a load', async () => {
+      // The schema strips keys it does not know: a missing entry silently
+      // loses the field, and the plan PR then targets the default branch.
+      await savePlan(
+        makePlan({
+          baseBranch: 'develop',
+          model: 'anthropic/claude-sonnet-4',
+          status: 'paused',
+          checkpoint: 'on_error',
+          checkpointContext: { jobName: 'fix-login', failureKind: 'launch_failed', reason: 'Invalid model "x"' },
+        }),
+      );
+
+      const loaded = await loadPlan();
+
+      expect(loaded).toMatchObject({
+        baseBranch: 'develop',
+        model: 'anthropic/claude-sonnet-4',
+        checkpointContext: { jobName: 'fix-login', failureKind: 'launch_failed', reason: 'Invalid model "x"' },
+      });
+    });
+
+    it('loads a checkpoint for uncommitted changes', async () => {
+      await savePlan(
+        makePlan({
+          status: 'paused',
+          checkpoint: 'on_error',
+          checkpointContext: { jobName: 'fix-login', failureKind: 'uncommitted_changes' },
+        }),
+      );
+
+      expect((await loadPlan())?.checkpointContext?.failureKind).toBe('uncommitted_changes');
+    });
   });
 
   describe('savePlan', () => {
@@ -152,22 +185,6 @@ describe('plan-state', () => {
       const file = Bun.file(getPlanFile());
       const saved = JSON.parse(await file.text());
       expect(saved.ghAuthenticated).toBe(false);
-    });
-  });
-
-  describe('getActivePlan', () => {
-    it('returns null when no plan exists', async () => {
-      const plan = await getActivePlan();
-      expect(plan).toBeNull();
-    });
-
-    it('returns plan when it exists', async () => {
-      const testPlan = makePlan();
-      await Bun.write(getPlanFile(), JSON.stringify(testPlan));
-
-      const plan = await getActivePlan();
-      expect(plan).not.toBeNull();
-      expect(plan!.id).toBe('plan-1');
     });
   });
 
@@ -320,6 +337,36 @@ describe('plan-state', () => {
         jobName: 'bad-job',
         failureKind: 'job_failed',
       });
+    });
+  });
+
+  describe('change events', () => {
+    it('announces every plan write', async () => {
+      const rpcEvents = await import('../../src/lib/rpc-events');
+      const emitChanged = vi.spyOn(rpcEvents, 'emitChanged').mockImplementation(() => {});
+
+      await savePlan(makePlan({ jobs: [makeJob()] }));
+      expect(emitChanged).toHaveBeenCalledTimes(1);
+
+      await updatePlanJob('plan-1', 'fix-login', { status: 'running' });
+      expect(emitChanged).toHaveBeenCalledTimes(2);
+
+      await updatePlanFields('plan-1', { status: 'paused', checkpoint: 'pre_merge' });
+      expect(emitChanged).toHaveBeenCalledTimes(3);
+
+      await clearPlan();
+      expect(emitChanged).toHaveBeenCalledTimes(4);
+      expect(emitChanged).toHaveBeenLastCalledWith('plan');
+    });
+
+    it('does not announce reads or failed writes', async () => {
+      const rpcEvents = await import('../../src/lib/rpc-events');
+      const emitChanged = vi.spyOn(rpcEvents, 'emitChanged').mockImplementation(() => {});
+
+      await loadPlan();
+      await expect(updatePlanJob('plan-1', 'missing', { status: 'running' })).rejects.toThrow();
+
+      expect(emitChanged).not.toHaveBeenCalled();
     });
   });
 

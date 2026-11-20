@@ -1,3 +1,4 @@
+import * as fs from 'fs';
 import { join } from 'path';
 import { z } from 'zod';
 import { getDataDir } from './paths';
@@ -5,7 +6,8 @@ import { GitMutex } from './git-mutex';
 import type { PlanSpec, JobSpec, CheckpointContext } from './plan-types';
 import { isValidPlanTransition, isValidJobTransition } from './plan-types';
 import { PlanSpecSchema } from './schemas';
-import { atomicWrite } from './utils';
+import { atomicWrite, readFileIfExists } from './utils';
+import { emitChanged } from './rpc-events';
 
 const PLAN_FILE = 'plan.json';
 
@@ -20,15 +22,12 @@ async function getPlanFilePath(): Promise<string> {
 
 export async function loadPlan(): Promise<PlanSpec | null> {
   const filePath = await getPlanFilePath();
-  const file = Bun.file(filePath);
-  const exists = await file.exists();
-
-  if (!exists) {
+  const content = readFileIfExists(filePath);
+  if (content === null) {
     return null;
   }
 
   try {
-    const content = await file.text();
     const parsed = JSON.parse(content);
     return PlanSpecSchema.parse(parsed);
   } catch (error) {
@@ -63,11 +62,9 @@ export async function savePlan(plan: PlanSpec): Promise<void> {
     } catch (error) {
       throw new Error(`Failed to save plan state to ${filePath}: ${error}`);
     }
+    // Plan and plan-job status, checkpoints and the PR URL all pass through here.
+    emitChanged('plan');
   });
-}
-
-export async function getActivePlan(): Promise<PlanSpec | null> {
-  return loadPlan();
 }
 
 export async function updatePlanJob(
@@ -111,6 +108,8 @@ export async function updatePlanJob(
     } catch (error) {
       throw new Error(`Failed to save plan state to ${filePath}: ${error}`);
     }
+    // Plan and plan-job status, checkpoints and the PR URL all pass through here.
+    emitChanged('plan');
   });
 }
 
@@ -121,6 +120,9 @@ export interface PlanFieldUpdates {
   completedAt?: string;
   prUrl?: string;
   auditLog?: PlanSpec['auditLog'];
+  approvedMergeJobs?: string[];
+  approvedPrePr?: boolean;
+  failureReason?: string;
 }
 
 /**
@@ -166,6 +168,15 @@ export async function updatePlanFields(
     if (updates.prUrl !== undefined) {
       plan.prUrl = updates.prUrl;
     }
+    if (updates.approvedMergeJobs !== undefined) {
+      plan.approvedMergeJobs = updates.approvedMergeJobs;
+    }
+    if (updates.failureReason !== undefined) {
+      plan.failureReason = updates.failureReason;
+    }
+    if (updates.approvedPrePr !== undefined) {
+      plan.approvedPrePr = updates.approvedPrePr;
+    }
 
     const ghAuthenticated = await validateGhAuth();
     const planToSave = { ...plan, ghAuthenticated };
@@ -177,16 +188,18 @@ export async function updatePlanFields(
     } catch (error) {
       throw new Error(`Failed to save plan state to ${filePath}: ${error}`);
     }
+    // Plan and plan-job status, checkpoints and the PR URL all pass through here.
+    emitChanged('plan');
   });
 }
 
 export async function clearPlan(): Promise<void> {
   await planMutex.withLock(async () => {
     const filePath = await getPlanFilePath();
-    const fs = await import('fs');
     if (fs.existsSync(filePath)) {
       fs.unlinkSync(filePath);
     }
+    emitChanged('plan');
   });
 }
 
@@ -199,6 +212,7 @@ export async function validateGhAuth(): Promise<boolean> {
     const exitCode = await proc.exited;
     return exitCode === 0;
   } catch {
+    // `gh` is not installed: the same as not being signed in.
     return false;
   }
 }

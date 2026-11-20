@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import type { JobSpec } from '../../src/lib/plan-types';
 import { MergeTrain, checkMergeability, detectInstallCommand, detectTestCommand, validateTouchSet } from '../../src/lib/merge-train';
-import * as sdkClientMod from '../../src/lib/sdk-client';
+import * as jobRuntimeMod from '../../src/lib/job-runtime';
 
 type TestRepo = {
   rootDir: string;
@@ -65,7 +65,9 @@ async function setupRepo(): Promise<TestRepo> {
 
   writeFileSync(
     join(repoDir, 'package.json'),
-    JSON.stringify({ scripts: { test: 'true' } }, null, 2),
+    // The package manager decides how the test script is run; bun is the one
+    // every machine that runs this suite has.
+    JSON.stringify({ packageManager: 'bun@1.0.0', scripts: { test: 'true' } }, null, 2),
   );
   writeFileSync(join(repoDir, '.gitignore'), 'node_modules\n');
   writeFileSync(join(repoDir, 'base.txt'), 'base\n');
@@ -116,7 +118,8 @@ describe('MergeTrain', () => {
     expect(result.success).toBe(true);
     if (result.success) {
       expect(result.testReport.status).toBe('passed');
-      expect(result.testReport.command).toBe('true');
+      // The script runs through the package manager, not as raw shell text.
+      expect(result.testReport.command).toBe('bun run test');
       expect(result.testReport.setup.status).toBe('skipped');
     }
     const status = await mustExec(
@@ -125,6 +128,27 @@ describe('MergeTrain', () => {
     );
     expect(status).toBe('');
   });
+
+  it.each(['squash', 'ff-only'] as const)(
+    'merges a job with no tracked changes as a no-op (%s)',
+    async (mergeStrategy) => {
+      // The job's work went to ignored files only: its branch has no changes.
+      await mustExec(['git', 'branch', 'nothing-tracked', 'main'], testRepo.repoDir);
+      const headBefore = await mustExec(['git', 'rev-parse', 'HEAD'], testRepo.integrationWorktree);
+
+      const train = new MergeTrain(testRepo.integrationWorktree, { mergeStrategy });
+      train.enqueue(makeJob('nothing-tracked'));
+      const result = await train.processNext();
+
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.testReport.status).toBe('skipped');
+        expect(result.testReport.reason).toContain('no tracked changes');
+      }
+      expect(await mustExec(['git', 'rev-parse', 'HEAD'], testRepo.integrationWorktree)).toBe(headBefore);
+      expect(await mustExec(['git', 'status', '--porcelain'], testRepo.integrationWorktree)).toBe('');
+    },
+  );
 
   it('sequentially merges two non-conflicting jobs in FIFO order', async () => {
     await createBranchCommit(testRepo.repoDir, 'feature-a', 'a.txt', 'a\n');
@@ -188,14 +212,63 @@ describe('MergeTrain', () => {
     expect(status).toBe('');
   });
 
-  it('detects test command from package.json', async () => {
+  it('runs the test script through the package manager instead of executing its text', async () => {
     writeFileSync(
       join(testRepo.integrationWorktree, 'package.json'),
-      JSON.stringify({ scripts: { test: 'bun test tests/smoke.test.ts' } }, null, 2),
+      JSON.stringify({ packageManager: 'bun@1.0.0', scripts: { test: 'vitest run' } }, null, 2),
     );
 
     const command = await detectTestCommand(testRepo.integrationWorktree);
-    expect(command).toBe('bun test tests/smoke.test.ts');
+    expect(command).toBe('bun run test');
+  });
+
+  it.each([
+    ['bun.lock', 'bun run test'],
+    ['bun.lockb', 'bun run test'],
+    ['pnpm-lock.yaml', 'pnpm test'],
+    ['yarn.lock', 'yarn test'],
+    ['package-lock.json', 'npm test'],
+    ['npm-shrinkwrap.json', 'npm test'],
+  ])('chooses the package manager from %s', async (lockfile, expected) => {
+    writeFileSync(
+      join(testRepo.integrationWorktree, 'package.json'),
+      // The lockfile wins over a `packageManager` field that disagrees.
+      JSON.stringify({ packageManager: 'bun@1.0.0', scripts: { test: 'jest' } }, null, 2),
+    );
+    if (lockfile.startsWith('bun.')) {
+      writeFileSync(
+        join(testRepo.integrationWorktree, 'package.json'),
+        JSON.stringify({ packageManager: 'npm@10.0.0', scripts: { test: 'jest' } }, null, 2),
+      );
+    }
+    writeFileSync(join(testRepo.integrationWorktree, lockfile), '');
+
+    expect(await detectTestCommand(testRepo.integrationWorktree)).toBe(expected);
+  });
+
+  it('falls back to the packageManager field, then to npm', async () => {
+    writeFileSync(
+      join(testRepo.integrationWorktree, 'package.json'),
+      JSON.stringify({ packageManager: 'pnpm@9.0.0', scripts: { test: 'jest' } }, null, 2),
+    );
+    expect(await detectTestCommand(testRepo.integrationWorktree)).toBe('pnpm test');
+
+    writeFileSync(
+      join(testRepo.integrationWorktree, 'package.json'),
+      JSON.stringify({ scripts: { test: 'jest' } }, null, 2),
+    );
+    expect(await detectTestCommand(testRepo.integrationWorktree)).toBe('npm test');
+  });
+
+  it('detects no test command without a test script', async () => {
+    writeFileSync(
+      join(testRepo.integrationWorktree, 'package.json'),
+      JSON.stringify({ packageManager: 'bun@1.0.0', scripts: { build: 'tsc' } }, null, 2),
+    );
+    expect(await detectTestCommand(testRepo.integrationWorktree)).toBeNull();
+
+    rmSync(join(testRepo.integrationWorktree, 'package.json'));
+    expect(await detectTestCommand(testRepo.integrationWorktree)).toBeNull();
   });
 
   it('detects install command from lockfile', async () => {
@@ -331,7 +404,7 @@ describe('MergeTrain', () => {
 
     writeFileSync(
       join(testRepo.integrationWorktree, 'package.json'),
-      JSON.stringify({ scripts: { test: 'false' } }, null, 2),
+      JSON.stringify({ packageManager: 'bun@1.0.0', scripts: { test: 'false' } }, null, 2),
     );
 
     const headBefore = await mustExec(
@@ -347,7 +420,7 @@ describe('MergeTrain', () => {
     if (!result.success) {
       expect(result.type).toBe('test_failure');
       expect(result.testReport?.status).toBe('failed');
-      expect(result.testReport?.command).toBe('false');
+      expect(result.testReport?.command).toBe('bun run test');
     }
 
     const headAfter = await mustExec(
@@ -386,7 +459,56 @@ describe('MergeTrain', () => {
     expect(headAfter).toBe(headBefore);
   });
 
-  it('processAll processes entire queue', async () => {
+  it('kills everything a timed out test command started, not just the shell', async () => {
+    await createBranchCommit(testRepo.repoDir, 'feature-group', 'group.txt', 'group\n');
+
+    const train = new MergeTrain(testRepo.integrationWorktree, {
+      // The background child keeps the output pipe open. Killing only `sh`
+      // would leave it running and this call waiting for it.
+      testCommand: '(sleep 20; echo late) & wait',
+      testTimeout: 200,
+    });
+
+    train.enqueue(makeJob('feature-group'));
+    const startedAt = Date.now();
+    const result = await train.processNext();
+
+    expect(Date.now() - startedAt).toBeLessThan(5000);
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.output).toContain('timed out');
+    }
+  }, 15000);
+
+  it('stop() aborts a running test, rolls the merge back and refuses new jobs', async () => {
+    await createBranchCommit(testRepo.repoDir, 'feature-stop', 'stop.txt', 'stop\n');
+
+    const headBefore = await mustExec(['git', 'rev-parse', 'HEAD'], testRepo.integrationWorktree);
+
+    const train = new MergeTrain(testRepo.integrationWorktree, {
+      testCommand: 'sleep 20',
+      testTimeout: 60000,
+    });
+    train.enqueue(makeJob('feature-stop'));
+
+    const startedAt = Date.now();
+    const pending = train.processNext();
+    setTimeout(() => train.stop(), 300);
+    const result = await pending;
+
+    expect(Date.now() - startedAt).toBeLessThan(5000);
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.output).toContain('stopped');
+    }
+    expect(await mustExec(['git', 'rev-parse', 'HEAD'], testRepo.integrationWorktree)).toBe(headBefore);
+
+    expect(train.stopped).toBe(true);
+    train.enqueue(makeJob('feature-after-stop'));
+    expect(train.getQueue()).toHaveLength(0);
+  }, 15000);
+
+  it('processes the queue job by job in FIFO order', async () => {
     await createBranchCommit(testRepo.repoDir, 'feature-all-1', 'all-1.txt', 'all-1\n');
     await createBranchCommit(testRepo.repoDir, 'feature-all-2', 'all-2.txt', 'all-2\n');
 
@@ -394,12 +516,13 @@ describe('MergeTrain', () => {
     train.enqueue(makeJob('feature-all-1'));
     train.enqueue(makeJob('feature-all-2'));
 
-    const results = await train.processAll();
+    expect(train.getQueue().map((job) => job.branch)).toEqual(['feature-all-1', 'feature-all-2']);
+    const first = await train.processNext();
+    expect(train.getQueue().map((job) => job.branch)).toEqual(['feature-all-2']);
+    const second = await train.processNext();
 
-    expect(results.length).toBe(2);
-    expect(results[0].job.branch).toBe('feature-all-1');
-    expect(results[1].job.branch).toBe('feature-all-2');
-    expect(results.every((entry) => entry.result.success)).toBe(true);
+    expect(first.success).toBe(true);
+    expect(second.success).toBe(true);
     expect(train.getQueue().length).toBe(0);
   });
 
@@ -533,15 +656,13 @@ describe('fix-before-rollback', () => {
     mock.restore();
   });
 
-  it('serve-mode job: prompts agent on test failure and retests', async () => {
+  it('job with a session: prompts agent on test failure and retests', async () => {
     await createBranchCommit(testRepo.repoDir, 'feature-fix', 'fix.txt', 'fix\n');
 
     const marker = join(testRepo.integrationWorktree, '.retest-pass');
     const testScript = `test -f '${marker}'`;
 
-    const mockClient = { session: {} };
-    spyOn(sdkClientMod, 'waitForServer').mockResolvedValue(mockClient as any);
-    spyOn(sdkClientMod, 'sendPrompt').mockImplementation(async () => {
+    spyOn(jobRuntimeMod, 'promptJobSession').mockImplementation(async () => {
       writeFileSync(marker, 'fixed');
     });
 
@@ -551,22 +672,20 @@ describe('fix-before-rollback', () => {
       fixBeforeRollbackTimeout: 10,
     });
     const job = makeJob('feature-fix');
-    job.port = 14100;
-    job.launchSessionID = 'session-abc';
+    job.sessionID = 'ses_job';
     train.enqueue(job);
 
     const result = await train.processNext();
 
     expect(result.success).toBe(true);
-    expect(sdkClientMod.waitForServer).toHaveBeenCalledWith(14100, { timeoutMs: 10000 });
-    expect(sdkClientMod.sendPrompt).toHaveBeenCalledWith(
-      mockClient,
-      'session-abc',
+    expect(jobRuntimeMod.promptJobSession).toHaveBeenCalledTimes(1);
+    expect(jobRuntimeMod.promptJobSession).toHaveBeenCalledWith(
+      'ses_job',
       expect.stringContaining('Test Failure in Merge Train'),
     );
   });
 
-  it('serve-mode job: rolls back when retest also fails', async () => {
+  it('job with a session: rolls back when retest also fails', async () => {
     await createBranchCommit(testRepo.repoDir, 'feature-still-broken', 'broken.txt', 'broken\n');
 
     const headBefore = await mustExec(
@@ -574,9 +693,7 @@ describe('fix-before-rollback', () => {
       testRepo.integrationWorktree,
     );
 
-    const mockClient = { session: {} };
-    spyOn(sdkClientMod, 'waitForServer').mockResolvedValue(mockClient as any);
-    spyOn(sdkClientMod, 'sendPrompt').mockResolvedValue();
+    spyOn(jobRuntimeMod, 'promptJobSession').mockResolvedValue();
 
     const train = new MergeTrain(testRepo.integrationWorktree, {
       testCommand: 'false',
@@ -584,8 +701,7 @@ describe('fix-before-rollback', () => {
       fixBeforeRollbackTimeout: 10,
     });
     const job = makeJob('feature-still-broken');
-    job.port = 14100;
-    job.launchSessionID = 'session-abc';
+    job.sessionID = 'ses_job';
     train.enqueue(job);
 
     const result = await train.processNext();
@@ -602,7 +718,7 @@ describe('fix-before-rollback', () => {
     expect(headAfter).toBe(headBefore);
   });
 
-  it('TUI-mode job (no port): immediately rolls back without prompting', async () => {
+  it('job without a session: immediately rolls back without prompting', async () => {
     await createBranchCommit(testRepo.repoDir, 'feature-tui-fail', 'tui.txt', 'tui\n');
 
     const headBefore = await mustExec(
@@ -610,7 +726,7 @@ describe('fix-before-rollback', () => {
       testRepo.integrationWorktree,
     );
 
-    const waitSpy = spyOn(sdkClientMod, 'waitForServer');
+    const promptSpy = spyOn(jobRuntimeMod, 'promptJobSession');
 
     const train = new MergeTrain(testRepo.integrationWorktree, {
       testCommand: 'false',
@@ -625,7 +741,7 @@ describe('fix-before-rollback', () => {
     if (!result.success) {
       expect(result.type).toBe('test_failure');
     }
-    expect(waitSpy).not.toHaveBeenCalled();
+    expect(promptSpy).not.toHaveBeenCalled();
 
     const headAfter = await mustExec(
       ['git', 'rev-parse', 'HEAD'],
@@ -634,7 +750,7 @@ describe('fix-before-rollback', () => {
     expect(headAfter).toBe(headBefore);
   });
 
-  it('serve-mode job: falls through to rollback when SDK connection fails', async () => {
+  it('job with a session: falls through to rollback when the prompt fails', async () => {
     await createBranchCommit(testRepo.repoDir, 'feature-sdk-fail', 'sdk.txt', 'sdk\n');
 
     const headBefore = await mustExec(
@@ -642,7 +758,8 @@ describe('fix-before-rollback', () => {
       testRepo.integrationWorktree,
     );
 
-    spyOn(sdkClientMod, 'waitForServer').mockRejectedValue(new Error('connection refused'));
+    const promptSpy = spyOn(jobRuntimeMod, 'promptJobSession').mockRejectedValue(new Error('session not found'));
+    spyOn(console, 'warn').mockImplementation(() => {});
 
     const train = new MergeTrain(testRepo.integrationWorktree, {
       testCommand: 'false',
@@ -650,12 +767,12 @@ describe('fix-before-rollback', () => {
       fixBeforeRollbackTimeout: 10,
     });
     const job = makeJob('feature-sdk-fail');
-    job.port = 14100;
-    job.launchSessionID = 'session-abc';
+    job.sessionID = 'ses_job';
     train.enqueue(job);
 
     const result = await train.processNext();
 
+    expect(promptSpy).toHaveBeenCalledTimes(1);
     expect(result.success).toBe(false);
     if (!result.success) {
       expect(result.type).toBe('test_failure');
@@ -668,12 +785,10 @@ describe('fix-before-rollback', () => {
     expect(headAfter).toBe(headBefore);
   });
 
-  it('serve-mode job: prompt includes job name and test output', async () => {
+  it('job with a session: prompt includes job name and test output', async () => {
     await createBranchCommit(testRepo.repoDir, 'feature-prompt-check', 'check.txt', 'check\n');
 
-    const mockClient = { session: {} };
-    spyOn(sdkClientMod, 'waitForServer').mockResolvedValue(mockClient as any);
-    const sendSpy = spyOn(sdkClientMod, 'sendPrompt').mockResolvedValue();
+    const sendSpy = spyOn(jobRuntimeMod, 'promptJobSession').mockResolvedValue();
 
     const train = new MergeTrain(testRepo.integrationWorktree, {
       testCommand: 'echo "assertion failed: expected 3 got 4" && false',
@@ -681,19 +796,19 @@ describe('fix-before-rollback', () => {
       fixBeforeRollbackTimeout: 10,
     });
     const job = makeJob('feature-prompt-check');
-    job.port = 14100;
-    job.launchSessionID = 'session-abc';
+    job.sessionID = 'ses_job';
     train.enqueue(job);
 
     await train.processNext();
 
     expect(sendSpy).toHaveBeenCalledTimes(1);
-    const promptArg = sendSpy.mock.calls[0][2];
+    expect(sendSpy.mock.calls[0][0]).toBe('ses_job');
+    const promptArg = sendSpy.mock.calls[0][1];
     expect(promptArg).toContain('feature-prompt-check');
     expect(promptArg).toContain('assertion failed');
   });
 
-  it('serve-mode job: does not prompt when launchSessionID is missing', async () => {
+  it('does not prompt when fixBeforeRollbackTimeout is 0', async () => {
     await createBranchCommit(testRepo.repoDir, 'feature-no-session', 'ns.txt', 'ns\n');
 
     const headBefore = await mustExec(
@@ -701,21 +816,21 @@ describe('fix-before-rollback', () => {
       testRepo.integrationWorktree,
     );
 
-    const waitSpy = spyOn(sdkClientMod, 'waitForServer');
+    const promptSpy = spyOn(jobRuntimeMod, 'promptJobSession');
 
     const train = new MergeTrain(testRepo.integrationWorktree, {
       testCommand: 'false',
       testTimeout: 10000,
-      fixBeforeRollbackTimeout: 10,
+      fixBeforeRollbackTimeout: 0,
     });
     const job = makeJob('feature-no-session');
-    job.port = 14100;
+    job.sessionID = 'ses_job';
     train.enqueue(job);
 
     const result = await train.processNext();
 
     expect(result.success).toBe(false);
-    expect(waitSpy).not.toHaveBeenCalled();
+    expect(promptSpy).not.toHaveBeenCalled();
 
     const headAfter = await mustExec(
       ['git', 'rev-parse', 'HEAD'],

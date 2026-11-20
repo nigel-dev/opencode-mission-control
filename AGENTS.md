@@ -12,9 +12,14 @@ Guide for coding agents working on `opencode-mission-control` in ULW mode.
 
 ## Fast Project Map
 
-- `src/index.ts` - plugin entry point, registers tools/hooks/commands.
+- `src/index.ts` - server part entry point, registers tools/hooks/commands.
+- `src/tui.tsx` - TUI part (loaded by the same plugin entry; pure logic in `src/tui/*.ts`, views in `src/tui/views.tsx`); `src/rpc.ts` - RPC contract between the two parts.
 - `src/tools/` - one file per MCP tool (`launch`, `merge`, `plan`, etc.).
-- `src/lib/` - shared core logic (worktrees, tmux, monitor, orchestrator, merge train).
+- `src/lib/` - shared core logic (worktrees, monitor, orchestrator, merge train).
+  - `src/lib/orchestrator-singleton.ts` - the one live orchestrator per project (`replaceSharedOrchestrator`); never construct an `Orchestrator` in a tool.
+  - `src/lib/job-runtime.ts` - jobs as native OpenCode sessions (create, prompt, stop, remove, read).
+  - `src/lib/job-launcher.ts` - `launchJob`, the single launch path for `mc_launch` and plans.
+  - `src/lib/project-context.ts` - per-project async context (`runInProject`, `bindToProject`, `bindToDirectory`).
 - `src/hooks/` - OpenCode lifecycle hooks.
 - `tests/` - Bun test suite.
 
@@ -25,14 +30,18 @@ Guide for coding agents working on `opencode-mission-control` in ULW mode.
 3. Never use `as any`, `@ts-ignore`, or silent catch blocks.
 4. Keep file ownership boundaries intact (tool logic in `src/tools`, shared logic in `src/lib`).
 5. Do not commit unless explicitly asked.
+6. Code runs in a shared server process: never rely on `process.cwd()`. Use the project context (`getProjectDirectory()`), and bind every callback handed to the host (tools, commands, hooks) with `bindToProject` / `bindToDirectory`.
+7. Never use dynamic `import()` in `src/` — it drops the project context in the OpenCode runtime.
+8. Each location (the project, every job worktree) loads its own copy of the plugin's modules: module state is never shared between the command center and a job's instance. A plugin context also reaches only its own location, so act on a job's permission requests from the job worktree's instance (see `src/lib/job-permissions.ts`), and pass anything else between instances through files.
 
 ## Build and Verify
 
 Run these before marking work complete:
 
 ```bash
+bun run typecheck
 bun run build
-bun test
+bun run test
 ```
 
 If tests fail, identify whether failures are pre-existing vs introduced by your change.
@@ -41,12 +50,12 @@ If tests fail, identify whether failures are pre-existing vs introduced by your 
 
 - The operational manual E2E flow is in `MANUAL_TEST_PLAN.md`.
 - For fast validation after changes, run the **Quick Smoke Test** section first.
-- Use the **Nuclear Cleanup** sequence before and after manual testing to avoid leftover tmux sessions, worktrees, branches, and state files.
+- Use the **Nuclear Cleanup** sequence before and after manual testing to avoid leftover job sessions, worktrees, branches, and state files.
 - Follow plan safety rules exactly: `tmc-` test naming, no remote push flows during testing (`mc_pr` is structural only), and explicit SHA-based resets.
 
 ## CI & GitHub Workflows
 
-- **CI** (`.github/workflows/ci.yml`) — Runs `bun run build` and `bun test` on PRs and pushes to `main`.
+- **CI** (`.github/workflows/ci.yml`) — Runs `bun run build`, `bun run typecheck` and then `bun test` once per test file on PRs and pushes to `main`.
 - **Conventional Commits** (`.github/workflows/conventional-commits.yml`) — Validates PR titles follow the convention.
 - **CodeQL** (`.github/workflows/codeql.yml`) — Static analysis for TypeScript; runs on PRs, pushes to `main`, and weekly.
 - **Publish** (`.github/workflows/publish.yml`) — semantic-release to npm on `main`.
@@ -61,10 +70,10 @@ If tests fail, identify whether failures are pre-existing vs introduced by your 
 
 ## Release Notes for Agents
 
-- npm package output is `dist/` only (`package.json -> files`).
+- The npm package ships `src/` (`package.json -> files`); OpenCode loads the server part, the TUI part and the RPC contract from there (`package.json -> exports`). `bun run build` only checks that the server part bundles.
 - Automated release path is semantic-release via `.github/workflows/publish.yml` on `main`.
 - Required secret for release workflow: `NPM_TOKEN`.
-- Use Conventional Commits (`feat:`, `fix:`, `perf:`, `chore:`) so semantic versioning can compute releases.
+- Use Conventional Commits (`feat:`, `fix:`, `perf:`, `chore:`) so semantic versioning can compute releases. A breaking change is `!` after the type (`feat!:`) or a `BREAKING CHANGE:` footer; both produce a major release (`.releaserc.json` uses the `conventionalcommits` preset, checked by `tests/release-config.test.ts`).
 
 ## Collaboration Norms
 

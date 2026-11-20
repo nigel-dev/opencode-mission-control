@@ -6,6 +6,7 @@
 
 import { spawn } from 'bun';
 import mutex from './git-mutex';
+import { getProjectDirectory } from './project-context';
 
 /**
  * Execute a git command with mutex protection.
@@ -17,13 +18,22 @@ import mutex from './git-mutex';
  */
 export async function gitCommand(
   args: string[],
-  opts?: { cwd?: string },
+  opts?: {
+    cwd?: string;
+    /** Return stdout exactly as git wrote it (for NUL-separated or column-aligned output). */
+    raw?: boolean;
+  },
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+  // Resolve before queueing: the lock may be released from another project's context.
+  const cwd = opts?.cwd ?? getProjectDirectory();
   return mutex.withLock(async () => {
     const proc = spawn(['git', ...args], {
-      cwd: opts?.cwd,
+      cwd,
       stdout: 'pipe',
       stderr: 'pipe',
+      // The server has no terminal: a credential prompt would block this
+      // command, and with it every git operation queued behind the mutex.
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
     });
 
     const [stdout, stderr] = await Promise.all([
@@ -33,7 +43,7 @@ export async function gitCommand(
     const exitCode = await proc.exited;
 
     return {
-      stdout: stdout.trim(),
+      stdout: opts?.raw ? stdout : stdout.trim(),
       stderr: stderr.trim(),
       exitCode,
     };

@@ -1,3 +1,4 @@
+import { homedir } from 'os';
 import { resolve } from 'path';
 
 export type PermissionPolicyDecision = 'auto-approve' | 'deny' | 'ask-user';
@@ -23,6 +24,8 @@ export type PermissionPolicyRequest = {
   description?: string;
   action?: string;
   target?: string;
+  /** The command line of a shell request. */
+  command?: string;
 };
 
 export type PermissionJobContext = {
@@ -44,13 +47,19 @@ export type PermissionPolicySources = {
   globalPolicy?: PermissionPolicyConfig;
 };
 
-function normalizePathForComparison(path: string): string {
-  return resolve(path).replace(/\\/g, '/');
+/**
+ * Make a path from a permission request absolute. A job's tools run in its
+ * worktree, so a relative path is relative to the worktree — never to the
+ * server's working directory, which is unrelated to any project.
+ */
+export function resolveAgainstWorktree(path: string, worktreePath: string): string {
+  const expanded = path === '~' || path.startsWith('~/') ? `${homedir()}${path.slice(1)}` : path;
+  return resolve(worktreePath, expanded).replace(/\\/g, '/');
 }
 
 function isInsideWorktree(path: string, worktreePath: string): boolean {
-  const normalizedPath = normalizePathForComparison(path);
-  const normalizedWorktree = normalizePathForComparison(worktreePath);
+  const normalizedWorktree = resolve(worktreePath).replace(/\\/g, '/');
+  const normalizedPath = resolveAgainstWorktree(path, normalizedWorktree);
 
   if (normalizedPath === normalizedWorktree) {
     return true;
@@ -135,8 +144,12 @@ export class PermissionPolicy {
       }
 
       case 'shellCommand': {
-        const targetPath = permissionRequest.path ?? jobContext.worktreePath;
-        const inWorktree = isInsideWorktree(targetPath, jobContext.worktreePath);
+        // A job's shell runs in its worktree, and what a command line touches
+        // cannot be told from its text. Without an explicit working directory
+        // the decision is the rule for commands run from the worktree.
+        const inWorktree = permissionRequest.path
+          ? isInsideWorktree(permissionRequest.path, jobContext.worktreePath)
+          : true;
         policyDecision = inWorktree
           ? this.policy.permissions.shellCommand.insideWorktree
           : this.policy.permissions.shellCommand.outsideWorktree;
@@ -168,7 +181,7 @@ export class PermissionPolicy {
     }
 
     const action = permissionRequest.action ?? permissionRequest.description ?? permissionRequest.type;
-    const target = permissionRequest.target ?? permissionRequest.path ?? '(unknown target)';
+    const target = permissionRequest.target ?? permissionRequest.path ?? permissionRequest.command ?? '(unknown target)';
 
     this.decisionLog.push({
       timestamp: new Date().toISOString(),
@@ -203,6 +216,7 @@ export class PermissionPolicy {
 
     if (permissionRequest.type === 'shell_command') {
       const packageInstall =
+        looksLikePackageInstall(permissionRequest.command) ||
         looksLikePackageInstall(permissionRequest.description) ||
         looksLikePackageInstall(permissionRequest.action);
       return packageInstall ? 'installPackages' : 'shellCommand';

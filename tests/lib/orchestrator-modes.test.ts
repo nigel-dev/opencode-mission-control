@@ -7,7 +7,7 @@ import * as jobStateMod from '../../src/lib/job-state';
 import { Orchestrator, type ToastCallback } from '../../src/lib/orchestrator';
 import * as mergeTrainMod from '../../src/lib/merge-train';
 import * as planStateMod from '../../src/lib/plan-state';
-import * as tmuxMod from '../../src/lib/tmux';
+import * as jobRuntimeMod from '../../src/lib/job-runtime';
 import * as worktreeMod from '../../src/lib/worktree';
 
 function clone<T>(value: T): T {
@@ -40,15 +40,22 @@ function makePlan(overrides: Partial<PlanSpec> = {}): PlanSpec {
 }
 
 const DEFAULT_CONFIG = {
-  defaultPlacement: 'session' as const,
   pollInterval: 10000,
-  idleThreshold: 300000,
   worktreeBasePath: '/tmp',
-  omo: { enabled: false, defaultMode: 'vanilla' as const },
   maxParallel: 3,
 };
 
 class FakeMonitor extends EventEmitter {}
+
+// No test in this file may reach the real `git push` or `gh pr create`: a plan
+// whose jobs are all merged would otherwise push from the developer's checkout.
+beforeEach(() => {
+  spyOn(Orchestrator.prototype as any, 'runCommand').mockImplementation(async (command: string[]) => ({
+    stdout: '',
+    stderr: `${command[0]} is not available in tests`,
+    exitCode: 1,
+  }));
+});
 
 describe('orchestrator modes', () => {
   let planState: PlanSpec | null;
@@ -88,6 +95,10 @@ describe('orchestrator modes', () => {
         if (updates.checkpointContext !== undefined) planState.checkpointContext = updates.checkpointContext;
         if (updates.completedAt !== undefined) planState.completedAt = updates.completedAt;
         if (updates.prUrl !== undefined) planState.prUrl = updates.prUrl;
+        if (updates.approvedMergeJobs !== undefined) {
+          planState.approvedMergeJobs = updates.approvedMergeJobs;
+        }
+        if (updates.approvedPrePr !== undefined) planState.approvedPrePr = updates.approvedPrePr;
       },
     );
     spyOn(planStateMod, 'clearPlan').mockImplementation(async () => {
@@ -116,15 +127,9 @@ describe('orchestrator modes', () => {
     spyOn(worktreeMod, 'createWorktree').mockResolvedValue('/tmp/wt/job-a');
     spyOn(worktreeMod, 'removeWorktree').mockResolvedValue();
 
-    spyOn(tmuxMod, 'createSession').mockResolvedValue();
-    spyOn(tmuxMod, 'createWindow').mockResolvedValue();
-    spyOn(tmuxMod, 'getCurrentSession').mockReturnValue('main');
-    spyOn(tmuxMod, 'isInsideTmux').mockReturnValue(true);
-    spyOn(tmuxMod, 'isPaneRunning').mockResolvedValue(true);
-    spyOn(tmuxMod, 'killSession').mockResolvedValue();
-    spyOn(tmuxMod, 'killWindow').mockResolvedValue();
-    spyOn(tmuxMod, 'sendKeys').mockResolvedValue();
-    spyOn(tmuxMod, 'setPaneDiedHook').mockResolvedValue();
+    spyOn(jobRuntimeMod, 'startJobSession').mockResolvedValue('ses_job');
+    spyOn(jobRuntimeMod, 'stopJobSession').mockResolvedValue();
+    spyOn(jobRuntimeMod, 'removeJobSession').mockResolvedValue();
 
     spyOn(mergeTrainMod, 'checkMergeability').mockResolvedValue({ canMerge: true });
   });
@@ -446,6 +451,103 @@ describe('orchestrator modes', () => {
       expect(orchestrator.getCheckpoint()).not.toBe('pre_merge');
       const mergeJob = planState?.jobs.find(j => j.name === 'merge-me');
       expect(mergeJob?.status).toBe('merged');
+    });
+
+    it('honors persisted approvedMergeJobs from a previous process', async () => {
+      planState = makePlan({
+        mode: 'supervisor',
+        status: 'running',
+        approvedMergeJobs: ['merge-me'],
+        jobs: [
+          makeJob('merge-me', { status: 'completed', mergeOrder: 0, branch: 'mc/merge-me' }),
+        ],
+      });
+
+      const fakeTrain = {
+        queue: [] as JobSpec[],
+        enqueue(job: JobSpec) {
+          this.queue.push(job);
+        },
+        getQueue() {
+          return [...this.queue];
+        },
+        async processNext() {
+          this.queue.shift();
+          return { success: true, mergedAt: '2026-01-02T00:00:00.000Z' };
+        },
+      };
+
+      const orchestrator = new Orchestrator(monitor as any, DEFAULT_CONFIG as any, toastCallback);
+      (orchestrator as any).mergeTrain = fakeTrain;
+
+      await (orchestrator as any).reconcile();
+
+      expect(orchestrator.getCheckpoint()).not.toBe('pre_merge');
+      expect(planState?.jobs.find((j) => j.name === 'merge-me')?.status).toBe('merged');
+      expect(planState?.approvedMergeJobs).toEqual([]);
+    });
+
+    it('honors persisted approvedPrePr from a previous process', async () => {
+      planState = makePlan({
+        mode: 'supervisor',
+        status: 'running',
+        approvedPrePr: true,
+        jobs: [makeJob('done', { status: 'merged', mergeOrder: 0 })],
+      });
+
+      const orchestrator = new Orchestrator(monitor as any, DEFAULT_CONFIG as any, toastCallback);
+      const createPRSpy = spyOn(orchestrator as any, 'createPR').mockResolvedValue(
+        'https://example.com/pr/1',
+      );
+
+      await (orchestrator as any).reconcile();
+
+      expect(createPRSpy).toHaveBeenCalled();
+      expect(planState?.status).toBe('completed');
+      expect(planState?.approvedPrePr).toBe(false);
+    });
+
+    it('requests attention for a checkpoint instead of a toast when a client can receive it', async () => {
+      planState = makePlan({
+        mode: 'supervisor',
+        status: 'running',
+        jobs: [makeJob('done', { status: 'merged', mergeOrder: 0 })],
+      });
+      const attentionCalls: Array<[string, string]> = [];
+
+      const orchestrator = new Orchestrator(monitor as any, DEFAULT_CONFIG as any, {
+        toast: toastCallback,
+        attention: (checkpoint, message) => {
+          attentionCalls.push([checkpoint, message]);
+          return true;
+        },
+      });
+
+      await (orchestrator as any).reconcile();
+
+      expect(attentionCalls).toHaveLength(1);
+      expect(attentionCalls[0][0]).toBe('pre_pr');
+      expect(attentionCalls[0][1]).toContain('Plan One');
+      expect(attentionCalls[0][1]).toContain('pre_pr');
+      expect(toastCalls.find((t) => t.message.includes('Supervisor checkpoint'))).toBeUndefined();
+      expect(planState?.checkpoint).toBe('pre_pr');
+    });
+
+    it('falls back to the checkpoint toast when attention was not delivered', async () => {
+      planState = makePlan({
+        mode: 'supervisor',
+        status: 'running',
+        jobs: [makeJob('done', { status: 'merged', mergeOrder: 0 })],
+      });
+
+      const orchestrator = new Orchestrator(monitor as any, DEFAULT_CONFIG as any, {
+        toast: toastCallback,
+        attention: () => false,
+      });
+
+      await (orchestrator as any).reconcile();
+
+      expect(toastCalls.find((t) => t.message.includes('Supervisor checkpoint'))).toBeTruthy();
     });
 
     it('sends checkpoint toast notifications', async () => {

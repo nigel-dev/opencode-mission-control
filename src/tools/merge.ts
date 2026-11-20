@@ -1,4 +1,4 @@
-import { tool, type ToolDefinition } from '@opencode-ai/plugin';
+import { z } from 'zod';
 import { getJobByName } from '../lib/job-state';
 import { gitCommand } from '../lib/git';
 import { loadPlan } from '../lib/plan-state';
@@ -19,6 +19,18 @@ async function getBaseBranch(cwd: string): Promise<string> {
   throw new Error('Could not find main or master branch');
 }
 
+/**
+ * Undo a failed merge. The exit code does not matter (nothing to abort is not
+ * an error); only a git that cannot be started at all is reported.
+ */
+async function cleanupGit(args: string[], cwd?: string): Promise<void> {
+  try {
+    await gitCommand(args, cwd ? { cwd } : undefined);
+  } catch (error) {
+    console.warn(`[Mission Control] Could not run git ${args.join(' ')} to undo a failed merge:`, error);
+  }
+}
+
 async function assertCleanWorktree(cwd: string): Promise<void> {
   const status = await gitCommand(['status', '--porcelain'], { cwd });
   if (status.exitCode !== 0) {
@@ -34,15 +46,16 @@ async function assertCleanWorktree(cwd: string): Promise<void> {
   }
 }
 
-export const mc_merge: ToolDefinition = tool({
+export const mc_merge = {
+  name: 'mc_merge',
   description: 'Merge a job\'s branch back to main (for non-PR workflows)',
-  args: {
-    name: tool.schema.string().describe('Job name'),
-    squash: tool.schema.boolean().optional().describe('Squash commits (deprecated: use strategy instead)'),
-    strategy: tool.schema.enum(['squash', 'ff-only', 'merge']).optional().describe('Merge strategy (default: from config, usually squash)'),
-    message: tool.schema.string().optional().describe('Merge commit message'),
-  },
-  async execute(args) {
+  input: z.object({
+    name: z.string().describe('Job name'),
+    squash: z.boolean().optional().describe('Squash commits (deprecated: use strategy instead)'),
+    strategy: z.enum(['squash', 'ff-only', 'merge']).optional().describe('Merge strategy (default: from config, usually squash)'),
+    message: z.string().optional().describe('Merge commit message'),
+  }).strict(),
+  async execute(args: { name: string; squash?: boolean; strategy?: 'squash' | 'ff-only' | 'merge'; message?: string }) {
     // 1. Get job by name
     const job = await getJobByName(args.name);
     if (!job) {
@@ -84,12 +97,8 @@ export const mc_merge: ToolDefinition = tool({
       });
 
       if (squashResult.exitCode !== 0) {
-        await gitCommand(['reset', '--hard', 'HEAD'], {
-          cwd: mainWorktreePath,
-        }).catch(() => {});
-        await gitCommand(['clean', '-fd'], {
-          cwd: mainWorktreePath,
-        }).catch(() => {});
+        await cleanupGit(['reset', '--hard', 'HEAD'], mainWorktreePath);
+        await cleanupGit(['clean', '-fd'], mainWorktreePath);
         throw new Error(
           `Squash merge failed: ${squashResult.stderr || squashResult.stdout}`,
         );
@@ -101,12 +110,8 @@ export const mc_merge: ToolDefinition = tool({
       });
 
       if (commitResult.exitCode !== 0) {
-        await gitCommand(['reset', '--hard', 'HEAD'], {
-          cwd: mainWorktreePath,
-        }).catch(() => {});
-        await gitCommand(['clean', '-fd'], {
-          cwd: mainWorktreePath,
-        }).catch(() => {});
+        await cleanupGit(['reset', '--hard', 'HEAD'], mainWorktreePath);
+        await cleanupGit(['clean', '-fd'], mainWorktreePath);
         throw new Error(
           `Commit after squash failed: ${commitResult.stderr || commitResult.stdout}`,
         );
@@ -124,7 +129,7 @@ export const mc_merge: ToolDefinition = tool({
 
       if (rebaseResult.exitCode !== 0) {
         // Abort the rebase in the job's worktree
-        await gitCommand(['-C', job.worktreePath, 'rebase', '--abort']).catch(() => {});
+        await cleanupGit(['-C', job.worktreePath, 'rebase', '--abort']);
         throw new Error(
           `Rebase of job branch onto ${baseBranch} failed. ` +
           `Conflicts detected. Try running mc_sync --strategy rebase first to resolve conflicts. ` +
@@ -153,9 +158,7 @@ export const mc_merge: ToolDefinition = tool({
       );
 
       if (mergeResult.exitCode !== 0) {
-        await gitCommand(['merge', '--abort'], {
-          cwd: mainWorktreePath,
-        }).catch(() => {});
+        await cleanupGit(['merge', '--abort'], mainWorktreePath);
         throw new Error(
           `Merge failed: ${mergeResult.stderr || mergeResult.stdout}`,
         );
@@ -183,6 +186,6 @@ export const mc_merge: ToolDefinition = tool({
       'Note: Branch was not deleted. Use mc_cleanup to remove the worktree if needed.',
     ];
 
-    return lines.join('\n');
+    return { content: lines.join('\n') };
   },
-});
+};

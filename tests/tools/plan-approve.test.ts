@@ -4,6 +4,11 @@ import * as orchestrator from '../../src/lib/orchestrator';
 import * as config from '../../src/lib/config';
 import * as integration from '../../src/lib/integration';
 import * as mergeTrain from '../../src/lib/merge-train';
+import * as singleton from '../../src/lib/orchestrator-singleton';
+import * as jobState from '../../src/lib/job-state';
+import * as worktreeStatus from '../../src/lib/worktree-status';
+import * as modelTracker from '../../src/lib/model-tracker';
+import type { PlanSpec } from '../../src/lib/plan-types';
 
 const { mc_plan_approve } = await import('../../src/tools/plan-approve');
 
@@ -21,6 +26,8 @@ const mockContext = {
 describe('mc_plan_approve', () => {
   beforeEach(() => {
     mock.restore();
+    // Each test starts without a live orchestrator from the one before it.
+    singleton.setSharedOrchestrator(null);
     spyOn(config, 'loadConfig').mockResolvedValue({
       defaultPlacement: 'session',
       pollInterval: 10000,
@@ -101,8 +108,8 @@ describe('mc_plan_approve', () => {
           expect.objectContaining({ name: 'bad-job', status: 'ready_to_merge' }),
         ]),
       }));
-      expect(result).toContain('bad-job');
-      expect(result).toContain('ready_to_merge');
+      expect(result.content).toContain('bad-job');
+      expect(result.content).toContain('ready_to_merge');
       expect(mockResumePlan).toHaveBeenCalled();
     });
 
@@ -143,7 +150,7 @@ describe('mc_plan_approve', () => {
         ]),
       }));
       expect(mockResumePlan).toHaveBeenCalled();
-      expect(result).toContain('TouchSet violations for job "touch-job" accepted');
+      expect(result.content).toContain('TouchSet violations for job "touch-job" accepted');
     });
 
     it('should relaunch touchSet-failed job for correction', async () => {
@@ -190,7 +197,7 @@ describe('mc_plan_approve', () => {
       }));
       expect(relaunchSpy).toHaveBeenCalledWith('touch-job', ['README.md'], ['src/**']);
       expect(mockResumePlan).toHaveBeenCalled();
-      expect(result).toContain('relaunched with correction prompt');
+      expect(result.content).toContain('relaunched with correction prompt');
     });
 
     it('should re-validate touchSet on retry before proceeding', async () => {
@@ -240,8 +247,8 @@ describe('mc_plan_approve', () => {
         ]),
       }));
       expect(mockResumePlan).toHaveBeenCalled();
-      expect(result).toContain('touch-job');
-      expect(result).toContain('ready_to_merge');
+      expect(result.content).toContain('touch-job');
+      expect(result.content).toContain('ready_to_merge');
     });
 
     it('should reject retry when touchSet remains violated after manual fix', async () => {
@@ -335,8 +342,8 @@ describe('mc_plan_approve', () => {
           expect.objectContaining({ name: 'conflicting-job', status: 'ready_to_merge' }),
         ]),
       }));
-      expect(result).toContain('Checkpoint');
-      expect(result).toContain('ready_to_merge');
+      expect(result.content).toContain('Checkpoint');
+      expect(result.content).toContain('ready_to_merge');
       expect(mockResumePlan).toHaveBeenCalled();
     });
 
@@ -396,11 +403,257 @@ describe('mc_plan_approve', () => {
 
       const result = await mc_plan_approve.execute({ checkpoint: 'pre_merge' }, mockContext);
 
-      expect(result).toContain('Checkpoint "pre_merge" cleared');
-      expect(result).toContain('resuming');
-      expect(result).not.toContain('ready_to_merge');
-      expect(mockSavePlan).toHaveBeenCalled();
+      expect(result.content).toContain('Checkpoint "pre_merge" cleared');
+      expect(result.content).toContain('resuming');
+      expect(result.content).not.toContain('ready_to_merge');
+      expect(mockSavePlan).toHaveBeenCalledWith(expect.objectContaining({
+        approvedMergeJobs: ['merge-job'],
+      }));
       expect(mockResumePlan).toHaveBeenCalled();
+    });
+
+    it('should persist pre_pr approval so a fresh orchestrator does not re-pause', async () => {
+      spyOn(planState, 'loadPlan').mockResolvedValue({
+        id: 'plan-1',
+        name: 'Pre-PR Plan',
+        mode: 'supervisor',
+        status: 'paused',
+        checkpoint: 'pre_pr',
+        jobs: [{ id: 'j1', name: 'done-job', prompt: 'do merge', status: 'merged' }],
+        integrationBranch: 'mc/integration/plan-1',
+        baseCommit: 'abc123',
+        createdAt: new Date().toISOString(),
+      });
+
+      const mockSavePlan = spyOn(planState, 'savePlan').mockResolvedValue(undefined);
+      const mockResumePlan = mock().mockResolvedValue(undefined);
+      spyOn(orchestrator.Orchestrator.prototype, 'resumePlan').mockImplementation(mockResumePlan);
+      spyOn(orchestrator.Orchestrator.prototype, 'setPlanModelSnapshot').mockImplementation(() => {});
+
+      const result = await mc_plan_approve.execute({ checkpoint: 'pre_pr' }, mockContext);
+
+      expect(result.content).toContain('Checkpoint "pre_pr" cleared');
+      expect(mockSavePlan).toHaveBeenCalledWith(expect.objectContaining({
+        approvedPrePr: true,
+      }));
+      expect(mockResumePlan).toHaveBeenCalled();
+    });
+  });
+
+  describe('one live orchestrator', () => {
+    function pausedPlan(overrides: Partial<PlanSpec> = {}): PlanSpec {
+      return {
+        id: 'plan-1',
+        name: 'Lifecycle Plan',
+        mode: 'supervisor',
+        status: 'paused',
+        checkpoint: 'pre_merge',
+        jobs: [{ id: 'j1', name: 'merge-job', prompt: 'do merge', status: 'ready_to_merge' }],
+        integrationBranch: 'mc/integration/plan-1',
+        baseCommit: 'abc123',
+        createdAt: new Date().toISOString(),
+        ...overrides,
+      };
+    }
+
+    it('retires the orchestrator that paused the plan, and waits for it, before changing the plan', async () => {
+      spyOn(planState, 'loadPlan').mockResolvedValue(pausedPlan());
+      const order: string[] = [];
+      spyOn(planState, 'savePlan').mockImplementation(async () => {
+        order.push('plan saved');
+      });
+      spyOn(orchestrator.Orchestrator.prototype, 'resumePlan').mockImplementation(async () => {
+        order.push('plan resumed');
+      });
+      const live = {
+        dispose: mock(async () => {
+          // A reconcile pass that is still finishing a merge.
+          await new Promise((resolve) => setTimeout(resolve, 20));
+          order.push('old orchestrator disposed');
+        }),
+      };
+      singleton.setSharedOrchestrator(live as any);
+
+      await mc_plan_approve.execute({ checkpoint: 'pre_merge' }, mockContext);
+
+      expect(live.dispose).toHaveBeenCalledTimes(1);
+      expect(order).toEqual(['old orchestrator disposed', 'plan saved', 'plan resumed']);
+      expect(singleton.getSharedOrchestrator()).toBeInstanceOf(orchestrator.Orchestrator);
+      expect(singleton.getSharedOrchestrator()).not.toBe(live);
+    });
+
+    it('works from the plan as the retired orchestrator left it', async () => {
+      // The retired orchestrator's last pass merged a job after the approval
+      // was requested. A stale copy of the plan must not undo that.
+      const before = pausedPlan({
+        jobs: [
+          { id: 'j1', name: 'merge-job', prompt: 'do merge', status: 'ready_to_merge' },
+          { id: 'j2', name: 'in-flight', prompt: 'x', status: 'merging' },
+        ],
+      });
+      const after = pausedPlan({
+        jobs: [
+          { id: 'j1', name: 'merge-job', prompt: 'do merge', status: 'ready_to_merge' },
+          { id: 'j2', name: 'in-flight', prompt: 'x', status: 'merged' },
+        ],
+      });
+      let disposed = false;
+      spyOn(planState, 'loadPlan').mockImplementation(async () => (disposed ? after : before));
+      const savePlan = spyOn(planState, 'savePlan').mockResolvedValue(undefined);
+      spyOn(orchestrator.Orchestrator.prototype, 'resumePlan').mockResolvedValue(undefined);
+      singleton.setSharedOrchestrator({
+        dispose: mock(async () => {
+          disposed = true;
+        }),
+      } as any);
+
+      await mc_plan_approve.execute({ checkpoint: 'pre_merge' }, mockContext);
+
+      expect(savePlan).toHaveBeenCalledWith(
+        expect.objectContaining({
+          jobs: expect.arrayContaining([expect.objectContaining({ name: 'in-flight', status: 'merged' })]),
+        }),
+      );
+    });
+
+    it('leaves the live orchestrator alone when there is nothing to approve', async () => {
+      spyOn(planState, 'loadPlan').mockResolvedValue(pausedPlan({ status: 'running', checkpoint: null }));
+      const live = { dispose: mock(async () => {}) };
+      singleton.setSharedOrchestrator(live as any);
+
+      await expect(mc_plan_approve.execute({}, mockContext)).rejects.toThrow('not pending or paused');
+
+      // Retiring it here would orphan a running plan.
+      expect(live.dispose).not.toHaveBeenCalled();
+      expect(singleton.getSharedOrchestrator()).toBe(live as any);
+      singleton.setSharedOrchestrator(null);
+    });
+
+    it("does not replace the plan's model with whatever model was used last", async () => {
+      spyOn(planState, 'loadPlan').mockResolvedValue(pausedPlan({ model: 'anthropic/claude-sonnet-4' }));
+      const savePlan = spyOn(planState, 'savePlan').mockResolvedValue(undefined);
+      spyOn(orchestrator.Orchestrator.prototype, 'resumePlan').mockResolvedValue(undefined);
+      const snapshot = spyOn(orchestrator.Orchestrator.prototype, 'setPlanModelSnapshot');
+      const getCurrentModel = spyOn(modelTracker, 'getCurrentModel').mockReturnValue('other/model');
+
+      await mc_plan_approve.execute({ checkpoint: 'pre_merge' }, mockContext);
+
+      expect(getCurrentModel).not.toHaveBeenCalled();
+      expect(snapshot).not.toHaveBeenCalled();
+      expect(savePlan).toHaveBeenCalledWith(expect.objectContaining({ model: 'anthropic/claude-sonnet-4' }));
+    });
+  });
+
+  describe('retrying a job that never launched', () => {
+    it('queues the job again instead of trying to merge a branch with no work', async () => {
+      spyOn(planState, 'loadPlan').mockResolvedValue({
+        id: 'plan-1',
+        name: 'Launch Plan',
+        mode: 'autopilot',
+        status: 'paused',
+        checkpoint: 'on_error',
+        checkpointContext: { jobName: 'never-ran', failureKind: 'launch_failed', reason: 'Invalid model "x"' },
+        jobs: [{ id: 'j1', name: 'never-ran', prompt: 'x', status: 'failed', error: 'Invalid model "x"' }],
+        integrationBranch: 'mc/integration/plan-1',
+        baseCommit: 'abc123',
+        createdAt: new Date().toISOString(),
+      });
+      const savePlan = spyOn(planState, 'savePlan').mockResolvedValue(undefined);
+      spyOn(orchestrator.Orchestrator.prototype, 'resumePlan').mockResolvedValue(undefined);
+
+      const result = await mc_plan_approve.execute({ checkpoint: 'on_error', retry: 'never-ran' }, mockContext);
+
+      const saved = savePlan.mock.calls[0][0] as PlanSpec;
+      expect(saved.status).toBe('running');
+      expect(saved.jobs[0]).toMatchObject({ name: 'never-ran', status: 'queued' });
+      expect(saved.jobs[0].error).toBeUndefined();
+      // Nothing was merged or approved for merge: the job has to run first.
+      expect(saved.approvedMergeJobs ?? []).not.toContain('never-ran');
+      expect(result.content).toContain('reset to queued');
+    });
+  });
+
+  describe('uncommitted changes checkpoint', () => {
+    function dirtyPlan(): PlanSpec {
+      return {
+        id: 'plan-1',
+        name: 'Dirty Plan',
+        mode: 'autopilot',
+        status: 'paused',
+        checkpoint: 'on_error',
+        checkpointContext: { jobName: 'dirty', failureKind: 'uncommitted_changes', reason: 'uncommitted changes' },
+        jobs: [{ id: 'j1', name: 'dirty', prompt: 'x', status: 'failed', error: 'uncommitted changes' }],
+        integrationBranch: 'mc/integration/plan-1',
+        baseCommit: 'abc123',
+        createdAt: new Date().toISOString(),
+      };
+    }
+
+    function stateWithDirtyJob(): void {
+      spyOn(jobState, 'loadJobState').mockResolvedValue({
+        version: 4,
+        jobs: [
+          {
+            id: 'state-1',
+            name: 'dirty',
+            worktreePath: '/tmp/wt/dirty',
+            branch: 'mc/plan/plan-1/dirty',
+            status: 'completed',
+            prompt: 'x',
+            createdAt: new Date().toISOString(),
+            planId: 'plan-1',
+            uncommittedChanges: ['src/new.ts'],
+          },
+        ],
+        updatedAt: new Date().toISOString(),
+      });
+    }
+
+    it('refuses the retry while the changes are still uncommitted', async () => {
+      spyOn(planState, 'loadPlan').mockResolvedValue(dirtyPlan());
+      const savePlan = spyOn(planState, 'savePlan').mockResolvedValue(undefined);
+      const resumePlan = spyOn(orchestrator.Orchestrator.prototype, 'resumePlan').mockResolvedValue(undefined);
+      stateWithDirtyJob();
+      spyOn(worktreeStatus, 'findUncommittedChanges').mockResolvedValue(['src/new.ts']);
+
+      await expect(
+        mc_plan_approve.execute({ checkpoint: 'on_error', retry: 'dirty' }, mockContext),
+      ).rejects.toThrow(/still has uncommitted changes.*src\/new\.ts/s);
+
+      expect(savePlan).not.toHaveBeenCalled();
+      expect(resumePlan).not.toHaveBeenCalled();
+    });
+
+    it('merges the job on retry once its work is committed', async () => {
+      spyOn(planState, 'loadPlan').mockResolvedValue(dirtyPlan());
+      const savePlan = spyOn(planState, 'savePlan').mockResolvedValue(undefined);
+      spyOn(orchestrator.Orchestrator.prototype, 'resumePlan').mockResolvedValue(undefined);
+      stateWithDirtyJob();
+      spyOn(worktreeStatus, 'findUncommittedChanges').mockResolvedValue([]);
+
+      await mc_plan_approve.execute({ checkpoint: 'on_error', retry: 'dirty' }, mockContext);
+
+      expect(savePlan).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status: 'running',
+          jobs: [expect.objectContaining({ name: 'dirty', status: 'ready_to_merge' })],
+        }),
+      );
+    });
+
+    it('merges the branch without the changes when approved without retry, and says so', async () => {
+      spyOn(planState, 'loadPlan').mockResolvedValue(dirtyPlan());
+      const savePlan = spyOn(planState, 'savePlan').mockResolvedValue(undefined);
+      spyOn(orchestrator.Orchestrator.prototype, 'resumePlan').mockResolvedValue(undefined);
+
+      const result = await mc_plan_approve.execute({ checkpoint: 'on_error' }, mockContext);
+
+      expect(savePlan).toHaveBeenCalledWith(
+        expect.objectContaining({
+          jobs: [expect.objectContaining({ name: 'dirty', status: 'ready_to_merge' })],
+        }),
+      );
+      expect(result.content).toContain('will be merged without its uncommitted changes');
     });
   });
 
@@ -431,10 +684,10 @@ describe('mc_plan_approve', () => {
 
       const result = await mc_plan_approve.execute({}, mockContext);
 
-      expect(result).toContain('approved and started');
-      expect(result).toContain('plan-1');
-      expect(result).toContain('Jobs: 2');
-      expect(result).toContain('mc_plan_status');
+      expect(result.content).toContain('approved and started');
+      expect(result.content).toContain('plan-1');
+      expect(result.content).toContain('Jobs: 2');
+      expect(result.content).toContain('mc_plan_status');
       expect(mockSavePlan).toHaveBeenCalled();
       expect(mockResumePlan).toHaveBeenCalled();
     });

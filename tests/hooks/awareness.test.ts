@@ -66,7 +66,6 @@ describe('getWorktreeContext', () => {
         isInJob: true,
         jobName: 'feature-auth',
         jobPrompt: 'Add OAuth support',
-        mode: 'plan',
       });
     });
 
@@ -132,7 +131,7 @@ describe('getWorktreeContext', () => {
       });
     });
 
-    it('should return correct mode for different execution modes', async () => {
+    it('should not expose an execution mode, even for a legacy job record', async () => {
       const worktreePath = '/home/user/.local/share/opencode-mission-control/project/ralph-job';
       const now = new Date().toISOString();
 
@@ -162,7 +161,9 @@ describe('getWorktreeContext', () => {
 
       const context = await awareness.getWorktreeContext();
 
-      expect(context.mode).toBe('ralph');
+      expect(context).not.toHaveProperty('mode');
+      expect(context.jobName).toBe('ralph-job');
+      expect(context.jobPrompt).toBe('Complex refactoring task');
     });
 
     it('should handle multiple jobs and find correct one by worktreePath', async () => {
@@ -223,7 +224,6 @@ describe('getWorktreeContext', () => {
         isInJob: true,
         jobName: 'target-job',
         jobPrompt: 'Target task',
-        mode: 'plan',
       });
     });
   });

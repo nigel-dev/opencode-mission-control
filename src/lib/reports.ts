@@ -1,5 +1,7 @@
+import * as fs from 'fs';
 import { join } from 'path';
 import { getDataDir } from './paths';
+import { atomicWrite } from './utils';
 
 export type ReportStatus = 'working' | 'blocked' | 'needs_review' | 'completed' | 'progress';
 
@@ -12,10 +14,9 @@ export interface AgentReport {
   timestamp: string;
 }
 
-async function getReportsDir(): Promise<string> {
-  const dataDir = await getDataDir();
+async function getReportsDir(cwd?: string): Promise<string> {
+  const dataDir = await getDataDir(cwd);
   const reportsDir = join(dataDir, '..', 'reports');
-  const fs = await import('fs');
   fs.mkdirSync(reportsDir, { recursive: true });
   return reportsDir;
 }
@@ -24,18 +25,16 @@ function getReportFilePath(reportsDir: string, jobId: string): string {
   return join(reportsDir, `${jobId}.json`);
 }
 
-export async function writeReport(report: AgentReport): Promise<void> {
-  const reportsDir = await getReportsDir();
+export async function writeReport(report: AgentReport, cwd?: string): Promise<void> {
+  const reportsDir = await getReportsDir(cwd);
   const filePath = getReportFilePath(reportsDir, report.jobId);
-  const tempPath = `${filePath}.tmp`;
-  const data = JSON.stringify(report, null, 2);
-  await Bun.write(tempPath, data);
-  const fs = await import('fs');
-  fs.renameSync(tempPath, filePath);
+  // A unique temp file per write: the job (mc_report) and the command center
+  // (mc_answer) can write the same job's report at the same time.
+  await atomicWrite(filePath, JSON.stringify(report, null, 2));
 }
 
-export async function readReport(jobId: string): Promise<AgentReport | null> {
-  const reportsDir = await getReportsDir();
+export async function readReport(jobId: string, cwd?: string): Promise<AgentReport | null> {
+  const reportsDir = await getReportsDir(cwd);
   const filePath = getReportFilePath(reportsDir, jobId);
   const file = Bun.file(filePath);
   const exists = await file.exists();
@@ -48,18 +47,20 @@ export async function readReport(jobId: string): Promise<AgentReport | null> {
     const content = await file.text();
     return JSON.parse(content) as AgentReport;
   } catch {
+    // An unreadable report counts as no report: the agent's next mc_report
+    // replaces it, and the session's own outcome still finishes the job.
     return null;
   }
 }
 
 export async function readAllReports(): Promise<AgentReport[]> {
   const reportsDir = await getReportsDir();
-  const fs = await import('fs');
 
   let entries: string[];
   try {
     entries = fs.readdirSync(reportsDir);
-  } catch {
+  } catch (error) {
+    console.warn(`[Mission Control] Could not list reports in ${reportsDir}:`, error);
     return [];
   }
 
@@ -86,7 +87,6 @@ export async function readAllReports(): Promise<AgentReport[]> {
 export async function removeReport(jobId: string): Promise<void> {
   const reportsDir = await getReportsDir();
   const filePath = getReportFilePath(reportsDir, jobId);
-  const fs = await import('fs');
 
   try {
     fs.unlinkSync(filePath);

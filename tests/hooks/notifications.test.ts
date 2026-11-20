@@ -9,9 +9,15 @@ import {
   _getMCPrefixedSessionsForTesting,
 } from '../../src/hooks/notifications';
 import type { Job } from '../../src/lib/job-state';
+import * as rpcEvents from '../../src/lib/rpc-events';
+import * as toastMod from '../../src/lib/toast';
 
 vi.mock('../../src/lib/reports', () => ({
   readReport: vi.fn().mockResolvedValue(null),
+}));
+
+vi.mock('../../src/lib/toast', () => ({
+  showToast: vi.fn(async () => {}),
 }));
 
 describe('notifications hook', () => {
@@ -22,12 +28,12 @@ describe('notifications hook', () => {
   let mockClient: {
     session: {
       prompt: ReturnType<typeof vi.fn>;
+      synthetic: ReturnType<typeof vi.fn>;
       get: ReturnType<typeof vi.fn>;
       update: ReturnType<typeof vi.fn>;
     };
   };
   let mockGetActiveSessionID: ReturnType<typeof vi.fn>;
-  let mockIsSubagent: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     _getTitleStateForTesting().clear();
@@ -46,13 +52,13 @@ describe('notifications hook', () => {
     mockClient = {
       session: {
         prompt: vi.fn().mockResolvedValue(undefined),
-        get: vi.fn().mockResolvedValue({ data: { title: 'Original Title' } }),
+        synthetic: vi.fn().mockResolvedValue(undefined),
+        get: vi.fn().mockResolvedValue({ title: 'Original Title' }),
         update: vi.fn().mockResolvedValue(undefined),
       },
     };
 
     mockGetActiveSessionID = vi.fn().mockResolvedValue('session-123');
-    mockIsSubagent = vi.fn().mockResolvedValue(false);
   });
 
   it('should set up notification handlers for all events', () => {
@@ -60,7 +66,6 @@ describe('notifications hook', () => {
       client: mockClient as any,
       monitor: mockMonitor as any,
       getActiveSessionID: mockGetActiveSessionID as any,
-      isSubagent: mockIsSubagent as any,
     });
 
     expect(mockMonitor.handlers.has('complete')).toBe(true);
@@ -78,7 +83,6 @@ describe('notifications hook', () => {
       client: mockClient as any,
       monitor: mockMonitor as any,
       getActiveSessionID: mockGetActiveSessionID as any,
-      isSubagent: mockIsSubagent as any,
     });
 
     const job: Job = {
@@ -100,10 +104,10 @@ describe('notifications hook', () => {
 
     await new Promise((resolve) => setTimeout(resolve, 50));
 
-    expect(mockClient.session.prompt).toHaveBeenCalled();
-    const callArgs = mockClient.session.prompt.mock.calls[0][0];
-    expect(callArgs.body.parts[0].text).toContain("🟢 Job 'feature-auth' completed");
-    expect(callArgs.body.parts[0].text).toContain('mc/feature-auth');
+    expect(mockClient.session.synthetic).toHaveBeenCalled();
+    const callArgs = mockClient.session.synthetic.mock.calls[0][0];
+    expect(callArgs.text).toContain("🟢 Job 'feature-auth' completed");
+    expect(callArgs.text).toContain('mc/feature-auth');
   });
 
   it('should send notification on job failure', async () => {
@@ -111,7 +115,6 @@ describe('notifications hook', () => {
       client: mockClient as any,
       monitor: mockMonitor as any,
       getActiveSessionID: mockGetActiveSessionID as any,
-      isSubagent: mockIsSubagent as any,
     });
 
     const job: Job = {
@@ -135,10 +138,10 @@ describe('notifications hook', () => {
     // Give async handler time to complete
     await new Promise((resolve) => setTimeout(resolve, 50));
 
-    expect(mockClient.session.prompt).toHaveBeenCalled();
-    const callArgs = mockClient.session.prompt.mock.calls[0][0];
-    expect(callArgs.body.parts[0].text).toContain("🔴 Job 'fix-bug-123' failed");
-    expect(callArgs.body.parts[0].text).toContain('mc/fix-bug-123');
+    expect(mockClient.session.synthetic).toHaveBeenCalled();
+    const callArgs = mockClient.session.synthetic.mock.calls[0][0];
+    expect(callArgs.text).toContain("🔴 Job 'fix-bug-123' failed");
+    expect(callArgs.text).toContain('mc/fix-bug-123');
   });
 
   it('should deduplicate notifications for the same job event', async () => {
@@ -146,7 +149,6 @@ describe('notifications hook', () => {
       client: mockClient as any,
       monitor: mockMonitor as any,
       getActiveSessionID: mockGetActiveSessionID as any,
-      isSubagent: mockIsSubagent as any,
     });
 
     const completedAt = new Date().toISOString();
@@ -169,13 +171,13 @@ describe('notifications hook', () => {
 
     await new Promise((resolve) => setTimeout(resolve, 50));
 
-    const firstCallCount = mockClient.session.prompt.mock.calls.length;
+    const firstCallCount = mockClient.session.synthetic.mock.calls.length;
 
     handlers[0](job);
 
     await new Promise((resolve) => setTimeout(resolve, 50));
 
-    const secondCallCount = mockClient.session.prompt.mock.calls.length;
+    const secondCallCount = mockClient.session.synthetic.mock.calls.length;
 
     expect(firstCallCount).toBe(1);
     expect(secondCallCount).toBe(1);
@@ -188,7 +190,6 @@ describe('notifications hook', () => {
       client: mockClient as any,
       monitor: mockMonitor as any,
       getActiveSessionID: mockGetActiveSessionID as any,
-      isSubagent: mockIsSubagent as any,
     });
 
     const job: Job = {
@@ -210,7 +211,7 @@ describe('notifications hook', () => {
 
     await new Promise((resolve) => setTimeout(resolve, 50));
 
-    expect(mockClient.session.prompt).not.toHaveBeenCalled();
+    expect(mockClient.session.synthetic).not.toHaveBeenCalled();
   });
 
   it('should send notification on blocked event', async () => {
@@ -218,7 +219,6 @@ describe('notifications hook', () => {
       client: mockClient as any,
       monitor: mockMonitor as any,
       getActiveSessionID: mockGetActiveSessionID as any,
-      isSubagent: mockIsSubagent as any,
     });
 
     const job: Job = {
@@ -239,9 +239,9 @@ describe('notifications hook', () => {
 
     await new Promise((resolve) => setTimeout(resolve, 50));
 
-    expect(mockClient.session.prompt).toHaveBeenCalled();
-    const callArgs = mockClient.session.prompt.mock.calls[0][0];
-    expect(callArgs.body.parts[0].text).toContain("⚠️ Job 'blocked-task' is blocked");
+    expect(mockClient.session.synthetic).toHaveBeenCalled();
+    const callArgs = mockClient.session.synthetic.mock.calls[0][0];
+    expect(callArgs.text).toContain("⚠️ Job 'blocked-task' is blocked");
   });
 
   it('should send notification on needs_review event', async () => {
@@ -249,7 +249,6 @@ describe('notifications hook', () => {
       client: mockClient as any,
       monitor: mockMonitor as any,
       getActiveSessionID: mockGetActiveSessionID as any,
-      isSubagent: mockIsSubagent as any,
     });
 
     const job: Job = {
@@ -270,9 +269,9 @@ describe('notifications hook', () => {
 
     await new Promise((resolve) => setTimeout(resolve, 50));
 
-    expect(mockClient.session.prompt).toHaveBeenCalled();
-    const callArgs = mockClient.session.prompt.mock.calls[0][0];
-    expect(callArgs.body.parts[0].text).toContain("👀 Job 'review-task' needs review");
+    expect(mockClient.session.synthetic).toHaveBeenCalled();
+    const callArgs = mockClient.session.synthetic.mock.calls[0][0];
+    expect(callArgs.text).toContain("👀 Job 'review-task' needs review");
   });
 
   it('should route notification to launchSessionID when present', async () => {
@@ -280,7 +279,6 @@ describe('notifications hook', () => {
       client: mockClient as any,
       monitor: mockMonitor as any,
       getActiveSessionID: mockGetActiveSessionID as any,
-      isSubagent: mockIsSubagent as any,
     });
 
     const job: Job = {
@@ -303,10 +301,10 @@ describe('notifications hook', () => {
 
     await new Promise((resolve) => setTimeout(resolve, 50));
 
-    expect(mockClient.session.prompt).toHaveBeenCalled();
-    const callArgs = mockClient.session.prompt.mock.calls[0][0];
-    expect(callArgs.path.id).toBe('ses_launch_abc');
-    expect(callArgs.body.parts[0].text).toContain("🟢 Job 'routed-job' completed");
+    expect(mockClient.session.synthetic).toHaveBeenCalled();
+    const callArgs = mockClient.session.synthetic.mock.calls[0][0];
+    expect(callArgs.sessionID).toBe('ses_launch_abc');
+    expect(callArgs.text).toContain("🟢 Job 'routed-job' completed");
   });
 
   it('should fallback to activeSessionID when launchSessionID is undefined', async () => {
@@ -316,7 +314,6 @@ describe('notifications hook', () => {
       client: mockClient as any,
       monitor: mockMonitor as any,
       getActiveSessionID: mockGetActiveSessionID as any,
-      isSubagent: mockIsSubagent as any,
     });
 
     const job: Job = {
@@ -338,9 +335,9 @@ describe('notifications hook', () => {
 
     await new Promise((resolve) => setTimeout(resolve, 50));
 
-    expect(mockClient.session.prompt).toHaveBeenCalled();
-    const callArgs = mockClient.session.prompt.mock.calls[0][0];
-    expect(callArgs.path.id).toBe('ses_active_456');
+    expect(mockClient.session.synthetic).toHaveBeenCalled();
+    const callArgs = mockClient.session.synthetic.mock.calls[0][0];
+    expect(callArgs.sessionID).toBe('ses_active_456');
   });
 
   it('should not send notification when launchSessionID is invalid', async () => {
@@ -350,7 +347,6 @@ describe('notifications hook', () => {
       client: mockClient as any,
       monitor: mockMonitor as any,
       getActiveSessionID: mockGetActiveSessionID as any,
-      isSubagent: mockIsSubagent as any,
     });
 
     const job: Job = {
@@ -373,7 +369,7 @@ describe('notifications hook', () => {
 
     await new Promise((resolve) => setTimeout(resolve, 50));
 
-    expect(mockClient.session.prompt).not.toHaveBeenCalled();
+    expect(mockClient.session.synthetic).not.toHaveBeenCalled();
 
   });
 
@@ -383,7 +379,6 @@ describe('notifications hook', () => {
         client: mockClient as any,
         monitor: mockMonitor as any,
         getActiveSessionID: mockGetActiveSessionID as any,
-        isSubagent: mockIsSubagent as any,
       });
 
       const job: Job = {
@@ -405,8 +400,8 @@ describe('notifications hook', () => {
       await new Promise((resolve) => setTimeout(resolve, 50));
 
       expect(mockClient.session.update).toHaveBeenCalledWith({
-        path: { id: 'ses_launcher' },
-        body: { title: '✅ Original Title' },
+        sessionID: 'ses_launcher',
+        title: '✅ Original Title',
       });
     });
 
@@ -415,7 +410,6 @@ describe('notifications hook', () => {
         client: mockClient as any,
         monitor: mockMonitor as any,
         getActiveSessionID: mockGetActiveSessionID as any,
-        isSubagent: mockIsSubagent as any,
       });
 
       const job: Job = {
@@ -437,8 +431,8 @@ describe('notifications hook', () => {
       await new Promise((resolve) => setTimeout(resolve, 50));
 
       expect(mockClient.session.update).toHaveBeenCalledWith({
-        path: { id: 'ses_launcher' },
-        body: { title: '❌ Original Title' },
+        sessionID: 'ses_launcher',
+        title: '❌ Original Title',
       });
     });
 
@@ -447,7 +441,6 @@ describe('notifications hook', () => {
         client: mockClient as any,
         monitor: mockMonitor as any,
         getActiveSessionID: mockGetActiveSessionID as any,
-        isSubagent: mockIsSubagent as any,
       });
 
       const job: Job = {
@@ -468,8 +461,8 @@ describe('notifications hook', () => {
       await new Promise((resolve) => setTimeout(resolve, 50));
 
       expect(mockClient.session.update).toHaveBeenCalledWith({
-        path: { id: 'ses_launcher' },
-        body: { title: '❓ Original Title' },
+        sessionID: 'ses_launcher',
+        title: '❓ Original Title',
       });
     });
 
@@ -478,7 +471,6 @@ describe('notifications hook', () => {
         client: mockClient as any,
         monitor: mockMonitor as any,
         getActiveSessionID: mockGetActiveSessionID as any,
-        isSubagent: mockIsSubagent as any,
       });
 
       const job1: Job = {
@@ -520,8 +512,8 @@ describe('notifications hook', () => {
       const calls = mockClient.session.update.mock.calls;
       const lastCall = calls[calls.length - 1][0];
       expect(lastCall).toEqual({
-        path: { id: 'ses_launcher' },
-        body: { title: '🔔 Original Title' },
+        sessionID: 'ses_launcher',
+        title: '🔔 Original Title',
       });
     });
 
@@ -530,7 +522,6 @@ describe('notifications hook', () => {
         client: mockClient as any,
         monitor: mockMonitor as any,
         getActiveSessionID: mockGetActiveSessionID as any,
-        isSubagent: mockIsSubagent as any,
       });
 
       const job: Job = {
@@ -551,8 +542,8 @@ describe('notifications hook', () => {
       await new Promise((resolve) => setTimeout(resolve, 50));
 
       expect(mockClient.session.update).toHaveBeenCalledWith({
-        path: { id: 'ses_launcher' },
-        body: { title: '🚧 Original Title' },
+        sessionID: 'ses_launcher',
+        title: '🚧 Original Title',
       });
     });
 
@@ -563,7 +554,6 @@ describe('notifications hook', () => {
         client: mockClient as any,
         monitor: mockMonitor as any,
         getActiveSessionID: mockGetActiveSessionID as any,
-        isSubagent: mockIsSubagent as any,
       });
 
       const job: Job = {
@@ -591,7 +581,7 @@ describe('notifications hook', () => {
       await annotateSessionTitle(mockClient as any, 'ses_test', 'job-b', 'failed');
 
       expect(mockClient.session.get).toHaveBeenCalledTimes(1);
-      expect(mockClient.session.get).toHaveBeenCalledWith({ path: { id: 'ses_test' } });
+      expect(mockClient.session.get).toHaveBeenCalledWith({ sessionID: 'ses_test' });
     });
   });
 
@@ -603,8 +593,8 @@ describe('notifications hook', () => {
       await resetSessionTitle(mockClient as any, 'ses_reset');
 
       expect(mockClient.session.update).toHaveBeenLastCalledWith({
-        path: { id: 'ses_reset' },
-        body: { title: 'Original Title' },
+        sessionID: 'ses_reset',
+        title: 'Original Title',
       });
       expect(hasAnnotation('ses_reset')).toBe(false);
     });
@@ -637,10 +627,10 @@ describe('notifications hook', () => {
     it('should prefix session title with [MC] on first call', async () => {
       await ensureMCPrefix(mockClient as any, 'ses_mc1');
 
-      expect(mockClient.session.get).toHaveBeenCalledWith({ path: { id: 'ses_mc1' } });
+      expect(mockClient.session.get).toHaveBeenCalledWith({ sessionID: 'ses_mc1' });
       expect(mockClient.session.update).toHaveBeenCalledWith({
-        path: { id: 'ses_mc1' },
-        body: { title: '[MC] Original Title' },
+        sessionID: 'ses_mc1',
+        title: '[MC] Original Title',
       });
     });
 
@@ -666,7 +656,7 @@ describe('notifications hook', () => {
     });
 
     it('should not double-prefix when title already starts with [MC]', async () => {
-      mockClient.session.get.mockResolvedValueOnce({ data: { title: '[MC] Already Prefixed' } });
+      mockClient.session.get.mockResolvedValueOnce({ title: '[MC] Already Prefixed' });
       await ensureMCPrefix(mockClient as any, 'ses_mc3');
 
       expect(mockClient.session.update).not.toHaveBeenCalled();
@@ -679,8 +669,8 @@ describe('notifications hook', () => {
       await annotateSessionTitle(mockClient as any, 'ses_mc4', 'my-job', 'complete');
 
       expect(mockClient.session.update).toHaveBeenCalledWith({
-        path: { id: 'ses_mc4' },
-        body: { title: '[MC] \u2705 Original Title' },
+        sessionID: 'ses_mc4',
+        title: '[MC] \u2705 Original Title',
       });
     });
 
@@ -694,8 +684,8 @@ describe('notifications hook', () => {
       const calls = mockClient.session.update.mock.calls;
       const lastCall = calls[calls.length - 1][0];
       expect(lastCall).toEqual({
-        path: { id: 'ses_mc5' },
-        body: { title: '[MC] \uD83D\uDD14 Original Title' },
+        sessionID: 'ses_mc5',
+        title: '[MC] \uD83D\uDD14 Original Title',
       });
     });
 
@@ -707,8 +697,8 @@ describe('notifications hook', () => {
       await resetSessionTitle(mockClient as any, 'ses_mc6');
 
       expect(mockClient.session.update).toHaveBeenCalledWith({
-        path: { id: 'ses_mc6' },
-        body: { title: '[MC] Original Title' },
+        sessionID: 'ses_mc6',
+        title: '[MC] Original Title',
       });
     });
 
@@ -719,18 +709,177 @@ describe('notifications hook', () => {
       await ensureMCPrefix(mockClient as any, 'ses_mc7');
 
       expect(mockClient.session.update).toHaveBeenCalledWith({
-        path: { id: 'ses_mc7' },
-        body: { title: '[MC] \u274C Original Title' },
+        sessionID: 'ses_mc7',
+        title: '[MC] \u274C Original Title',
       });
     });
 
     it('should strip [MC] from fetched title when storing originalTitle', async () => {
-      mockClient.session.get.mockResolvedValue({ data: { title: '[MC] My Session' } });
+      mockClient.session.get.mockResolvedValue({ title: '[MC] My Session' });
 
       await annotateSessionTitle(mockClient as any, 'ses_mc8', 'my-job', 'complete');
 
       const state = _getTitleStateForTesting().get('ses_mc8');
       expect(state?.originalTitle).toBe('My Session');
+    });
+  });
+
+  describe('attention events', () => {
+    const makeJob = (overrides: Partial<Job> = {}): Job => ({
+      id: 'job-attention',
+      name: 'feature-auth',
+      worktreePath: '/path/to/worktree',
+      branch: 'mc/feature-auth',
+      status: 'running',
+      prompt: 'Add OAuth support',
+      createdAt: new Date().toISOString(),
+      sessionID: 'ses_job',
+      ...overrides,
+    });
+
+    const fire = async (event: string, job: Job, extra?: unknown) => {
+      setupNotifications({
+        client: mockClient as any,
+        monitor: mockMonitor as any,
+        getActiveSessionID: mockGetActiveSessionID as any,
+      });
+      (mockMonitor.handlers.get(event)![0] as (job: Job, extra?: unknown) => void)(job, extra);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    };
+
+    it('emits an attention event instead of a plain toast when clients can receive it', async () => {
+      const emitAttention = vi.spyOn(rpcEvents, 'emitAttention').mockResolvedValue(undefined);
+      vi.spyOn(rpcEvents, 'hasRpcEventEmitter').mockReturnValue(true);
+      (toastMod.showToast as ReturnType<typeof vi.fn>).mockClear();
+
+      await fire('complete', makeJob({ status: 'completed', completedAt: new Date().toISOString() }));
+
+      expect(emitAttention).toHaveBeenCalledWith({
+        kind: 'complete',
+        title: 'Job "feature-auth" completed',
+        message: 'Branch: mc/feature-auth',
+        jobName: 'feature-auth',
+        sessionID: 'ses_job',
+      });
+      expect(toastMod.showToast).not.toHaveBeenCalled();
+      // The launching session is still told.
+      expect(mockClient.session.synthetic).toHaveBeenCalled();
+      vi.restoreAllMocks();
+    });
+
+    it('maps each job event to an attention kind', async () => {
+      const emitAttention = vi.spyOn(rpcEvents, 'emitAttention').mockResolvedValue(undefined);
+      vi.spyOn(rpcEvents, 'hasRpcEventEmitter').mockReturnValue(true);
+
+      await fire('failed', makeJob({ id: 'j-failed', status: 'failed', completedAt: new Date().toISOString() }));
+      await fire('blocked', makeJob({ id: 'j-blocked' }));
+      await fire('needs_review', makeJob({ id: 'j-review' }));
+      await fire('awaiting_input', makeJob({ id: 'j-await' }));
+
+      expect(emitAttention.mock.calls.map(([data]) => data.kind)).toEqual([
+        'failed',
+        'blocked',
+        'needs_review',
+        'question',
+      ]);
+      vi.restoreAllMocks();
+    });
+
+    it('still tells connected clients about a job that has no session to notify', async () => {
+      // Launched from the TUI dashboard, and no session has been seen yet.
+      const emitAttention = vi.spyOn(rpcEvents, 'emitAttention').mockResolvedValue(undefined);
+      vi.spyOn(rpcEvents, 'hasRpcEventEmitter').mockReturnValue(true);
+      mockGetActiveSessionID.mockResolvedValue(undefined);
+
+      await fire('complete', makeJob({ id: 'j-dashboard', status: 'completed', completedAt: new Date().toISOString() }));
+
+      expect(emitAttention).toHaveBeenCalledWith(
+        expect.objectContaining({ kind: 'complete', jobName: 'feature-auth' }),
+      );
+      expect(mockClient.session.synthetic).not.toHaveBeenCalled();
+      expect(mockClient.session.update).not.toHaveBeenCalled();
+      vi.restoreAllMocks();
+    });
+
+    it('sends notifications whatever kind of session was active last', async () => {
+      // There used to be a gate that silenced every notification once the
+      // "active" session turned out to be a subagent. No such lookup is made now.
+      const emitAttention = vi.spyOn(rpcEvents, 'emitAttention').mockResolvedValue(undefined);
+      vi.spyOn(rpcEvents, 'hasRpcEventEmitter').mockReturnValue(true);
+      mockClient.session.get.mockResolvedValue({ title: 'Subagent', parentID: 'ses_parent' });
+
+      await fire(
+        'complete',
+        makeJob({ id: 'j-sub', status: 'completed', completedAt: new Date().toISOString(), launchSessionID: 'ses_launcher' }),
+      );
+
+      expect(emitAttention).toHaveBeenCalledTimes(1);
+      expect(mockClient.session.synthetic).toHaveBeenCalledWith(
+        expect.objectContaining({ sessionID: 'ses_launcher' }),
+      );
+      vi.restoreAllMocks();
+    });
+
+    it('says that a finished job left uncommitted changes', async () => {
+      const emitAttention = vi.spyOn(rpcEvents, 'emitAttention').mockResolvedValue(undefined);
+      vi.spyOn(rpcEvents, 'hasRpcEventEmitter').mockReturnValue(true);
+
+      await fire(
+        'needs_review',
+        makeJob({
+          id: 'j-dirty',
+          status: 'completed',
+          completedAt: new Date().toISOString(),
+          launchSessionID: 'ses_launcher',
+          uncommittedChanges: ['src/new.ts', 'README.md'],
+        }),
+      );
+
+      expect(emitAttention).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: 'needs_review',
+          message: expect.stringContaining('2 uncommitted file(s)'),
+        }),
+      );
+      const [{ text }] = mockClient.session.synthetic.mock.calls[0];
+      expect(text).toContain('needs review');
+      expect(text).toContain('src/new.ts, README.md');
+      expect(text).toContain('not on its branch');
+      vi.restoreAllMocks();
+    });
+
+    it('says why a job failed', async () => {
+      vi.spyOn(rpcEvents, 'emitAttention').mockResolvedValue(undefined);
+      vi.spyOn(rpcEvents, 'hasRpcEventEmitter').mockReturnValue(true);
+
+      await fire(
+        'failed',
+        makeJob({
+          id: 'j-why',
+          status: 'failed',
+          completedAt: new Date().toISOString(),
+          launchSessionID: 'ses_launcher',
+          failureReason: 'its session was deleted',
+        }),
+      );
+
+      const [{ text }] = mockClient.session.synthetic.mock.calls[0];
+      expect(text).toContain('Reason: its session was deleted.');
+      vi.restoreAllMocks();
+    });
+
+    it('falls back to the plain toast when no client can receive attention events', async () => {
+      const emitAttention = vi.spyOn(rpcEvents, 'emitAttention').mockResolvedValue(undefined);
+      vi.spyOn(rpcEvents, 'hasRpcEventEmitter').mockReturnValue(false);
+      (toastMod.showToast as ReturnType<typeof vi.fn>).mockClear();
+
+      await fire('complete', makeJob({ id: 'j-toast', status: 'completed', completedAt: new Date().toISOString() }));
+
+      expect(emitAttention).not.toHaveBeenCalled();
+      expect(toastMod.showToast).toHaveBeenCalledWith(
+        expect.objectContaining({ title: 'Job "feature-auth" completed', variant: 'success' }),
+      );
+      vi.restoreAllMocks();
     });
   });
 });
