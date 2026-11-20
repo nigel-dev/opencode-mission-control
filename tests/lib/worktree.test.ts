@@ -8,9 +8,7 @@ import {
   createWorktree,
   removeWorktree,
   isInManagedWorktree,
-  getWorktreeForBranch,
   syncWorktree,
-  GitWorktreeProvider,
 } from '../../src/lib/worktree';
 import type { WorktreeInfo } from '../../src/lib/providers/worktree-provider';
 
@@ -241,26 +239,6 @@ describe('worktree', () => {
     });
   });
 
-  describe('getWorktreeForBranch', () => {
-    it('should find worktree by branch name', async () => {
-      const worktreePath = join(TEST_WORKTREE_DIR, 'find-branch');
-      await createWorktree({
-        branch: 'find-branch',
-        basePath: worktreePath,
-      });
-
-      const found = await getWorktreeForBranch('find-branch');
-      expect(found).toBeDefined();
-      expect(found!.path).toBe(worktreePath);
-      expect(found!.branch).toBe('find-branch');
-    });
-
-    it('should return undefined for non-existent branch worktree', async () => {
-      const found = await getWorktreeForBranch('no-such-branch');
-      expect(found).toBeUndefined();
-    });
-  });
-
   describe('isInManagedWorktree', () => {
     it('should detect managed worktree paths', async () => {
       const xdgPath = join(
@@ -279,6 +257,20 @@ describe('worktree', () => {
       expect(result.jobName).toBe('feature-branch');
     });
 
+    it("should not take a project's state and report directories for worktrees", async () => {
+      const dataDir = join(homedir(), '.local', 'share', 'opencode-mission-control', 'my-project');
+
+      expect((await isInManagedWorktree(join(dataDir, 'state'))).isManaged).toBe(false);
+      expect((await isInManagedWorktree(join(dataDir, 'reports', 'job.json'))).isManaged).toBe(false);
+      expect((await isInManagedWorktree(dataDir)).isManaged).toBe(false);
+    });
+
+    it('should not take a sibling directory with the same prefix for the data directory', async () => {
+      const sibling = join(homedir(), '.local', 'share', 'opencode-mission-control-other', 'proj', 'branch');
+
+      expect((await isInManagedWorktree(sibling)).isManaged).toBe(false);
+    });
+
     it('should not detect non-managed paths', async () => {
       const result = await isInManagedWorktree('/tmp/some/random/path');
       expect(result.isManaged).toBe(false);
@@ -286,33 +278,53 @@ describe('worktree', () => {
     });
   });
 
-  describe('GitWorktreeProvider', () => {
-    it('should implement WorktreeProvider interface', async () => {
-      const provider = new GitWorktreeProvider();
+  describe('syncWorktree', () => {
+    async function commit(cwd: string, file: string, message: string): Promise<void> {
+      const fs = await import('fs');
+      fs.writeFileSync(join(cwd, file), `${message}\n`);
+      await exec(['git', 'add', '.'], cwd);
+      await exec(['git', 'commit', '-m', message], cwd);
+    }
 
-      const worktrees = await provider.list();
-      expect(worktrees.length).toBeGreaterThanOrEqual(1);
-      expect(worktrees[0].isMain).toBe(true);
+    it('syncs with the local base branch by default, without needing a remote', async () => {
+      const base = (await exec(['git', 'rev-parse', '--abbrev-ref', 'HEAD'], TEST_REPO_DIR)).stdout;
+      const worktreePath = join(TEST_WORKTREE_DIR, 'sync-local');
+      await createWorktree({ branch: 'sync-local', basePath: worktreePath });
+      await commit(worktreePath, 'job.txt', 'job work');
+      await commit(TEST_REPO_DIR, 'base.txt', 'base moved on');
+
+      // The test repository has no `origin`: a default that fetched from it
+      // (as it did whenever the job recorded a base branch) would fail here.
+      const result = await syncWorktree(worktreePath, 'rebase', base);
+
+      expect(result).toEqual({ success: true });
+      const log = (await exec(['git', 'log', '--format=%s'], worktreePath)).stdout.split('\n');
+      expect(log).toEqual(['job work', 'base moved on', 'initial']);
     });
 
-    it('should create and remove worktrees through provider', async () => {
-      const provider = new GitWorktreeProvider();
-      const worktreePath = join(TEST_WORKTREE_DIR, 'provider-test');
+    it('fetches only when the origin source is asked for', async () => {
+      const base = (await exec(['git', 'rev-parse', '--abbrev-ref', 'HEAD'], TEST_REPO_DIR)).stdout;
+      const worktreePath = join(TEST_WORKTREE_DIR, 'sync-origin');
+      await createWorktree({ branch: 'sync-origin', basePath: worktreePath });
 
-      const path = await provider.create({
-        branch: 'provider-test',
-        basePath: worktreePath,
-      });
-      expect(path).toBe(worktreePath);
+      const result = await syncWorktree(worktreePath, 'rebase', base, 'origin');
 
-      const worktrees = await provider.list();
-      const created = worktrees.find((wt) => wt.branch === 'provider-test');
-      expect(created).toBeDefined();
+      expect(result).toEqual({ success: false, conflicts: ['Failed to fetch from origin'] });
+    });
 
-      await provider.remove(worktreePath);
-      const afterRemove = await provider.list();
-      const removed = afterRemove.find((wt) => wt.branch === 'provider-test');
-      expect(removed).toBeUndefined();
+    it('reports conflicts and leaves the worktree as it was', async () => {
+      const base = (await exec(['git', 'rev-parse', '--abbrev-ref', 'HEAD'], TEST_REPO_DIR)).stdout;
+      const worktreePath = join(TEST_WORKTREE_DIR, 'sync-conflict');
+      await createWorktree({ branch: 'sync-conflict', basePath: worktreePath });
+      await commit(worktreePath, 'README.md', 'job version');
+      await commit(TEST_REPO_DIR, 'README.md', 'base version');
+      const headBefore = (await exec(['git', 'rev-parse', 'HEAD'], worktreePath)).stdout;
+
+      const result = await syncWorktree(worktreePath, 'rebase', base);
+
+      expect(result.success).toBe(false);
+      expect((await exec(['git', 'rev-parse', 'HEAD'], worktreePath)).stdout).toBe(headBefore);
+      expect((await exec(['git', 'status', '--porcelain'], worktreePath)).stdout).toBe('');
     });
   });
 });

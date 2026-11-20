@@ -29,7 +29,13 @@ async function executeGitDiff(
   if (stat) {
     args.push('--stat');
   }
-  args.push(`origin/${base}..${branch}`);
+  // Prefer the local base branch (jobs fork from it); fall back to the remote
+  // one. Three dots: show only what the job added since it forked.
+  const localBase = await gitCommand(['rev-parse', '--verify', '--quiet', `refs/heads/${base}`], {
+    cwd: worktreePath,
+  });
+  const baseRef = localBase.exitCode === 0 ? base : `origin/${base}`;
+  args.push(`${baseRef}...${branch}`);
 
   const diffResult = await gitCommand(args, { cwd: worktreePath });
 

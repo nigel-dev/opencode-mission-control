@@ -15,23 +15,14 @@ export type WorktreeSetup = {
 export type MCConfig = z.infer<typeof MCConfigSchema>;
 
 const DEFAULT_CONFIG: MCConfig = {
-  defaultPlacement: 'session',
   pollInterval: 10000,
-  idleThreshold: 300000,
   worktreeBasePath: join(homedir(), '.local', 'share', 'opencode-mission-control'),
   maxParallel: 3,
   autoCommit: true,
   testTimeout: 600000,
   mergeStrategy: 'squash',
-  useServeMode: true,
-  portRangeStart: 14100,
-  portRangeEnd: 14199,
   fixBeforeRollbackTimeout: 120000,
   defaultPermissionPolicy: PermissionPolicy.getDefaultPolicy(),
-  omo: {
-    enabled: false,
-    defaultMode: 'vanilla',
-  },
 };
 
 const CONFIG_FILE = 'config.json';
@@ -40,8 +31,6 @@ export async function getConfigPath(): Promise<string> {
   const dataDir = await getDataDir();
   return join(dataDir, CONFIG_FILE);
 }
-
-
 
 export async function loadConfig(): Promise<MCConfig> {
   const filePath = await getConfigPath();
@@ -54,14 +43,11 @@ export async function loadConfig(): Promise<MCConfig> {
 
   try {
     const content = await file.text();
+    // Keys removed in 2.0 are stripped by the schema instead of failing the load.
     const fileConfig = PartialMCConfigSchema.parse(JSON.parse(content));
     const result: MCConfig = {
       ...DEFAULT_CONFIG,
       ...fileConfig,
-      omo: {
-        ...DEFAULT_CONFIG.omo,
-        ...(fileConfig.omo || {}),
-      },
     };
     return result;
   } catch (error) {

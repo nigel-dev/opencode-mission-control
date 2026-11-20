@@ -1,308 +1,216 @@
-import { describe, it, expect, beforeEach, vi, type Mock } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi, type Mock } from 'vitest';
 import type { Job } from '../../src/lib/job-state';
 import * as jobState from '../../src/lib/job-state';
-import * as tmux from '../../src/lib/tmux';
+import * as jobRuntime from '../../src/lib/job-runtime';
 import * as orchestratorSingleton from '../../src/lib/orchestrator-singleton';
 
 const { mc_capture } = await import('../../src/tools/capture');
 
 let mockGetJobByName: Mock;
-let mockCapturePane: Mock;
-let mockGetSharedMonitor: Mock;
+let mockCaptureJobSession: Mock;
+let mockGetEventAccumulator: Mock;
 
-function setupDefaultMocks() {
-  mockGetJobByName.mockResolvedValue({
+function makeJob(overrides: Partial<Job> = {}): Job {
+  return {
     id: 'test-job-id',
     name: 'test-job',
-    tmuxTarget: 'mc-test-job',
+    worktreePath: '/tmp/mc-worktrees/test-job',
+    branch: 'mc/test-job',
     status: 'running',
-  } as Job);
-  mockCapturePane.mockResolvedValue('test output\nline 2\nline 3');
+    prompt: 'Test prompt',
+    createdAt: new Date().toISOString(),
+    sessionID: 'ses_capture',
+    ...overrides,
+  };
 }
 
 describe('mc_capture', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockGetJobByName = vi.spyOn(jobState, 'getJobByName').mockImplementation(() => undefined as any) as unknown as Mock;
-    mockCapturePane = vi.spyOn(tmux, 'capturePane').mockImplementation(() => '' as any) as unknown as Mock;
-    mockGetSharedMonitor = vi.spyOn(orchestratorSingleton, 'getSharedMonitor').mockReturnValue({
-      getEventAccumulator: vi.fn().mockReturnValue(undefined),
-    } as any) as unknown as Mock;
-    setupDefaultMocks();
+    mockGetJobByName = vi.spyOn(jobState, 'getJobByName').mockResolvedValue(makeJob()) as unknown as Mock;
+    mockCaptureJobSession = vi
+      .spyOn(jobRuntime, 'captureJobSession')
+      .mockResolvedValue('test output\nline 2\nline 3') as unknown as Mock;
+    mockGetEventAccumulator = vi.fn().mockReturnValue(undefined);
+    vi.spyOn(orchestratorSingleton, 'getSharedMonitor').mockReturnValue({
+      getEventAccumulator: mockGetEventAccumulator,
+    } as unknown as ReturnType<typeof orchestratorSingleton.getSharedMonitor>);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   describe('tool definition', () => {
-    it('should have correct description', () => {
-      expect(mc_capture.description).toBe('Capture current terminal output or structured events from a job');
+    it('should describe transcript capture', () => {
+      expect(mc_capture.description).toBe(
+        'Capture the recent transcript of a job, or structured activity events with a filter',
+      );
     });
 
     it('should have required arg: name', () => {
       expect(mc_capture.input.shape.name).toBeDefined();
     });
 
-    it('should have optional arg: lines', () => {
-      expect(mc_capture.input.shape.lines).toBeDefined();
+    it('should accept a call with only a name', () => {
+      expect(mc_capture.input.safeParse({ name: 'test-job' }).success).toBe(true);
+    });
+
+    it('should accept lines and filter', () => {
+      expect(mc_capture.input.safeParse({ name: 'test-job', lines: 20 }).success).toBe(true);
+      expect(mc_capture.input.safeParse({ name: 'test-job', filter: 'tool' }).success).toBe(true);
+      expect(mc_capture.input.safeParse({ name: 'test-job', filter: 'bogus' }).success).toBe(false);
     });
   });
 
-  describe('successful capture', () => {
+  describe('transcript capture', () => {
     it('should find job by name', async () => {
       await mc_capture.execute({ name: 'test-job' });
 
       expect(mockGetJobByName).toHaveBeenCalledWith('test-job');
     });
 
-    it('should use default line count of 100', async () => {
+    it("should capture the job's session with a default of 100 lines", async () => {
       await mc_capture.execute({ name: 'test-job' });
 
-      expect(mockCapturePane).toHaveBeenCalledWith('mc-test-job', 100);
+      expect(mockCaptureJobSession).toHaveBeenCalledWith('ses_capture', 100);
     });
 
-    it('should use custom line count when provided', async () => {
+    it('should use the requested line count', async () => {
       await mc_capture.execute({ name: 'test-job', lines: 50 });
 
-      expect(mockCapturePane).toHaveBeenCalledWith('mc-test-job', 50);
+      expect(mockCaptureJobSession).toHaveBeenCalledWith('ses_capture', 50);
     });
 
-    it('should return captured text', async () => {
+    it('should return the transcript unchanged', async () => {
       const result = await mc_capture.execute({ name: 'test-job' });
 
       expect(result.content).toBe('test output\nline 2\nline 3');
     });
 
-    it('should use job tmuxTarget for capture', async () => {
-      mockGetJobByName.mockResolvedValue({
-        id: 'job-id',
-        name: 'my-job',
-        tmuxTarget: 'custom-tmux-target',
-        status: 'running',
-      } as Job);
+    it('should capture finished jobs too', async () => {
+      mockGetJobByName.mockResolvedValue(makeJob({ status: 'completed', sessionID: 'ses_done' }));
 
-      await mc_capture.execute({ name: 'my-job' });
+      await mc_capture.execute({ name: 'test-job' });
 
-      expect(mockCapturePane).toHaveBeenCalledWith('custom-tmux-target', 100);
+      expect(mockCaptureJobSession).toHaveBeenCalledWith('ses_done', 100);
     });
   });
 
   describe('error handling', () => {
-    it('should throw when job not found', async () => {
+    it('should throw error when job not found', async () => {
       mockGetJobByName.mockResolvedValue(undefined);
 
       await expect(mc_capture.execute({ name: 'nonexistent' })).rejects.toThrow(
         'Job "nonexistent" not found',
       );
+      expect(mockCaptureJobSession).not.toHaveBeenCalled();
     });
 
-    it('should throw when capturePane fails', async () => {
-      mockCapturePane.mockRejectedValue(new Error('tmux error'));
+    it('should throw a clear error for a job without a session', async () => {
+      mockGetJobByName.mockResolvedValue(makeJob({ sessionID: undefined }));
 
-      await expect(mc_capture.execute({ name: 'test-job' })).rejects.toThrow('tmux error');
-    });
-  });
-
-  describe('line count handling', () => {
-    it('should handle zero lines', async () => {
-      await mc_capture.execute({ name: 'test-job', lines: 0 });
-
-      expect(mockCapturePane).toHaveBeenCalledWith('mc-test-job', 0);
+      await expect(mc_capture.execute({ name: 'test-job' })).rejects.toThrow(
+        'Job "test-job" has no session to capture',
+      );
+      expect(mockCaptureJobSession).not.toHaveBeenCalled();
     });
 
-    it('should handle large line counts', async () => {
-      await mc_capture.execute({ name: 'test-job', lines: 10000 });
+    it('should propagate runtime errors', async () => {
+      mockCaptureJobSession.mockRejectedValue(new Error('session not found'));
 
-      expect(mockCapturePane).toHaveBeenCalledWith('mc-test-job', 10000);
+      await expect(mc_capture.execute({ name: 'test-job' })).rejects.toThrow('session not found');
     });
   });
 
-  describe('serve-mode structured capture', () => {
-    it('should return structured JSON for serve-mode jobs', async () => {
-      mockGetJobByName.mockResolvedValue({
-        id: 'serve-job-id',
-        name: 'serve-job',
-        tmuxTarget: 'mc-serve-job',
-        status: 'running',
-        port: 8080,
-      } as Job);
+  describe('structured events (filter)', () => {
+    const accumulator = {
+      filesEdited: ['/tmp/a.ts', '/tmp/b.ts'],
+      currentTool: 'streaming',
+      currentFile: '/tmp/b.ts',
+      lastActivityAt: Date.UTC(2026, 0, 1),
+      eventCount: 7,
+    };
 
-      mockGetSharedMonitor.mockReturnValue({
-        getEventAccumulator: vi.fn().mockReturnValue({
-          filesEdited: ['src/index.ts', 'src/utils.ts'],
-          currentTool: 'streaming',
-          currentFile: 'src/index.ts',
-          lastActivityAt: Date.now(),
-          eventCount: 42,
-        }),
-      });
+    it('should not read the transcript when a filter is given', async () => {
+      mockGetEventAccumulator.mockReturnValue(accumulator);
 
-      const result = await mc_capture.execute({ name: 'serve-job' });
+      await mc_capture.execute({ name: 'test-job', filter: 'all' });
+
+      expect(mockCaptureJobSession).not.toHaveBeenCalled();
+      expect(mockGetEventAccumulator).toHaveBeenCalledWith('test-job-id');
+    });
+
+    it('should return an empty event list when nothing was accumulated', async () => {
+      const result = await mc_capture.execute({ name: 'test-job', filter: 'all' });
       const parsed = JSON.parse(result.content);
 
-      expect(parsed.job).toBe('serve-job');
-      expect(parsed.mode).toBe('serve');
-      expect(parsed.status).toBe('running');
+      expect(parsed).toEqual({
+        job: 'test-job',
+        status: 'running',
+        events: [],
+        message: 'No events accumulated yet',
+      });
+    });
+
+    it('should return file and tool events for filter "all"', async () => {
+      mockGetEventAccumulator.mockReturnValue(accumulator);
+
+      const result = await mc_capture.execute({ name: 'test-job', filter: 'all' });
+      const parsed = JSON.parse(result.content);
+
+      expect(parsed.job).toBe('test-job');
       expect(parsed.filter).toBe('all');
-      expect(parsed.summary.filesEdited).toBe(2);
-      expect(parsed.summary.totalEvents).toBe(42);
-      expect(parsed.summary.currentTool).toBe('streaming');
-      expect(parsed.events).toHaveLength(3);
+      expect(parsed.summary).toEqual({
+        totalEvents: 7,
+        filesEdited: 2,
+        currentTool: 'streaming',
+        currentFile: '/tmp/b.ts',
+        lastActivityAt: '2026-01-01T00:00:00.000Z',
+      });
+      expect(parsed.events).toEqual([
+        { type: 'file.edited', timestamp: '2026-01-01T00:00:00.000Z', payload: { path: '/tmp/a.ts' } },
+        { type: 'file.edited', timestamp: '2026-01-01T00:00:00.000Z', payload: { path: '/tmp/b.ts' } },
+        {
+          type: 'tool',
+          timestamp: '2026-01-01T00:00:00.000Z',
+          payload: { tool: 'streaming', file: '/tmp/b.ts' },
+        },
+      ]);
     });
 
-    it('should filter events with filter="file.edited"', async () => {
-      mockGetJobByName.mockResolvedValue({
-        id: 'serve-job-id',
-        name: 'serve-job',
-        tmuxTarget: 'mc-serve-job',
-        status: 'running',
-        port: 8080,
-      } as Job);
+    it('should return only file events for filter "file.edited"', async () => {
+      mockGetEventAccumulator.mockReturnValue(accumulator);
 
-      mockGetSharedMonitor.mockReturnValue({
-        getEventAccumulator: vi.fn().mockReturnValue({
-          filesEdited: ['src/index.ts', 'src/utils.ts'],
-          currentTool: 'streaming',
-          currentFile: 'src/index.ts',
-          lastActivityAt: Date.now(),
-          eventCount: 42,
-        }),
-      });
-
-      const result = await mc_capture.execute({ name: 'serve-job', filter: 'file.edited' });
+      const result = await mc_capture.execute({ name: 'test-job', filter: 'file.edited' });
       const parsed = JSON.parse(result.content);
 
-      expect(parsed.filter).toBe('file.edited');
       expect(parsed.events).toHaveLength(2);
-      expect(parsed.events.every((e: any) => e.type === 'file.edited')).toBe(true);
+      expect(parsed.events.every((event: { type: string }) => event.type === 'file.edited')).toBe(true);
     });
 
-    it('should filter events with filter="tool"', async () => {
-      mockGetJobByName.mockResolvedValue({
-        id: 'serve-job-id',
-        name: 'serve-job',
-        tmuxTarget: 'mc-serve-job',
-        status: 'running',
-        port: 8080,
-      } as Job);
+    it('should return only the tool event for filter "tool"', async () => {
+      mockGetEventAccumulator.mockReturnValue(accumulator);
 
-      mockGetSharedMonitor.mockReturnValue({
-        getEventAccumulator: vi.fn().mockReturnValue({
-          filesEdited: ['src/index.ts'],
-          currentTool: 'streaming',
-          currentFile: 'src/index.ts',
-          lastActivityAt: Date.now(),
-          eventCount: 5,
-        }),
-      });
-
-      const result = await mc_capture.execute({ name: 'serve-job', filter: 'tool' });
+      const result = await mc_capture.execute({ name: 'test-job', filter: 'tool' });
       const parsed = JSON.parse(result.content);
 
-      expect(parsed.filter).toBe('tool');
-      expect(parsed.events).toHaveLength(1);
-      expect(parsed.events[0].type).toBe('tool');
-      expect(parsed.events[0].payload.tool).toBe('streaming');
+      expect(parsed.events).toEqual([
+        {
+          type: 'tool',
+          timestamp: '2026-01-01T00:00:00.000Z',
+          payload: { tool: 'streaming', file: '/tmp/b.ts' },
+        },
+      ]);
     });
 
-    it('should return empty events when filter does not match', async () => {
-      mockGetJobByName.mockResolvedValue({
-        id: 'serve-job-id',
-        name: 'serve-job',
-        tmuxTarget: 'mc-serve-job',
-        status: 'running',
-        port: 8080,
-      } as Job);
+    it('should work for a job without a session', async () => {
+      mockGetJobByName.mockResolvedValue(makeJob({ sessionID: undefined }));
+      mockGetEventAccumulator.mockReturnValue(accumulator);
 
-      mockGetSharedMonitor.mockReturnValue({
-        getEventAccumulator: vi.fn().mockReturnValue({
-          filesEdited: [],
-          currentTool: 'streaming',
-          lastActivityAt: Date.now(),
-          eventCount: 5,
-        }),
-      });
+      const result = await mc_capture.execute({ name: 'test-job', filter: 'all' });
 
-      const result = await mc_capture.execute({ name: 'serve-job', filter: 'file.edited' });
-      const parsed = JSON.parse(result.content);
-
-      expect(parsed.filter).toBe('file.edited');
-      expect(parsed.events).toHaveLength(0);
-    });
-
-    it('should handle serve-mode job with no accumulator data', async () => {
-      mockGetJobByName.mockResolvedValue({
-        id: 'serve-job-id',
-        name: 'serve-job',
-        tmuxTarget: 'mc-serve-job',
-        status: 'running',
-        port: 8080,
-      } as Job);
-
-      mockGetSharedMonitor.mockReturnValue({
-        getEventAccumulator: vi.fn().mockReturnValue(undefined),
-      });
-
-      const result = await mc_capture.execute({ name: 'serve-job' });
-      const parsed = JSON.parse(result.content);
-
-      expect(parsed.job).toBe('serve-job');
-      expect(parsed.mode).toBe('serve');
-      expect(parsed.events).toEqual([]);
-      expect(parsed.message).toBe('No events accumulated yet');
-    });
-
-    it('should return raw terminal output for TUI-mode jobs', async () => {
-      mockGetJobByName.mockResolvedValue({
-        id: 'tui-job-id',
-        name: 'tui-job',
-        tmuxTarget: 'mc-tui-job',
-        status: 'running',
-      } as Job);
-
-      const result = await mc_capture.execute({ name: 'tui-job' });
-
-      expect(result.content).toBe('test output\nline 2\nline 3');
-      expect(mockCapturePane).toHaveBeenCalledWith('mc-tui-job', 100);
-    });
-
-    it('should ignore filter parameter for TUI-mode jobs', async () => {
-      mockGetJobByName.mockResolvedValue({
-        id: 'tui-job-id',
-        name: 'tui-job',
-        tmuxTarget: 'mc-tui-job',
-        status: 'running',
-      } as Job);
-
-      const result = await mc_capture.execute({ name: 'tui-job', filter: 'file.edited' });
-
-      expect(result.content).toBe('test output\nline 2\nline 3');
-      expect(mockCapturePane).toHaveBeenCalledWith('mc-tui-job', 100);
-    });
-
-    it('should have filter arg in tool schema', () => {
-      expect(mc_capture.input.shape.filter).toBeDefined();
-    });
-
-    it('should use default filter "all" when not specified', async () => {
-      mockGetJobByName.mockResolvedValue({
-        id: 'serve-job-id',
-        name: 'serve-job',
-        tmuxTarget: 'mc-serve-job',
-        status: 'running',
-        port: 8080,
-      } as Job);
-
-      mockGetSharedMonitor.mockReturnValue({
-        getEventAccumulator: vi.fn().mockReturnValue({
-          filesEdited: ['src/index.ts'],
-          currentTool: 'streaming',
-          lastActivityAt: Date.now(),
-          eventCount: 2,
-        }),
-      });
-
-      const result = await mc_capture.execute({ name: 'serve-job' });
-      const parsed = JSON.parse(result.content);
-
-      expect(parsed.filter).toBe('all');
+      expect(JSON.parse(result.content).summary.totalEvents).toBe(7);
     });
   });
 });

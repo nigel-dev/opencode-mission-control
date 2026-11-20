@@ -8,7 +8,7 @@ export const mc_sync = {
   input: z.object({
     name: z.string().describe('Job name'),
     strategy: z.enum(['rebase', 'merge']).optional().describe('Sync strategy (default: rebase)'),
-    source: z.enum(['local', 'origin']).optional().describe('Sync source: local base branch (default) or origin'),
+    source: z.enum(['local', 'origin']).optional().describe('Sync source: the local base branch (default), or origin (fetches first)'),
   }).strict(),
   async execute(args: { name: string; strategy?: 'rebase' | 'merge'; source?: 'local' | 'origin' }) {
     // 1. Find job by name

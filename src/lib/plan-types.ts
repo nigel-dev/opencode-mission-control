@@ -12,15 +12,24 @@ export type PlanStatus =
 
 export type CheckpointType = 'pre_merge' | 'on_error' | 'pre_pr';
 
-export type FailureKind = 'touchset' | 'merge_conflict' | 'test_failure' | 'job_failed';
+export type FailureKind =
+  | 'touchset'
+  | 'merge_conflict'
+  | 'test_failure'
+  | 'job_failed'
+  | 'launch_failed'
+  | 'uncommitted_changes';
 
 export interface CheckpointContext {
   jobName: string;
   failureKind: FailureKind;
   touchSetViolations?: string[];
   touchSetPatterns?: string[];
+  /** Why the job failed, in words (launch error, session failure, ...). */
+  reason?: string;
 }
 
+/** Kept so plan files written by earlier releases still load; nothing writes audit entries now. */
 export type AuditAction = 'skip_job' | 'add_job' | 'reorder_jobs' | 'fork_session' | 'relay_finding' | 'fix_prompted';
 
 export interface AuditLogEntry {
@@ -49,7 +58,6 @@ export interface PlanSpec {
   id: string;
   name: string;
   mode: 'autopilot' | 'copilot' | 'supervisor';
-  placement?: 'session' | 'window';
   baseBranch?: string;
   status: PlanStatus;
   jobs: JobSpec[];
@@ -62,6 +70,11 @@ export interface PlanSpec {
   checkpoint?: CheckpointType | null;
   checkpointContext?: CheckpointContext | null;
   launchSessionID?: string;
+  /**
+   * Model ("provider/model" or "provider/model#variant") of the session that
+   * created the plan. Jobs that name no model use it, also after a restart.
+   */
+  model?: string;
   auditLog?: AuditLogEntry[];
   permissionPolicy?: PermissionPolicyConfig;
   ghAuthenticated?: boolean;
@@ -72,6 +85,8 @@ export interface PlanSpec {
    */
   approvedMergeJobs?: string[];
   approvedPrePr?: boolean;
+  /** Why the plan as a whole failed (for example the push or `gh pr create` error). */
+  failureReason?: string;
 }
 
 export interface JobSpec {
@@ -84,17 +99,24 @@ export interface JobSpec {
   status: JobStatus;
   branch?: string;
   worktreePath?: string;
-  tmuxTarget?: string;
+  /**
+   * The job's own OpenCode session. When set, the merge train prompts it to fix
+   * failing tests before rolling a merge back (`fixBeforeRollbackTimeout`).
+   * The orchestrator does not populate it, which keeps fix-before-rollback off
+   * for plan jobs exactly as it was when jobs ran in tmux.
+   */
+  sessionID?: string;
   mergeOrder?: number;
   mergedAt?: string;
   error?: string;
   copyFiles?: string[];
   symlinkDirs?: string[];
   commands?: string[];
-  mode?: 'vanilla' | 'plan' | 'ralph' | 'ulw';
+  /** Agent for this job (defaults to the `defaultAgent` config). */
+  agent?: string;
+  /** "provider/model" or "provider/model#variant" (defaults to the plan's model). */
+  model?: string;
   relayPatterns?: string[];
-  port?: number;
-  serverUrl?: string;
   launchSessionID?: string;
   permissionPolicy?: PermissionPolicyConfig;
 }
@@ -104,7 +126,7 @@ export const VALID_PLAN_TRANSITIONS: Record<PlanStatus, PlanStatus[]> = {
   running: ['paused', 'merging', 'creating_pr', 'completed', 'failed', 'canceled'],
   paused: ['running', 'failed', 'canceled'],
   merging: ['running', 'paused', 'creating_pr', 'failed', 'canceled'],
-  creating_pr: ['completed', 'failed', 'canceled'],
+  creating_pr: ['running', 'completed', 'failed', 'canceled'],
   completed: [],
   failed: [],
   canceled: [],
@@ -115,7 +137,7 @@ export const VALID_JOB_TRANSITIONS: Record<JobStatus, JobStatus[]> = {
   waiting_deps: ['running', 'stopped', 'canceled'],
   running: ['completed', 'failed', 'stopped', 'canceled'],
   completed: ['ready_to_merge', 'failed', 'stopped', 'canceled'],
-  failed: ['ready_to_merge', 'running', 'stopped', 'canceled'],
+  failed: ['ready_to_merge', 'queued', 'running', 'stopped', 'canceled'],
   ready_to_merge: ['merging', 'needs_rebase', 'stopped', 'canceled'],
   merging: ['merged', 'conflict', 'stopped', 'canceled'],
   merged: ['needs_rebase'],

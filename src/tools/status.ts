@@ -1,6 +1,6 @@
 import { z } from 'zod';
-import { getJobByName, type Job } from '../lib/job-state';
-import { capturePane } from '../lib/tmux';
+import { getJobByName } from '../lib/job-state';
+import { captureJobSession, getJobUsage, type JobUsage } from '../lib/job-runtime';
 import { isInManagedWorktree } from '../lib/worktree';
 import { gitCommand } from '../lib/git';
 import { readReport } from '../lib/reports';
@@ -44,6 +44,7 @@ async function getGitStatus(
 
     return { filesChanged, ahead, behind, branch };
   } catch {
+    // The worktree is gone (git cannot even start there): status still renders.
     return { filesChanged: 0, ahead: 0, behind: 0, branch: 'unknown' };
   }
 }
@@ -72,12 +73,28 @@ export const mc_status = {
     // 4. Check for agent report
     const report = await readReport(job.id);
 
-    // 5. Capture recent output from tmux pane (last 10 lines)
+    // 5. Capture the tail of the job's transcript (last 10 lines)
     let recentOutput = '';
-    try {
-      recentOutput = await capturePane(job.tmuxTarget, 10);
-    } catch {
-      recentOutput = '(unable to capture pane output)';
+    if (job.sessionID) {
+      try {
+        recentOutput = await captureJobSession(job.sessionID, 10);
+      } catch {
+        // The session may have been deleted; status must still render.
+        recentOutput = '(unable to capture session output)';
+      }
+    } else {
+      recentOutput = '(no session)';
+    }
+
+    // 5b. Cost and tokens for a running job
+    let usage: JobUsage | undefined;
+    if (job.status === 'running' && job.sessionID) {
+      try {
+        usage = await getJobUsage(job.sessionID);
+      } catch {
+        // Usage is informational: omit it when the session cannot be read.
+        usage = undefined;
+      }
     }
 
     // 6. Calculate duration if running
@@ -94,51 +111,57 @@ export const mc_status = {
       duration = formatDurationMs(durationMs);
     }
 
-    // 7. Get serve-mode telemetry if available (job.port indicates serve-mode)
-    const isServeMode = job.port !== undefined && job.port > 0;
-    let serveModeTelemetry: string[] = [];
-    if (isServeMode) {
-      const monitor = getSharedMonitor();
-      const accumulator = monitor.getEventAccumulator(job.id);
-      if (accumulator) {
-        const activityTime = formatTimeAgo(new Date(accumulator.lastActivityAt).toISOString());
-        serveModeTelemetry = [
-          'Serve Mode Telemetry:',
-          `  Session State: ${accumulator.currentTool || 'idle'}`,
-          `  Current File: ${accumulator.currentFile || '(none)'}`,
-          `  Files Edited: ${accumulator.filesEdited.length}`,
-          ...(accumulator.filesEdited.length > 0
-            ? accumulator.filesEdited.map((f) => `    - ${f}`)
-            : []),
-          `  Last Activity: ${activityTime}`,
-          `  Events Accumulated: ${accumulator.eventCount}`,
-          '',
-        ];
-      }
+    // 7. Activity the monitor accumulated from the job's session events
+    let activity: string[] = [];
+    const accumulator = getSharedMonitor().getEventAccumulator(job.id);
+    if (accumulator) {
+      const activityTime = formatTimeAgo(new Date(accumulator.lastActivityAt).toISOString());
+      activity = [
+        'Session Activity:',
+        `  Session State: ${accumulator.currentTool || 'idle'}`,
+        `  Current File: ${accumulator.currentFile || '(none)'}`,
+        `  Files Edited: ${accumulator.filesEdited.length}`,
+        ...(accumulator.filesEdited.length > 0
+          ? accumulator.filesEdited.map((f) => `    - ${f}`)
+          : []),
+        `  Last Activity: ${activityTime}`,
+        `  Events Accumulated: ${accumulator.eventCount}`,
+        '',
+      ];
     }
 
     // 8. Format output
     const lines: string[] = [
       `Job: ${job.name}`,
       `Status: ${job.status}`,
+      ...(job.status === 'failed' && job.failureReason ? [`Reason: ${job.failureReason}`] : []),
+      ...(job.uncommittedChanges && job.uncommittedChanges.length > 0
+        ? [
+            `Needs review: finished with ${job.uncommittedChanges.length} uncommitted file(s) that are not on its branch:`,
+            ...job.uncommittedChanges.slice(0, 20).map((file) => `  - ${file}`),
+            ...(job.uncommittedChanges.length > 20 ? [`  - ... and ${job.uncommittedChanges.length - 20} more`] : []),
+          ]
+        : []),
       `ID: ${job.id}`,
       '',
       'Metadata:',
       `  Branch: ${job.branch}`,
-      `  Mode: ${job.mode}`,
-      `  Placement: ${job.placement}`,
+      ...(job.sessionID ? [`  Session: ${job.sessionID}`] : []),
+      ...(job.agent ? [`  Agent: ${job.agent}`] : []),
+      ...(job.model ? [`  Model: ${job.model}`] : []),
       `  Created: ${new Date(job.createdAt).toISOString()}`,
       ...(job.completedAt ? [`  Completed: ${new Date(job.completedAt).toISOString()}`] : []),
       ...(duration ? [`  Duration: ${duration}`] : []),
-      ...(job.exitCode !== undefined ? [`  Exit Code: ${job.exitCode}`] : []),
-      ...(isServeMode && job.port ? [`  Port: ${job.port}`] : []),
-      ...(job.serverUrl ? [`  Server URL: ${job.serverUrl}`] : []),
+      ...(usage
+        ? [
+            `  Cost: $${usage.cost.toFixed(4)}`,
+            `  Tokens: ${usage.inputTokens} in / ${usage.outputTokens} out`,
+          ]
+        : []),
       '',
       'Paths:',
       `  Worktree: ${job.worktreePath}`,
       `  Managed: ${managedCheck.isManaged}`,
-      `  tmux Target: ${job.tmuxTarget}`,
-      ...(job.planFile ? [`  Plan File: ${job.planFile}`] : []),
       '',
       'Git Status:',
       `  Branch: ${gitStatus.branch}`,
@@ -146,7 +169,7 @@ export const mc_status = {
       `  Ahead: ${gitStatus.ahead}`,
       `  Behind: ${gitStatus.behind}`,
       '',
-      ...(serveModeTelemetry.length > 0 ? serveModeTelemetry : []),
+      ...activity,
       ...(report
         ? [
             'Agent Report:',

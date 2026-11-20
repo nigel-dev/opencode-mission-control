@@ -11,6 +11,7 @@ vi.mock('../../src/lib/paths', () => ({
 
 const paths = await import('../../src/lib/paths');
 const { loadConfig, saveConfig, getConfigPath } = await import('../../src/lib/config');
+const { PartialMCConfigSchema } = await import('../../src/lib/schemas');
 
 let testConfigDir: string;
 
@@ -23,11 +24,41 @@ async function createTempDir(): Promise<string> {
   return fs.promises.mkdtemp(join(tmpdir(), 'mc-config-test-'));
 }
 
+/** A config.json as written by a 1.x release, with every since-removed key. */
+const LEGACY_CONFIG = {
+  defaultPlacement: 'window',
+  pollInterval: 15000,
+  idleThreshold: 600000,
+  worktreeBasePath: '/legacy/path',
+  maxParallel: 5,
+  autoCommit: false,
+  testCommand: 'bun test',
+  testTimeout: 300000,
+  mergeStrategy: 'merge',
+  worktreeSetup: { copyFiles: ['.env'], commands: ['bun install'] },
+  useServeMode: true,
+  portRangeStart: 14100,
+  portRangeEnd: 14199,
+  serverPassword: 'hunter2',
+  fixBeforeRollbackTimeout: 60000,
+  omo: { enabled: true, defaultMode: 'ralph' },
+};
+
+const REMOVED_KEYS = [
+  'defaultPlacement',
+  'idleThreshold',
+  'useServeMode',
+  'portRangeStart',
+  'portRangeEnd',
+  'serverPassword',
+  'omo',
+];
+
 describe('config', () => {
   beforeEach(async () => {
     vi.clearAllMocks();
     testConfigDir = await createTempDir();
-    (paths.getDataDir as any).mockResolvedValue(testConfigDir);
+    (paths.getDataDir as unknown as { mockResolvedValue(value: string): void }).mockResolvedValue(testConfigDir);
   });
 
   afterEach(async () => {
@@ -49,55 +80,52 @@ describe('config', () => {
     it('should return default config when file does not exist', async () => {
       const config = await loadConfig();
 
-      expect(config.defaultPlacement).toBe('session');
-      expect(config.pollInterval).toBe(10000);
-      expect(config.idleThreshold).toBe(300000);
-      expect(config.worktreeBasePath).toBe(
-        join(homedir(), '.local', 'share', 'opencode-mission-control')
-      );
-      expect(config.omo.enabled).toBe(false);
-      expect(config.omo.defaultMode).toBe('vanilla');
+      expect(config).toEqual({
+        pollInterval: 10000,
+        worktreeBasePath: join(homedir(), '.local', 'share', 'opencode-mission-control'),
+        maxParallel: 3,
+        autoCommit: true,
+        testTimeout: 600000,
+        mergeStrategy: 'squash',
+        fixBeforeRollbackTimeout: 120000,
+        defaultPermissionPolicy: PermissionPolicy.getDefaultPolicy(),
+      });
+    });
+
+    it('should not define a default agent or model', async () => {
+      const config = await loadConfig();
+
+      expect(config.defaultAgent).toBeUndefined();
+      expect(config.defaultModel).toBeUndefined();
     });
 
     it('should load existing config from file', async () => {
       const testConfig: MCConfig = {
-        defaultPlacement: 'window',
         pollInterval: 5000,
-        idleThreshold: 600000,
         worktreeBasePath: '/custom/path',
-        omo: {
-          enabled: true,
-          defaultMode: 'plan',
-        },
+        defaultAgent: 'build',
+        defaultModel: 'anthropic/claude-sonnet-4#high',
       };
 
       await Bun.write(getTestConfigFile(), JSON.stringify(testConfig));
       const loaded = await loadConfig();
 
-      expect(loaded.defaultPlacement).toBe('window');
       expect(loaded.pollInterval).toBe(5000);
-      expect(loaded.idleThreshold).toBe(600000);
       expect(loaded.worktreeBasePath).toBe('/custom/path');
-      expect(loaded.omo.enabled).toBe(true);
-      expect(loaded.omo.defaultMode).toBe('plan');
+      expect(loaded.defaultAgent).toBe('build');
+      expect(loaded.defaultModel).toBe('anthropic/claude-sonnet-4#high');
     });
 
     it('should merge file config with defaults', async () => {
-      const partialConfig = {
-        pollInterval: 15000,
-        omo: {
-          enabled: true,
-        },
-      };
-
-      await Bun.write(getTestConfigFile(), JSON.stringify(partialConfig));
+      await Bun.write(getTestConfigFile(), JSON.stringify({ pollInterval: 15000 }));
       const loaded = await loadConfig();
 
       expect(loaded.pollInterval).toBe(15000);
-      expect(loaded.omo.enabled).toBe(true);
-      expect(loaded.omo.defaultMode).toBe('vanilla');
-      expect(loaded.defaultPlacement).toBe('session');
-      expect(loaded.idleThreshold).toBe(300000);
+      expect(loaded.maxParallel).toBe(3);
+      expect(loaded.mergeStrategy).toBe('squash');
+      expect(loaded.worktreeBasePath).toBe(
+        join(homedir(), '.local', 'share', 'opencode-mission-control'),
+      );
     });
 
     it('should throw error on invalid JSON', async () => {
@@ -105,96 +133,152 @@ describe('config', () => {
 
       await expect(loadConfig()).rejects.toThrow('Failed to load config');
     });
+
+    it('should reject a value of the wrong type for a supported key', async () => {
+      await Bun.write(getTestConfigFile(), JSON.stringify({ pollInterval: 'fast' }));
+
+      await expect(loadConfig()).rejects.toThrow('Invalid config');
+    });
+  });
+
+  describe('legacy config keys', () => {
+    it('should load a 1.x config file without failing', async () => {
+      await Bun.write(getTestConfigFile(), JSON.stringify(LEGACY_CONFIG));
+
+      await expect(loadConfig()).resolves.toBeDefined();
+    });
+
+    it('should drop the removed keys and keep the supported ones', async () => {
+      await Bun.write(getTestConfigFile(), JSON.stringify(LEGACY_CONFIG));
+
+      const loaded = await loadConfig();
+
+      for (const key of REMOVED_KEYS) {
+        expect(loaded).not.toHaveProperty(key);
+      }
+      expect(loaded).toEqual({
+        pollInterval: 15000,
+        worktreeBasePath: '/legacy/path',
+        maxParallel: 5,
+        autoCommit: false,
+        testCommand: 'bun test',
+        testTimeout: 300000,
+        mergeStrategy: 'merge',
+        worktreeSetup: { copyFiles: ['.env'], commands: ['bun install'] },
+        fixBeforeRollbackTimeout: 60000,
+        defaultPermissionPolicy: PermissionPolicy.getDefaultPolicy(),
+      });
+    });
+
+    it('should ignore removed keys even when their values are malformed', async () => {
+      await Bun.write(
+        getTestConfigFile(),
+        JSON.stringify({
+          pollInterval: 20000,
+          defaultPlacement: 42,
+          useServeMode: 'yes',
+          portRangeStart: 'low',
+          omo: 'enabled',
+        }),
+      );
+
+      const loaded = await loadConfig();
+
+      expect(loaded.pollInterval).toBe(20000);
+      for (const key of REMOVED_KEYS) {
+        expect(loaded).not.toHaveProperty(key);
+      }
+    });
+
+    it('should ignore unknown keys in general', async () => {
+      await Bun.write(
+        getTestConfigFile(),
+        JSON.stringify({ pollInterval: 20000, somethingFromTheFuture: { nested: true } }),
+      );
+
+      const loaded = await loadConfig();
+
+      expect(loaded.pollInterval).toBe(20000);
+      expect(loaded).not.toHaveProperty('somethingFromTheFuture');
+    });
+
+    it('should strip unknown keys at the schema level', () => {
+      const parsed = PartialMCConfigSchema.parse(LEGACY_CONFIG);
+
+      for (const key of REMOVED_KEYS) {
+        expect(parsed).not.toHaveProperty(key);
+      }
+      expect(parsed.pollInterval).toBe(15000);
+    });
+
+    it('should not write removed keys back when a loaded legacy config is saved', async () => {
+      await Bun.write(getTestConfigFile(), JSON.stringify(LEGACY_CONFIG));
+
+      await saveConfig(await loadConfig());
+      const saved = JSON.parse(await Bun.file(getTestConfigFile()).text());
+
+      for (const key of REMOVED_KEYS) {
+        expect(saved).not.toHaveProperty(key);
+      }
+      expect(saved.worktreeBasePath).toBe('/legacy/path');
+    });
   });
 
   describe('saveConfig', () => {
     it('should save config to file', async () => {
       const config: MCConfig = {
-        defaultPlacement: 'window',
         pollInterval: 20000,
-        idleThreshold: 400000,
         worktreeBasePath: '/another/path',
-        omo: {
-          enabled: true,
-          defaultMode: 'ralph',
-        },
+        defaultAgent: 'build',
+        defaultModel: 'openai/gpt-5',
       };
 
       await saveConfig(config);
       const file = Bun.file(getTestConfigFile());
       expect(await file.exists()).toBe(true);
 
-      const content = await file.text();
-      const loaded = JSON.parse(content) as MCConfig;
+      const loaded = JSON.parse(await file.text()) as MCConfig;
 
-      expect(loaded.defaultPlacement).toBe('window');
-      expect(loaded.pollInterval).toBe(20000);
-      expect(loaded.idleThreshold).toBe(400000);
-      expect(loaded.worktreeBasePath).toBe('/another/path');
-      expect(loaded.omo.enabled).toBe(true);
-      expect(loaded.omo.defaultMode).toBe('ralph');
+      expect(loaded).toEqual(config);
+    });
+
+    it('should omit undefined values', async () => {
+      await saveConfig({ pollInterval: 10000, worktreeBasePath: '/path', defaultModel: undefined });
+
+      const saved = JSON.parse(await Bun.file(getTestConfigFile()).text());
+
+      expect(saved).toEqual({ pollInterval: 10000, worktreeBasePath: '/path' });
     });
 
     it('should use atomic write pattern', async () => {
-      const config: MCConfig = {
-        defaultPlacement: 'session',
-        pollInterval: 10000,
-        idleThreshold: 300000,
-        worktreeBasePath: join(homedir(), '.local', 'share', 'opencode-mission-control'),
-        omo: {
-          enabled: false,
-          defaultMode: 'vanilla',
-        },
-      };
+      await saveConfig({ pollInterval: 10000, worktreeBasePath: '/path' });
 
-      await saveConfig(config);
-      const file = Bun.file(getTestConfigFile());
-      expect(await file.exists()).toBe(true);
-
-      const tempFile = Bun.file(`${getTestConfigFile()}.tmp`);
-      expect(await tempFile.exists()).toBe(false);
+      expect(await Bun.file(getTestConfigFile()).exists()).toBe(true);
+      expect(await Bun.file(`${getTestConfigFile()}.tmp`).exists()).toBe(false);
     });
 
     it('should format JSON with indentation', async () => {
-      const config: MCConfig = {
-        defaultPlacement: 'session',
-        pollInterval: 10000,
-        idleThreshold: 300000,
-        worktreeBasePath: '/path',
-        omo: {
-          enabled: false,
-          defaultMode: 'vanilla',
-        },
-      };
+      await saveConfig({ pollInterval: 10000, worktreeBasePath: '/path' });
+      const content = await Bun.file(getTestConfigFile()).text();
 
-      await saveConfig(config);
-      const file = Bun.file(getTestConfigFile());
-      const content = await file.text();
-
-      expect(content).toContain('\n');
-      expect(content).toContain('  ');
+      expect(content).toBe(
+        JSON.stringify({ pollInterval: 10000, worktreeBasePath: '/path' }, null, 2),
+      );
     });
   });
 
   describe('loadConfig and saveConfig integration', () => {
     it('should round-trip config correctly', async () => {
       const originalConfig: MCConfig = {
-        defaultPlacement: 'window',
         pollInterval: 25000,
-        idleThreshold: 500000,
         worktreeBasePath: '/integration/test/path',
         maxParallel: 3,
         autoCommit: true,
         testTimeout: 600000,
         mergeStrategy: 'squash',
-        useServeMode: true,
-        portRangeStart: 14100,
-        portRangeEnd: 14199,
         fixBeforeRollbackTimeout: 120000,
-        omo: {
-          enabled: true,
-          defaultMode: 'ulw',
-        },
+        defaultAgent: 'build',
+        defaultModel: 'anthropic/claude-sonnet-4',
       };
 
       await saveConfig(originalConfig);
@@ -207,27 +291,13 @@ describe('config', () => {
     });
 
     it('should update config on subsequent saves', async () => {
-      const config1: MCConfig = {
-        defaultPlacement: 'session',
-        pollInterval: 10000,
-        idleThreshold: 300000,
-        worktreeBasePath: '/path1',
-        omo: {
-          enabled: false,
-          defaultMode: 'vanilla',
-        },
-      };
+      const config1: MCConfig = { pollInterval: 10000, worktreeBasePath: '/path1' };
 
       await saveConfig(config1);
       let loaded = await loadConfig();
       expect(loaded.worktreeBasePath).toBe('/path1');
 
-      const config2: MCConfig = {
-        ...config1,
-        worktreeBasePath: '/path2',
-      };
-
-      await saveConfig(config2);
+      await saveConfig({ ...config1, worktreeBasePath: '/path2' });
       loaded = await loadConfig();
       expect(loaded.worktreeBasePath).toBe('/path2');
     });

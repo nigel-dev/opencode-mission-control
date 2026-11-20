@@ -4,6 +4,7 @@ import { loadPlan } from '../lib/plan-state';
 import { readAllReports, type AgentReport } from '../lib/reports';
 import { formatTimeAgo } from '../lib/utils';
 import { getSharedMonitor } from '../lib/orchestrator-singleton';
+import { getJobUsage } from '../lib/job-runtime';
 
 
 
@@ -42,11 +43,6 @@ function getReportForJob(
 }
 
 function getJobActivityState(job: Job): { state: string; lastActivity: string } {
-  const isServeMode = job.port !== undefined && job.port > 0;
-  if (!isServeMode) {
-    return { state: 'tmux', lastActivity: formatTimeAgo(job.createdAt) };
-  }
-
   const monitor = getSharedMonitor();
   const accumulator = monitor.getEventAccumulator(job.id);
   if (!accumulator) {
@@ -62,6 +58,19 @@ function getJobActivityState(job: Job): { state: string; lastActivity: string } 
   }
 
   return { state, lastActivity };
+}
+
+async function getUsageText(job: Job): Promise<string | undefined> {
+  if (!job.sessionID) {
+    return undefined;
+  }
+  try {
+    const usage = await getJobUsage(job.sessionID);
+    return `$${usage.cost.toFixed(4)}, ${usage.inputTokens} in / ${usage.outputTokens} out`;
+  } catch {
+    // Usage is informational: omit it when the session cannot be read.
+    return undefined;
+  }
 }
 
 function formatRecentCompletions(jobs: Job[]): string[] {
@@ -117,7 +126,8 @@ function formatRecentFailures(jobs: Job[]): string[] {
 
   return failed.map((job) => {
     const endedAt = job.completedAt ?? job.createdAt;
-    return `- ${job.name} | failed ${formatTimeAgo(endedAt)} | ${job.branch}`;
+    const reason = job.failureReason ? ` | ${job.failureReason}` : '';
+    return `- ${job.name} | failed ${formatTimeAgo(endedAt)} | ${job.branch}${reason}`;
   });
 }
 
@@ -142,7 +152,7 @@ function getSuggestedActions(
       .map((report) => report.jobName)
       .join(', ');
     actions.push(
-      `${blockedReports.length} job(s) blocked - run mc_attach for ${names}`,
+      `${blockedReports.length} job(s) blocked - reply with mc_answer for ${names}`,
     );
   }
 
@@ -233,25 +243,28 @@ export const mc_overview = {
     if (runningJobs.length === 0) {
       lines.push('- None');
     } else {
-      const runningLines = runningJobs
-        .sort(
-          (a, b) =>
-            new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
-        )
-        .map((job) => {
+      const sortedRunning = [...runningJobs].sort(
+        (a, b) =>
+          new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
+      );
+      const runningLines = await Promise.all(
+        sortedRunning.map(async (job) => {
           const lastReport = getReportForJob(job, reportsByJob);
           const activity = getJobActivityState(job);
-          const isServeMode = job.port !== undefined && job.port > 0;
-
-          if (isServeMode) {
-            return `- ${job.name} | ${activity.state} | ${activity.lastActivity} | ${job.branch}`;
-          }
-
           const reportText = lastReport
             ? `${lastReport.status}: ${truncate(lastReport.message, 60)}`
             : 'none';
-          return `- ${job.name} | ${activity.lastActivity} | ${job.branch} | last report: ${reportText}`;
-        });
+          const usageText = await getUsageText(job);
+
+          return [
+            `- ${job.name} | ${activity.state} | ${activity.lastActivity} | ${job.branch}`,
+            ...(job.agent ? [`agent: ${job.agent}`] : []),
+            ...(job.model ? [`model: ${job.model}`] : []),
+            ...(usageText ? [usageText] : []),
+            `last report: ${reportText}`,
+          ].join(' | ');
+        }),
+      );
       lines.push(...runningLines);
     }
 

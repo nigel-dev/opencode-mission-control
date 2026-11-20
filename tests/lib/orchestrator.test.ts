@@ -7,12 +7,11 @@ import * as jobStateMod from '../../src/lib/job-state';
 import * as mergeTrainMod from '../../src/lib/merge-train';
 import { Orchestrator, hasCircularDependency, topologicalSort } from '../../src/lib/orchestrator';
 import * as planStateMod from '../../src/lib/plan-state';
-import * as tmuxMod from '../../src/lib/tmux';
+import * as jobRuntimeMod from '../../src/lib/job-runtime';
 import * as worktreeMod from '../../src/lib/worktree';
-import * as promptFileMod from '../../src/lib/prompt-file';
 import * as reportsMod from '../../src/lib/reports';
 import * as modelTrackerMod from '../../src/lib/model-tracker';
-import * as sdkClientMod from '../../src/lib/sdk-client';
+import * as gitMod from '../../src/lib/git';
 
 function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
@@ -44,6 +43,26 @@ function makePlan(overrides: Partial<PlanSpec> = {}): PlanSpec {
 }
 
 class FakeMonitor extends EventEmitter {}
+
+// No test in this file may reach the real `git push` or `gh pr create`: a plan
+// whose jobs are all merged would otherwise push from the developer's checkout.
+beforeEach(() => {
+  spyOn(Orchestrator.prototype as any, 'runCommand').mockImplementation(async (command: string[]) => ({
+    stdout: '',
+    stderr: `${command[0]} is not available in tests`,
+    exitCode: 1,
+  }));
+});
+
+async function waitUntil(condition: () => boolean, timeoutMs = 2000): Promise<void> {
+  const start = Date.now();
+  while (!condition()) {
+    if (Date.now() - start > timeoutMs) {
+      throw new Error('Timed out waiting for condition');
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
 
 describe('orchestrator', () => {
   let planState: PlanSpec | null;
@@ -79,6 +98,7 @@ describe('orchestrator', () => {
         if (updates.checkpointContext !== undefined) planState.checkpointContext = updates.checkpointContext;
         if (updates.completedAt !== undefined) planState.completedAt = updates.completedAt;
         if (updates.prUrl !== undefined) planState.prUrl = updates.prUrl;
+        if (updates.failureReason !== undefined) planState.failureReason = updates.failureReason;
       },
     );
     spyOn(planStateMod, 'clearPlan').mockImplementation(async () => {
@@ -107,15 +127,9 @@ describe('orchestrator', () => {
     spyOn(worktreeMod, 'createWorktree').mockResolvedValue('/tmp/wt/job-a');
     spyOn(worktreeMod, 'removeWorktree').mockResolvedValue();
 
-    spyOn(tmuxMod, 'createSession').mockResolvedValue();
-    spyOn(tmuxMod, 'createWindow').mockResolvedValue();
-    spyOn(tmuxMod, 'getCurrentSession').mockReturnValue('main');
-    spyOn(tmuxMod, 'isInsideTmux').mockReturnValue(true);
-    spyOn(tmuxMod, 'isPaneRunning').mockResolvedValue(true);
-    spyOn(tmuxMod, 'killSession').mockResolvedValue();
-    spyOn(tmuxMod, 'killWindow').mockResolvedValue();
-    spyOn(tmuxMod, 'sendKeys').mockResolvedValue();
-    spyOn(tmuxMod, 'setPaneDiedHook').mockResolvedValue();
+    spyOn(jobRuntimeMod, 'startJobSession').mockResolvedValue('ses_job');
+    spyOn(jobRuntimeMod, 'stopJobSession').mockResolvedValue();
+    spyOn(jobRuntimeMod, 'removeJobSession').mockResolvedValue();
 
     spyOn(mergeTrainMod, 'checkMergeability').mockResolvedValue({ canMerge: true });
   });
@@ -177,7 +191,10 @@ describe('orchestrator', () => {
     await (orchestrator as any).reconcile();
 
     expect(launchSpy).toHaveBeenCalledTimes(1);
-    expect(launchSpy).toHaveBeenCalledWith(expect.objectContaining({ name: 'job-a' }));
+    expect(launchSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'job-a' }),
+      expect.objectContaining({ id: 'plan-1' }),
+    );
     expect(planStateMod.updatePlanJob).toHaveBeenCalledWith('plan-1', 'job-b', { status: 'waiting_deps' });
   });
 
@@ -304,6 +321,28 @@ describe('orchestrator', () => {
     expect(createPRSpy).toHaveBeenCalledTimes(1);
     expect(planState?.status).toBe('completed');
     expect(planState?.prUrl).toBe('https://example.com/pr/1');
+  });
+
+  it('records why the plan failed when PR creation fails', async () => {
+    planState = makePlan({
+      status: 'running',
+      jobs: [makeJob('done', { status: 'merged', mergeOrder: 0 })],
+    });
+
+    const orchestrator = new Orchestrator(monitor as any, {
+      pollInterval: 10000,
+      worktreeBasePath: '/tmp',
+    } as any);
+    spyOn(orchestrator as any, 'createPR').mockRejectedValue(
+      new Error('gh pr create failed: no default remote repository'),
+    );
+
+    await (orchestrator as any).reconcile();
+
+    expect(planState?.status).toBe('failed');
+    expect(planState?.failureReason).toBe(
+      'PR creation failed: gh pr create failed: no default remote repository',
+    );
   });
 
   it('failed job event pauses the plan', async () => {
@@ -456,28 +495,31 @@ describe('orchestrator', () => {
         name: 'one',
         worktreePath: '/tmp/w1',
         branch: 'mc/one',
-        tmuxTarget: 'mc-one',
-        placement: 'session',
         status: 'running',
         prompt: 'one',
-        mode: 'vanilla',
         createdAt: '2026-01-01T00:00:00.000Z',
         planId: 'plan-1',
+        sessionID: 'ses_one',
       },
       {
         id: 'job-2',
         name: 'two',
         worktreePath: '/tmp/w2',
         branch: 'mc/two',
-        tmuxTarget: 'main:two',
-        placement: 'window',
         status: 'running',
         prompt: 'two',
-        mode: 'vanilla',
         createdAt: '2026-01-01T00:00:00.000Z',
         planId: 'plan-1',
+        sessionID: 'ses_two',
       },
     ];
+    const order: string[] = [];
+    (jobStateMod.updateJob as ReturnType<typeof mock>).mockImplementation(async (id: string) => {
+      order.push(`update:${id}`);
+    });
+    (jobRuntimeMod.stopJobSession as ReturnType<typeof mock>).mockImplementation(async (sessionID: string) => {
+      order.push(`stop:${sessionID}`);
+    });
 
     const orchestrator = new Orchestrator(monitor as any, {
       defaultPlacement: 'session',
@@ -489,8 +531,17 @@ describe('orchestrator', () => {
 
     await orchestrator.cancelPlan();
 
-    expect(tmuxMod.killSession).toHaveBeenCalledWith('mc-one');
-    expect(tmuxMod.killWindow).toHaveBeenCalledWith('main', 'two');
+    // Each job is marked stopped before its session is interrupted, so the
+    // monitor never records the interruption as a failure.
+    expect(order).toEqual(['update:job-1', 'stop:ses_one', 'update:job-2', 'stop:ses_two']);
+    expect(jobStateMod.updateJob).toHaveBeenCalledWith(
+      'job-1',
+      expect.objectContaining({ status: 'stopped' }),
+    );
+    expect(jobRuntimeMod.removeJobSession).toHaveBeenCalledWith('ses_one');
+    expect(jobRuntimeMod.removeJobSession).toHaveBeenCalledWith('ses_two');
+    expect(worktreeMod.removeWorktree).toHaveBeenCalledWith('/tmp/w1', true);
+    expect(worktreeMod.removeWorktree).toHaveBeenCalledWith('/tmp/w2', true);
     expect(integrationMod.deleteIntegrationBranch).toHaveBeenCalledWith('plan-1');
     expect(planStateMod.clearPlan).toHaveBeenCalled();
   });
@@ -568,7 +619,89 @@ describe('orchestrator', () => {
     });
   });
 
-  it('resumePlan reconstructs state and marks dead running panes failed', async () => {
+  it('resumePlan leaves running jobs that have a session to the monitor', async () => {
+    planState = makePlan({
+      status: 'running',
+      jobs: [makeJob('alive', { status: 'running' })],
+    });
+    runningJobs = [
+      {
+        id: 'job-1',
+        name: 'alive',
+        worktreePath: '/tmp/w1',
+        branch: 'mc/alive',
+        status: 'running',
+        prompt: 'alive',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        planId: 'plan-1',
+        sessionID: 'ses_alive',
+      },
+    ];
+
+    const orchestrator = new Orchestrator(monitor as any, {
+      pollInterval: 10000,
+      worktreeBasePath: '/tmp',
+    } as any);
+    const startSpy = spyOn(orchestrator as any, 'startReconciler').mockImplementation(() => {});
+
+    await orchestrator.resumePlan();
+
+    expect(jobStateMod.updateJob).not.toHaveBeenCalled();
+    expect(planState?.status).toBe('running');
+    expect(planState?.jobs[0].status).toBe('running');
+    expect(startSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('resumePlan keeps a plan paused at a checkpoint paused', async () => {
+    planState = makePlan({
+      status: 'paused',
+      checkpoint: 'on_error',
+      jobs: [makeJob('broken', { status: 'failed' })],
+    });
+
+    const orchestrator = new Orchestrator(monitor as any, {
+      pollInterval: 10000,
+      worktreeBasePath: '/tmp',
+    } as any);
+    const startSpy = spyOn(orchestrator as any, 'startReconciler').mockImplementation(() => {});
+
+    await orchestrator.resumePlan();
+
+    // Only mc_plan_approve may clear a checkpoint; a reload must not.
+    expect(planState?.status).toBe('paused');
+    expect(planState?.checkpoint).toBe('on_error');
+    expect(orchestrator.getCheckpoint()).toBe('on_error');
+    expect(startSpy).not.toHaveBeenCalled();
+  });
+
+  it('resumePlan undoes a merge cut off by a restart and requeues the job', async () => {
+    planState = makePlan({
+      status: 'running',
+      integrationWorktree: '/tmp/integration',
+      jobs: [makeJob('half-merged', { status: 'merging' })],
+    });
+    const gitCalls: string[][] = [];
+    const gitSpy = spyOn(gitMod, 'gitCommand').mockImplementation(async (args: string[]) => {
+      gitCalls.push(args);
+      // The merge commit exists, but its tests never finished.
+      const stdout = args.includes('log') ? 'Merge half-merged' : '';
+      return { stdout, stderr: '', exitCode: 0 };
+    });
+
+    const orchestrator = new Orchestrator(monitor as any, {
+      pollInterval: 10000,
+      worktreeBasePath: '/tmp',
+    } as any);
+    spyOn(orchestrator as any, 'startReconciler').mockImplementation(() => {});
+
+    await orchestrator.resumePlan();
+    gitSpy.mockRestore();
+
+    expect(gitCalls).toContainEqual(['-C', '/tmp/integration', 'reset', '--hard', 'HEAD~1']);
+    expect(planState?.jobs[0].status).toBe('ready_to_merge');
+  });
+
+  it('resumePlan fails a running job that has no session and pauses the plan on it', async () => {
     planState = makePlan({
       status: 'running',
       jobs: [makeJob('stuck', { status: 'running' })],
@@ -579,35 +712,34 @@ describe('orchestrator', () => {
         name: 'stuck',
         worktreePath: '/tmp/w1',
         branch: 'mc/stuck',
-        tmuxTarget: 'mc-stuck',
-        placement: 'session',
         status: 'running',
         prompt: 'stuck',
-        mode: 'vanilla',
         createdAt: '2026-01-01T00:00:00.000Z',
         planId: 'plan-1',
       },
     ];
-    spyOn(tmuxMod, 'isTmuxHealthy').mockResolvedValue(true);
-    spyOn(tmuxMod, 'isPaneRunning').mockResolvedValue(false);
 
     const orchestrator = new Orchestrator(monitor as any, {
-      defaultPlacement: 'session',
       pollInterval: 10000,
-      idleThreshold: 300000,
       worktreeBasePath: '/tmp',
-      omo: { enabled: false, defaultMode: 'vanilla' },
     } as any);
-    const startSpy = spyOn(orchestrator as any, 'startReconciler');
 
     await orchestrator.resumePlan();
+    // The reconcile pass started by resumePlan finds the failed job.
+    await waitUntil(() => planState?.status === 'paused');
+    await orchestrator.dispose();
 
     expect(jobStateMod.updateJob).toHaveBeenCalledWith(
       'job-1',
-      expect.objectContaining({ status: 'failed' }),
+      expect.objectContaining({ status: 'failed', failureReason: 'the job has no session to resume after a restart' }),
     );
-    expect(planState?.status).toBe('failed');
-    expect(startSpy).not.toHaveBeenCalled();
+    expect(planState?.jobs[0]).toMatchObject({
+      status: 'failed',
+      error: 'the job has no session to resume after a restart',
+    });
+    // Not a dead end: the plan waits at a checkpoint the user can act on.
+    expect(planState?.checkpoint).toBe('on_error');
+    expect(planState?.checkpointContext).toMatchObject({ jobName: 'stuck', failureKind: 'job_failed' });
   });
 
   it('should fail job and pause plan when touchSet is violated', async () => {
@@ -952,7 +1084,15 @@ describe('orchestrator', () => {
 
     expect(planStateMod.updatePlanJob).toHaveBeenCalledWith('plan-1', 'killed-job', {
       status: 'failed',
-      error: 'recovered from missed completion event',
+      error: 'the job was stopped',
+    });
+    // A failed job nobody handles would stall the plan: it pauses instead.
+    expect(planState?.status).toBe('paused');
+    expect(planState?.checkpoint).toBe('on_error');
+    expect(planState?.checkpointContext).toEqual({
+      jobName: 'killed-job',
+      failureKind: 'job_failed',
+      reason: 'the job was stopped',
     });
   });
 });
@@ -1019,15 +1159,9 @@ describe('orchestrator reconcile pending (dirty re-reconcile)', () => {
     spyOn(worktreeMod, 'createWorktree').mockResolvedValue('/tmp/wt/job-a');
     spyOn(worktreeMod, 'removeWorktree').mockResolvedValue();
 
-    spyOn(tmuxMod, 'createSession').mockResolvedValue();
-    spyOn(tmuxMod, 'createWindow').mockResolvedValue();
-    spyOn(tmuxMod, 'getCurrentSession').mockReturnValue('main');
-    spyOn(tmuxMod, 'isInsideTmux').mockReturnValue(true);
-    spyOn(tmuxMod, 'isPaneRunning').mockResolvedValue(true);
-    spyOn(tmuxMod, 'killSession').mockResolvedValue();
-    spyOn(tmuxMod, 'killWindow').mockResolvedValue();
-    spyOn(tmuxMod, 'sendKeys').mockResolvedValue();
-    spyOn(tmuxMod, 'setPaneDiedHook').mockResolvedValue();
+    spyOn(jobRuntimeMod, 'startJobSession').mockResolvedValue('ses_job');
+    spyOn(jobRuntimeMod, 'stopJobSession').mockResolvedValue();
+    spyOn(jobRuntimeMod, 'removeJobSession').mockResolvedValue();
 
     spyOn(mergeTrainMod, 'checkMergeability').mockResolvedValue({ canMerge: true });
   });
@@ -1216,25 +1350,14 @@ describe('plan-scoped branch naming', () => {
     spyOn(worktreeMod, 'createWorktree').mockResolvedValue('/tmp/wt/job-a');
     spyOn(worktreeMod, 'removeWorktree').mockResolvedValue();
 
-    spyOn(tmuxMod, 'createSession').mockResolvedValue();
-    spyOn(tmuxMod, 'createWindow').mockResolvedValue();
-    spyOn(tmuxMod, 'getCurrentSession').mockReturnValue('main');
-    spyOn(tmuxMod, 'isInsideTmux').mockReturnValue(true);
-    spyOn(tmuxMod, 'isPaneRunning').mockResolvedValue(true);
-    spyOn(tmuxMod, 'killSession').mockResolvedValue();
-    spyOn(tmuxMod, 'killWindow').mockResolvedValue();
-    spyOn(tmuxMod, 'sendKeys').mockResolvedValue();
-    spyOn(tmuxMod, 'setPaneDiedHook').mockResolvedValue();
+    spyOn(jobRuntimeMod, 'startJobSession').mockResolvedValue('ses_job');
+    spyOn(jobRuntimeMod, 'stopJobSession').mockResolvedValue();
+    spyOn(jobRuntimeMod, 'removeJobSession').mockResolvedValue();
 
     spyOn(mergeTrainMod, 'checkMergeability').mockResolvedValue({ canMerge: true });
 
-    spyOn(promptFileMod, 'writePromptFile').mockResolvedValue('/tmp/wt/job-a/.mc-prompt');
-    spyOn(promptFileMod, 'cleanupPromptFile').mockImplementation(() => {});
-    spyOn(promptFileMod, 'writeLauncherScript').mockResolvedValue('/tmp/wt/job-a/.mc-launcher.sh');
-    spyOn(promptFileMod, 'cleanupLauncherScript').mockImplementation(() => {});
-
     spyOn(reportsMod, 'removeReport').mockResolvedValue();
-    spyOn(modelTrackerMod, 'getCurrentModel').mockReturnValue('test-model');
+    spyOn(modelTrackerMod, 'getCurrentModel').mockReturnValue('test/model');
   });
 
   afterEach(() => {
@@ -1313,7 +1436,7 @@ describe('plan-scoped branch naming', () => {
     );
   });
 
-  it('tmux session name stays based on job name, not branch', async () => {
+  it('job session is named after the job, not the branch', async () => {
     planState = makePlan({
       id: 'a1b2c3d4-e5f6-7890-abcd-ef1234567890',
       status: 'running',
@@ -1321,510 +1444,200 @@ describe('plan-scoped branch naming', () => {
     });
 
     const orchestrator = new Orchestrator(monitor as any, {
-      defaultPlacement: 'session',
       pollInterval: 10000,
-      idleThreshold: 300000,
       worktreeBasePath: '/tmp',
-      omo: { enabled: false, defaultMode: 'vanilla' },
     } as any);
 
     await (orchestrator as any).reconcile();
 
-    expect(tmuxMod.createSession).toHaveBeenCalledWith(
+    expect(jobRuntimeMod.startJobSession).toHaveBeenCalledWith(
       expect.objectContaining({
-        name: 'mc-api-endpoints',
+        jobName: 'api-endpoints',
+        worktreePath: '/tmp/wt/job-a',
+        planId: 'a1b2c3d4-e5f6-7890-abcd-ef1234567890',
       }),
     );
   });
-});
 
-describe('orchestrator dynamic replanning', () => {
-  let planState: PlanSpec | null;
-  let runningJobs: Job[];
-  let monitor: FakeMonitor;
+  it('launches plan jobs through the shared launcher and records them with their session', async () => {
+    planState = makePlan({
+      status: 'running',
+      launchSessionID: 'ses_planner',
+      jobs: [makeJob('api-endpoints', { status: 'queued', agent: 'build' })],
+    });
 
-  function makeConfig() {
-    return {
-      defaultPlacement: 'session' as const,
+    const orchestrator = new Orchestrator(monitor as any, {
       pollInterval: 10000,
-      idleThreshold: 300000,
       worktreeBasePath: '/tmp',
-      omo: { enabled: false, defaultMode: 'vanilla' },
-      maxParallel: 3,
-    };
-  }
+      autoCommit: false,
+    } as any);
+    (orchestrator as any).planLaunchSessionID = 'ses_planner';
 
-  beforeEach(() => {
-    planState = null;
-    runningJobs = [];
-    monitor = new FakeMonitor();
+    await (orchestrator as any).reconcile();
 
-    spyOn(planStateMod, 'loadPlan').mockImplementation(async () => clone(planState));
-    spyOn(planStateMod, 'savePlan').mockImplementation(async (plan: PlanSpec) => {
-      planState = clone(plan);
-    });
-    spyOn(planStateMod, 'updatePlanJob').mockImplementation(
-      async (planId: string, jobName: string, updates: Partial<JobSpec>) => {
-        if (!planState || planState.id !== planId) {
-          return;
-        }
-        planState.jobs = planState.jobs.map((job) =>
-          job.name === jobName ? { ...job, ...updates } : job,
-        );
-      },
+    expect(worktreeMod.createWorktree).toHaveBeenCalledWith(
+      expect.objectContaining({ branch: 'mc/plan/plan-1/api-endpoints', startPoint: 'abc123' }),
     );
-    spyOn(planStateMod, 'updatePlanFields').mockImplementation(
-      async (planId: string, updates: Partial<PlanSpec>) => {
-        if (!planState || planState.id !== planId) {
-          return;
-        }
-        if (updates.status !== undefined) planState.status = updates.status;
-        if (updates.checkpoint !== undefined) planState.checkpoint = updates.checkpoint;
-        if (updates.checkpointContext !== undefined) planState.checkpointContext = updates.checkpointContext;
-        if (updates.completedAt !== undefined) planState.completedAt = updates.completedAt;
-        if (updates.prUrl !== undefined) planState.prUrl = updates.prUrl;
-        if (updates.auditLog !== undefined) planState.auditLog = updates.auditLog;
-      },
+    expect(jobRuntimeMod.startJobSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        jobName: 'api-endpoints',
+        agent: 'build',
+        model: { providerID: 'test', id: 'model' },
+        planId: 'plan-1',
+        launchSessionID: 'ses_planner',
+        prompt: expect.stringContaining('do api-endpoints'),
+      }),
     );
-    spyOn(planStateMod, 'clearPlan').mockImplementation(async () => {
-      planState = null;
-    });
-    spyOn(planStateMod, 'validateGhAuth').mockResolvedValue(true);
-
-    spyOn(integrationMod, 'createIntegrationBranch').mockResolvedValue({
-      branch: 'mc/integration-plan-1',
-      worktreePath: '/tmp/integration-plan-1',
-    });
-    spyOn(integrationMod, 'deleteIntegrationBranch').mockResolvedValue();
-
-    spyOn(jobStateMod, 'getRunningJobs').mockImplementation(async () => clone(runningJobs));
-    spyOn(jobStateMod, 'addJob').mockResolvedValue();
-    spyOn(jobStateMod, 'updateJob').mockResolvedValue();
-    spyOn(jobStateMod, 'removeJob').mockResolvedValue();
-    spyOn(jobStateMod, 'loadJobState').mockImplementation(async () => ({
-      version: 2,
-      jobs: runningJobs,
-      updatedAt: new Date().toISOString(),
-    }));
-
-    spyOn(worktreeMod, 'createWorktree').mockResolvedValue('/tmp/wt/job-a');
-    spyOn(worktreeMod, 'removeWorktree').mockResolvedValue();
-
-    spyOn(tmuxMod, 'createSession').mockResolvedValue();
-    spyOn(tmuxMod, 'createWindow').mockResolvedValue();
-    spyOn(tmuxMod, 'getCurrentSession').mockReturnValue('main');
-    spyOn(tmuxMod, 'isInsideTmux').mockReturnValue(true);
-    spyOn(tmuxMod, 'isPaneRunning').mockResolvedValue(true);
-    spyOn(tmuxMod, 'killSession').mockResolvedValue();
-    spyOn(tmuxMod, 'killWindow').mockResolvedValue();
-    spyOn(tmuxMod, 'sendKeys').mockResolvedValue();
-    spyOn(tmuxMod, 'setPaneDiedHook').mockResolvedValue();
-
-    spyOn(mergeTrainMod, 'checkMergeability').mockResolvedValue({ canMerge: true });
-
-    spyOn(promptFileMod, 'writePromptFile').mockResolvedValue('/tmp/wt/job-a/.mc-prompt');
-    spyOn(promptFileMod, 'cleanupPromptFile').mockImplementation(() => {});
-    spyOn(promptFileMod, 'writeLauncherScript').mockResolvedValue('/tmp/wt/job-a/.mc-launcher.sh');
-    spyOn(promptFileMod, 'cleanupLauncherScript').mockImplementation(() => {});
-
-    spyOn(reportsMod, 'removeReport').mockResolvedValue();
-    spyOn(modelTrackerMod, 'getCurrentModel').mockReturnValue('test-model');
-  });
-
-  afterEach(() => {
-    mock.restore();
-  });
-
-  describe('skipJob', () => {
-    it('marks job as canceled in autopilot mode', async () => {
-      planState = makePlan({
+    expect(jobStateMod.addJob).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'api-endpoints',
+        branch: 'mc/plan/plan-1/api-endpoints',
+        worktreePath: '/tmp/wt/job-a',
         status: 'running',
-        mode: 'autopilot',
-        jobs: [
-          makeJob('skip-me', { status: 'queued' }),
-          makeJob('keep-me', { status: 'queued' }),
-        ],
-      });
-
-      const orchestrator = new Orchestrator(monitor as any, makeConfig() as any);
-      spyOn(orchestrator as any, 'reconcile').mockResolvedValue(undefined);
-      (orchestrator as any).activePlanId = 'plan-1';
-
-      await orchestrator.skipJob('skip-me', 'no longer needed');
-
-      expect(planStateMod.updatePlanJob).toHaveBeenCalledWith('plan-1', 'skip-me', { status: 'canceled' });
-    });
-
-    it('records skip in audit log with reason', async () => {
-      planState = makePlan({
-        status: 'running',
-        mode: 'autopilot',
-        jobs: [makeJob('skip-me', { status: 'queued' })],
-      });
-
-      const orchestrator = new Orchestrator(monitor as any, makeConfig() as any);
-      spyOn(orchestrator as any, 'reconcile').mockResolvedValue(undefined);
-      (orchestrator as any).activePlanId = 'plan-1';
-
-      await orchestrator.skipJob('skip-me', 'scope reduced');
-
-      expect(planState?.auditLog).toBeDefined();
-      expect(planState!.auditLog).toHaveLength(1);
-      expect(planState!.auditLog![0].action).toBe('skip_job');
-      expect(planState!.auditLog![0].jobName).toBe('skip-me');
-      expect(planState!.auditLog![0].details).toEqual({ reason: 'scope reduced' });
-    });
-
-    it('provides default reason when none given', async () => {
-      planState = makePlan({
-        status: 'running',
-        mode: 'autopilot',
-        jobs: [makeJob('skip-me', { status: 'queued' })],
-      });
-
-      const orchestrator = new Orchestrator(monitor as any, makeConfig() as any);
-      spyOn(orchestrator as any, 'reconcile').mockResolvedValue(undefined);
-      (orchestrator as any).activePlanId = 'plan-1';
-
-      await orchestrator.skipJob('skip-me');
-
-      expect(planState!.auditLog![0].details).toEqual({ reason: 'No reason provided' });
-    });
-
-    it('throws when no active plan exists', async () => {
-      planState = null;
-
-      const orchestrator = new Orchestrator(monitor as any, makeConfig() as any);
-
-      await expect(orchestrator.skipJob('any')).rejects.toThrow('No active plan');
-    });
-
-    it('throws when job not found in plan', async () => {
-      planState = makePlan({
-        status: 'running',
-        mode: 'autopilot',
-        jobs: [makeJob('exists')],
-      });
-
-      const orchestrator = new Orchestrator(monitor as any, makeConfig() as any);
-      (orchestrator as any).activePlanId = 'plan-1';
-
-      await expect(orchestrator.skipJob('nonexistent')).rejects.toThrow('not found in plan');
-    });
-
-    it('requires approval in supervisor mode', async () => {
-      planState = makePlan({
-        status: 'running',
-        mode: 'supervisor',
-        jobs: [makeJob('skip-me', { status: 'queued' })],
-      });
-
-      const orchestrator = new Orchestrator(monitor as any, makeConfig() as any);
-      (orchestrator as any).activePlanId = 'plan-1';
-
-      await orchestrator.skipJob('skip-me');
-
-      const pending = orchestrator.getPendingReplanActions();
-      expect(pending).toHaveLength(1);
-      expect(pending[0].id).toBe('skip-skip-me');
-      expect(planStateMod.updatePlanJob).not.toHaveBeenCalledWith('plan-1', 'skip-me', { status: 'canceled' });
+        prompt: 'do api-endpoints',
+        planId: 'plan-1',
+        launchSessionID: 'ses_planner',
+        sessionID: 'ses_job',
+        agent: 'build',
+        model: 'test/model',
+      }),
+    );
+    expect(planState?.jobs[0]).toMatchObject({
+      status: 'running',
+      branch: 'mc/plan/plan-1/api-endpoints',
+      worktreePath: '/tmp/wt/job-a',
     });
   });
 
-  describe('addJob', () => {
-    it('inserts new job into plan and saves', async () => {
-      planState = makePlan({
-        status: 'running',
-        mode: 'autopilot',
-        jobs: [makeJob('existing', { status: 'running' })],
-      });
-
-      const orchestrator = new Orchestrator(monitor as any, makeConfig() as any);
-      spyOn(orchestrator as any, 'reconcile').mockResolvedValue(undefined);
-      (orchestrator as any).activePlanId = 'plan-1';
-
-      await orchestrator.addJob({
-        name: 'new-job',
-        prompt: 'do new things',
-      });
-
-      expect(planState?.jobs).toHaveLength(2);
-      const addedJob = planState?.jobs.find((j) => j.name === 'new-job');
-      expect(addedJob).toBeDefined();
-      expect(addedJob?.status).toBe('queued');
-      expect(addedJob?.prompt).toBe('do new things');
-      expect(addedJob?.id).toBeTruthy();
+  it('uses the plan model snapshot when the job spec has no model', async () => {
+    planState = makePlan({
+      status: 'running',
+      jobs: [
+        makeJob('uses-snapshot', { status: 'queued' }),
+        makeJob('own-model', { status: 'queued', model: 'openai/gpt-5#high' }),
+      ],
     });
 
-    it('records add_job in audit log', async () => {
-      planState = makePlan({
-        status: 'running',
-        mode: 'autopilot',
-        jobs: [makeJob('existing', { status: 'running' })],
-      });
+    const orchestrator = new Orchestrator(monitor as any, {
+      pollInterval: 10000,
+      worktreeBasePath: '/tmp',
+    } as any);
+    orchestrator.setPlanModelSnapshot('anthropic/claude-sonnet-4');
 
-      const orchestrator = new Orchestrator(monitor as any, makeConfig() as any);
-      spyOn(orchestrator as any, 'reconcile').mockResolvedValue(undefined);
-      (orchestrator as any).activePlanId = 'plan-1';
+    await (orchestrator as any).reconcile();
 
-      await orchestrator.addJob({ name: 'new-job', prompt: 'do it' });
+    expect(jobRuntimeMod.startJobSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        jobName: 'uses-snapshot',
+        model: { providerID: 'anthropic', id: 'claude-sonnet-4' },
+      }),
+    );
+    expect(jobRuntimeMod.startJobSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        jobName: 'own-model',
+        model: { providerID: 'openai', id: 'gpt-5', variant: 'high' },
+      }),
+    );
+  });
 
-      expect(planState?.auditLog).toHaveLength(1);
-      expect(planState!.auditLog![0].action).toBe('add_job');
-      expect(planState!.auditLog![0].jobName).toBe('new-job');
+  it('marks the plan job failed and removes the worktree when the session cannot start', async () => {
+    planState = makePlan({
+      status: 'running',
+      jobs: [makeJob('doomed', { status: 'queued' })],
     });
+    (jobRuntimeMod.startJobSession as ReturnType<typeof mock>).mockRejectedValue(new Error('no such agent'));
 
-    it('attempts session fork when forkFrom is specified', async () => {
-      const mockClient = { session: { fork: async () => ({ data: { id: 'forked-session' } }) } };
-      spyOn(sdkClientMod, 'waitForServer').mockResolvedValue(mockClient as any);
-      spyOn(sdkClientMod, 'forkJobSession').mockResolvedValue('forked-session');
+    const orchestrator = new Orchestrator(monitor as any, {
+      pollInterval: 10000,
+      worktreeBasePath: '/tmp',
+    } as any);
 
-      planState = makePlan({
-        status: 'running',
-        mode: 'autopilot',
-        jobs: [makeJob('source-job', { status: 'running', port: 14100, launchSessionID: 'src-session' })],
-      });
+    await (orchestrator as any).reconcile();
 
-      const orchestrator = new Orchestrator(monitor as any, makeConfig() as any);
-      spyOn(orchestrator as any, 'reconcile').mockResolvedValue(undefined);
-      (orchestrator as any).activePlanId = 'plan-1';
+    expect(worktreeMod.removeWorktree).toHaveBeenCalledWith('/tmp/wt/job-a', true);
+    expect(jobStateMod.addJob).not.toHaveBeenCalled();
+    expect(planState?.jobs[0].status).toBe('failed');
+    expect(planState?.jobs[0].error).toContain('no such agent');
+  });
 
-      await orchestrator.addJob(
-        { name: 'forked-job', prompt: 'continue work' },
-        { forkFrom: 'source-job' },
-      );
-
-      expect(sdkClientMod.forkJobSession).toHaveBeenCalledWith(
-        mockClient,
-        'src-session',
-        expect.objectContaining({
-          sourceJobName: 'source-job',
-          newJobName: 'forked-job',
-          additionalPrompt: 'continue work',
+  it('relaunchJobForCorrection reuses the worktree and branch in a new session', async () => {
+    planState = makePlan({
+      status: 'paused',
+      jobs: [
+        makeJob('strayed', {
+          status: 'failed',
+          branch: 'mc/plan/plan-1/strayed',
+          worktreePath: '/tmp/wt/strayed',
         }),
-      );
+      ],
     });
+    runningJobs = [
+      {
+        id: 'old-run',
+        name: 'strayed',
+        worktreePath: '/tmp/wt/strayed',
+        branch: 'mc/plan/plan-1/strayed',
+        status: 'completed',
+        prompt: 'do strayed',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        planId: 'plan-1',
+        sessionID: 'ses_old',
+      },
+    ];
 
-    it('records forkFrom in audit log details', async () => {
-      const mockClient = { session: {} };
-      spyOn(sdkClientMod, 'waitForServer').mockResolvedValue(mockClient as any);
-      spyOn(sdkClientMod, 'forkJobSession').mockResolvedValue('forked-session');
+    const orchestrator = new Orchestrator(monitor as any, {
+      pollInterval: 10000,
+      worktreeBasePath: '/tmp',
+    } as any);
 
-      planState = makePlan({
-        status: 'running',
-        mode: 'autopilot',
-        jobs: [makeJob('source', { status: 'running', port: 14100, launchSessionID: 'sess-1' })],
-      });
+    await orchestrator.relaunchJobForCorrection('strayed', ['README.md'], ['src/**']);
 
-      const orchestrator = new Orchestrator(monitor as any, makeConfig() as any);
-      spyOn(orchestrator as any, 'reconcile').mockResolvedValue(undefined);
-      (orchestrator as any).activePlanId = 'plan-1';
-
-      await orchestrator.addJob({ name: 'new', prompt: 'go' }, { forkFrom: 'source' });
-
-      expect(planState!.auditLog![0].details).toEqual(
-        expect.objectContaining({ forkFrom: 'source' }),
-      );
-    });
-
-    it('throws when no active plan', async () => {
-      planState = null;
-
-      const orchestrator = new Orchestrator(monitor as any, makeConfig() as any);
-
-      await expect(
-        orchestrator.addJob({ name: 'x', prompt: 'y' }),
-      ).rejects.toThrow('No active plan');
-    });
-
-    it('requires approval in copilot mode', async () => {
-      planState = makePlan({
-        status: 'running',
-        mode: 'copilot',
-        jobs: [makeJob('existing')],
-      });
-
-      const orchestrator = new Orchestrator(monitor as any, makeConfig() as any);
-      (orchestrator as any).activePlanId = 'plan-1';
-
-      await orchestrator.addJob({ name: 'pending-add', prompt: 'do it' });
-
-      const pending = orchestrator.getPendingReplanActions();
-      expect(pending).toHaveLength(1);
-      expect(pending[0].id).toBe('add-pending-add');
-      expect(planState?.jobs).toHaveLength(1);
-    });
+    expect(worktreeMod.createWorktree).not.toHaveBeenCalled();
+    expect(jobRuntimeMod.stopJobSession).not.toHaveBeenCalled();
+    expect(jobRuntimeMod.startJobSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        jobName: 'strayed',
+        worktreePath: '/tmp/wt/strayed',
+        prompt: expect.stringContaining('CORRECTION TASK — TouchSet Violation'),
+      }),
+    );
+    expect(reportsMod.removeReport).toHaveBeenCalledWith('old-run');
+    expect(jobStateMod.removeJob).toHaveBeenCalledWith('old-run');
+    expect(jobStateMod.addJob).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'strayed',
+        worktreePath: '/tmp/wt/strayed',
+        branch: 'mc/plan/plan-1/strayed',
+        sessionID: 'ses_job',
+        planId: 'plan-1',
+      }),
+    );
+    expect(planState?.jobs[0].status).toBe('running');
   });
 
-  describe('reorderJobs', () => {
-    it('updates mergeOrder of all jobs', async () => {
-      planState = makePlan({
-        status: 'running',
-        mode: 'autopilot',
-        jobs: [
-          makeJob('a', { status: 'queued', mergeOrder: 0 }),
-          makeJob('b', { status: 'queued', mergeOrder: 1 }),
-          makeJob('c', { status: 'queued', mergeOrder: 2 }),
-        ],
-      });
-
-      const orchestrator = new Orchestrator(monitor as any, makeConfig() as any);
-      spyOn(orchestrator as any, 'reconcile').mockResolvedValue(undefined);
-      (orchestrator as any).activePlanId = 'plan-1';
-
-      await orchestrator.reorderJobs(['c', 'a', 'b']);
-
-      expect(planState?.jobs[0].name).toBe('c');
-      expect(planState?.jobs[0].mergeOrder).toBe(0);
-      expect(planState?.jobs[1].name).toBe('a');
-      expect(planState?.jobs[1].mergeOrder).toBe(1);
-      expect(planState?.jobs[2].name).toBe('b');
-      expect(planState?.jobs[2].mergeOrder).toBe(2);
+  it('relaunchJobForCorrection reports a failed relaunch without removing the worktree', async () => {
+    planState = makePlan({
+      status: 'paused',
+      jobs: [
+        makeJob('strayed', {
+          status: 'failed',
+          branch: 'mc/plan/plan-1/strayed',
+          worktreePath: '/tmp/wt/strayed',
+        }),
+      ],
     });
+    (jobRuntimeMod.startJobSession as ReturnType<typeof mock>).mockRejectedValue(new Error('server busy'));
 
-    it('records reorder in audit log', async () => {
-      planState = makePlan({
-        status: 'running',
-        mode: 'autopilot',
-        jobs: [
-          makeJob('a', { status: 'queued', mergeOrder: 0 }),
-          makeJob('b', { status: 'queued', mergeOrder: 1 }),
-        ],
-      });
+    const orchestrator = new Orchestrator(monitor as any, {
+      pollInterval: 10000,
+      worktreeBasePath: '/tmp',
+    } as any);
 
-      const orchestrator = new Orchestrator(monitor as any, makeConfig() as any);
-      spyOn(orchestrator as any, 'reconcile').mockResolvedValue(undefined);
-      (orchestrator as any).activePlanId = 'plan-1';
+    await expect(
+      orchestrator.relaunchJobForCorrection('strayed', ['README.md'], ['src/**']),
+    ).rejects.toThrow('Failed to relaunch job "strayed" for correction');
 
-      await orchestrator.reorderJobs(['b', 'a']);
-
-      expect(planState?.auditLog).toHaveLength(1);
-      expect(planState!.auditLog![0].action).toBe('reorder_jobs');
-      expect(planState!.auditLog![0].details).toEqual({ newOrder: ['b', 'a'] });
-    });
-
-    it('throws when job count does not match', async () => {
-      planState = makePlan({
-        status: 'running',
-        mode: 'autopilot',
-        jobs: [makeJob('a'), makeJob('b')],
-      });
-
-      const orchestrator = new Orchestrator(monitor as any, makeConfig() as any);
-      (orchestrator as any).activePlanId = 'plan-1';
-
-      await expect(orchestrator.reorderJobs(['a'])).rejects.toThrow('must contain all jobs');
-    });
-
-    it('throws when unknown job names present', async () => {
-      planState = makePlan({
-        status: 'running',
-        mode: 'autopilot',
-        jobs: [makeJob('a'), makeJob('b')],
-      });
-
-      const orchestrator = new Orchestrator(monitor as any, makeConfig() as any);
-      (orchestrator as any).activePlanId = 'plan-1';
-
-      await expect(orchestrator.reorderJobs(['a', 'z'])).rejects.toThrow('unknown job names');
-    });
-
-    it('throws when no active plan', async () => {
-      planState = null;
-
-      const orchestrator = new Orchestrator(monitor as any, makeConfig() as any);
-
-      await expect(orchestrator.reorderJobs(['a'])).rejects.toThrow('No active plan');
-    });
-  });
-
-  describe('audit log', () => {
-    it('accumulates entries across multiple operations', async () => {
-      planState = makePlan({
-        status: 'running',
-        mode: 'autopilot',
-        jobs: [
-          makeJob('a', { status: 'queued', mergeOrder: 0 }),
-          makeJob('b', { status: 'queued', mergeOrder: 1 }),
-        ],
-      });
-
-      const orchestrator = new Orchestrator(monitor as any, makeConfig() as any);
-      spyOn(orchestrator as any, 'reconcile').mockResolvedValue(undefined);
-      (orchestrator as any).activePlanId = 'plan-1';
-
-      await orchestrator.skipJob('a', 'not needed');
-      await orchestrator.addJob({ name: 'c', prompt: 'do c' });
-
-      expect(planState?.auditLog).toHaveLength(2);
-      expect(planState!.auditLog![0].action).toBe('skip_job');
-      expect(planState!.auditLog![1].action).toBe('add_job');
-    });
-
-    it('marks userApproved false in autopilot', async () => {
-      planState = makePlan({
-        status: 'running',
-        mode: 'autopilot',
-        jobs: [makeJob('x', { status: 'queued' })],
-      });
-
-      const orchestrator = new Orchestrator(monitor as any, makeConfig() as any);
-      spyOn(orchestrator as any, 'reconcile').mockResolvedValue(undefined);
-      (orchestrator as any).activePlanId = 'plan-1';
-
-      await orchestrator.skipJob('x');
-
-      expect(planState!.auditLog![0].userApproved).toBe(false);
-    });
-  });
-
-  describe('approveReplanAction', () => {
-    it('executes pending action on approval', async () => {
-      planState = makePlan({
-        status: 'running',
-        mode: 'supervisor',
-        jobs: [makeJob('skip-target', { status: 'queued' })],
-      });
-
-      const orchestrator = new Orchestrator(monitor as any, makeConfig() as any);
-      spyOn(orchestrator as any, 'reconcile').mockResolvedValue(undefined);
-      (orchestrator as any).activePlanId = 'plan-1';
-
-      await orchestrator.skipJob('skip-target');
-      expect(orchestrator.getPendingReplanActions()).toHaveLength(1);
-
-      await orchestrator.approveReplanAction('skip-skip-target');
-
-      expect(planStateMod.updatePlanJob).toHaveBeenCalledWith('plan-1', 'skip-target', { status: 'canceled' });
-      expect(orchestrator.getPendingReplanActions()).toHaveLength(0);
-    });
-
-    it('throws when action ID does not exist', async () => {
-      const orchestrator = new Orchestrator(monitor as any, makeConfig() as any);
-
-      await expect(
-        orchestrator.approveReplanAction('nonexistent'),
-      ).rejects.toThrow('No pending replan action');
-    });
-  });
-
-  describe('relayFinding', () => {
-    it('delegates to internal jobComms and shows toast', async () => {
-      const toastFn = mock(() => {});
-
-      const orchestrator = new Orchestrator(monitor as any, makeConfig() as any, toastFn as any);
-
-      orchestrator.relayFinding('job-a', 'job-b', {
-        finding: 'Type mismatch',
-        severity: 'error',
-      });
-
-      expect(toastFn).toHaveBeenCalledWith(
-        'Mission Control',
-        expect.stringContaining('job-a'),
-        'info',
-        expect.any(Number),
-      );
-    });
+    expect(worktreeMod.removeWorktree).not.toHaveBeenCalled();
+    expect(planState?.jobs[0].status).toBe('failed');
   });
 });

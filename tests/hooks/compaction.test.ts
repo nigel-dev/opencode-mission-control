@@ -60,9 +60,8 @@ describe('compaction hook', () => {
     expect(context).toContain('Mission Control (1 running):');
     expect(context).toContain('feature-auth');
     expect(context).toContain('[running 5m]');
-    expect(context).toContain('mc/feature-auth');
-    expect(context).toContain('vanilla');
-    expect(context).toContain('"Add OAuth support"');
+    expect(context).toContain('mc/feature-auth | "Add OAuth support"');
+    expect(context).not.toContain('vanilla');
     expect(context).toContain('report: none');
     expect(context).toContain('Commands: mc_overview');
   });
@@ -239,20 +238,18 @@ describe('getJobCompactionContext', () => {
     vi.restoreAllMocks();
   });
 
-  it('should return job context string with jobName, mode, jobPrompt, and mc_report when in job', async () => {
+  it('should return job context string with jobName, jobPrompt, and mc_report when in job', async () => {
     mockGetWorktreeContext.mockResolvedValue({
       isInJob: true,
       jobName: 'feature-auth',
       jobPrompt: 'Add OAuth support',
-      mode: 'vanilla',
     });
 
     const context = await getJobCompactionContext();
 
-    expect(context).toContain('feature-auth');
-    expect(context).toContain('vanilla');
-    expect(context).toContain('Add OAuth support');
-    expect(context).toContain('mc_report');
+    expect(context).toBe(
+      "Mission Control Job Agent: You are working on job 'feature-auth'. Your task: Add OAuth support. Focus on YOUR task only. Use mc_report to report status. Do NOT manage other jobs.",
+    );
   });
 
   it('should return generic fallback when job context incomplete (isInJob true but no jobName)', async () => {

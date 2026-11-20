@@ -1,12 +1,12 @@
+import * as fs from 'fs';
 import { spawn } from 'bun';
 import { join, resolve } from 'path';
-import { getProjectId, getXdgDataDir } from './paths';
+import { canonicalPath, getProjectId, getXdgDataDir } from './paths';
 import { gitCommand, getDefaultBranch } from './git';
 import type {
   WorktreeInfo,
   SyncResult,
   PostCreateHook,
-  WorktreeProvider,
 } from './providers/worktree-provider';
 import { extractConflicts } from './utils';
 import { validateCommand } from './worktree-setup';
@@ -79,7 +79,6 @@ export async function createWorktree(opts: {
   const worktreePath =
     opts.basePath ?? join(XDG_DATA_DIR, projectId, sanitizedBranch);
 
-  const fs = await import('fs');
   fs.mkdirSync(join(worktreePath, '..'), { recursive: true });
 
   const branchCheckResult = await gitCommand(['branch', '--list', opts.branch]);
@@ -95,11 +94,22 @@ export async function createWorktree(opts: {
   }
 
   if (createResult.exitCode !== 0) {
-    throw new Error(`Failed to create worktree: ${createResult.stdout}`);
+    throw new Error(`Failed to create worktree: ${createResult.stderr || createResult.stdout}`);
   }
 
   if (opts.postCreate) {
-    await runPostCreateHooks(worktreePath, opts.postCreate);
+    try {
+      await runPostCreateHooks(worktreePath, opts.postCreate);
+    } catch (error) {
+      // Do not leave a half-set-up worktree (and a branch we just created) behind.
+      const removeResult = await gitCommand(['worktree', 'remove', '--force', worktreePath]);
+      if (removeResult.exitCode !== 0) {
+        console.warn(`[Mission Control] Could not remove worktree ${worktreePath} after a failed setup: ${removeResult.stderr}`);
+      } else if (!branchExists) {
+        await gitCommand(['branch', '-D', opts.branch]);
+      }
+      throw error;
+    }
   }
 
   return worktreePath;
@@ -110,7 +120,6 @@ async function runPostCreateHooks(
   hooks: PostCreateHook,
 ): Promise<void> {
   const mainPath = await getMainWorktree();
-  const fs = await import('fs');
 
   if (hooks.copyFiles) {
     for (const file of hooks.copyFiles) {
@@ -143,7 +152,8 @@ async function runPostCreateHooks(
         const validation = validateCommand(cmd);
         if (!validation.safe) {
           const warnings = validation.warnings.join(', ');
-          console.error(
+          // Also shown to the caller in the launch output (see job-launcher).
+          console.warn(
             `[mc] Warning: potentially unsafe worktree command: "${cmd}" (${warnings})`,
           );
         }
@@ -154,9 +164,14 @@ async function runPostCreateHooks(
         stdout: 'pipe',
         stderr: 'pipe',
       });
-      const exitCode = await proc.exited;
+      // Drain both pipes while the command runs: a command that fills an
+      // unread pipe blocks forever.
+      const [, stderr, exitCode] = await Promise.all([
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+        proc.exited,
+      ]);
       if (exitCode !== 0) {
-        const stderr = await new Response(proc.stderr).text();
         throw new Error(
           `Post-create command failed: "${cmd}" (exit ${exitCode}): ${stderr}`,
         );
@@ -188,20 +203,30 @@ export async function removeWorktree(
   }
 }
 
+/** Directories under a project's data directory that hold state, not worktrees. */
+const NON_WORKTREE_DIRS = new Set(['state', 'reports']);
+
 export async function isInManagedWorktree(
   path: string,
 ): Promise<{ isManaged: boolean; worktreePath?: string; jobName?: string }> {
-  const resolvedPath = resolve(path);
-  if (!resolvedPath.startsWith(XDG_DATA_DIR)) {
+  // Compare real paths: the host reports a session's real location, while the
+  // data directory is built from the home directory, which may be a symlink.
+  const root = canonicalPath(XDG_DATA_DIR);
+  const resolvedPath = canonicalPath(path);
+  if (!resolvedPath.startsWith(`${root}/`)) {
     return { isManaged: false };
   }
 
-  const relativeParts = resolvedPath.slice(XDG_DATA_DIR.length + 1).split('/');
+  const relativeParts = resolvedPath.slice(root.length + 1).split('/');
   if (relativeParts.length < 2) {
     return { isManaged: false };
   }
 
   const [_projectId, branchSlug] = relativeParts;
+  if (!branchSlug || NON_WORKTREE_DIRS.has(branchSlug)) {
+    return { isManaged: false };
+  }
+  // Job records store worktree paths in the unresolved form.
   const worktreePath = join(XDG_DATA_DIR, _projectId, branchSlug);
 
   return {
@@ -211,30 +236,17 @@ export async function isInManagedWorktree(
   };
 }
 
-export async function getWorktreeForBranch(
-  branch: string,
-): Promise<WorktreeInfo | undefined> {
-  const worktrees = await listWorktrees();
-  return worktrees.find((wt) => wt.branch === branch);
-}
-
 export async function syncWorktree(
   path: string,
   strategy: 'rebase' | 'merge',
   baseBranch?: string,
-  source?: 'local' | 'origin',
+  source: 'local' | 'origin' = 'local',
 ): Promise<SyncResult> {
-  let targetBranch: string;
-  if (baseBranch) {
-    const useOrigin = source === 'origin' || (!source);
-    targetBranch = useOrigin ? `origin/${baseBranch}` : baseBranch;
-  } else {
-    const defaultBranch = await getDefaultBranch();
-    const useOrigin = source === 'origin';
-    targetBranch = useOrigin ? `origin/${defaultBranch}` : defaultBranch;
-  }
+  const base = baseBranch ?? (await getDefaultBranch());
+  const useOrigin = source === 'origin';
+  const targetBranch = useOrigin ? `origin/${base}` : base;
 
-  if (source === 'origin' || (baseBranch && !source)) {
+  if (useOrigin) {
     const fetchResult = await gitCommand(['-C', path, 'fetch', 'origin']);
     if (fetchResult.exitCode !== 0) {
       return { success: false, conflicts: ['Failed to fetch from origin'] };
@@ -246,39 +258,16 @@ export async function syncWorktree(
   if (syncResult.exitCode !== 0) {
     const conflicts = extractConflicts(syncResult.stderr);
 
-    if (strategy === 'rebase') {
-      await gitCommand(['-C', path, 'rebase', '--abort']).catch(() => {});
-    } else {
-      await gitCommand(['-C', path, 'merge', '--abort']).catch(() => {});
+    // Leave the worktree as it was. The exit code does not matter: when the
+    // sync failed before it started there is nothing to abort.
+    try {
+      await gitCommand(['-C', path, strategy, '--abort']);
+    } catch (error) {
+      console.warn(`[Mission Control] Could not abort the ${strategy} in ${path}:`, error);
     }
 
     return { success: false, conflicts };
   }
 
   return { success: true };
-}
-
-
-
-export class GitWorktreeProvider implements WorktreeProvider {
-  async create(opts: {
-    branch: string;
-    basePath?: string;
-    startPoint?: string;
-    postCreate?: PostCreateHook;
-  }): Promise<string> {
-    return createWorktree(opts);
-  }
-
-  async remove(path: string, force?: boolean): Promise<void> {
-    return removeWorktree(path, force);
-  }
-
-  async list(): Promise<WorktreeInfo[]> {
-    return listWorktrees();
-  }
-
-  async sync(path: string, strategy: 'rebase' | 'merge', baseBranch?: string, source?: 'local' | 'origin'): Promise<SyncResult> {
-    return syncWorktree(path, strategy, baseBranch, source);
-  }
 }

@@ -1,3 +1,4 @@
+import { getProjectDirectory } from '../lib/project-context';
 import { loadJobState } from '../lib/job-state';
 import type { Job } from '../lib/job-state';
 import { readAllReports } from '../lib/reports';
@@ -46,7 +47,7 @@ function buildJobCard(job: Job, report: AgentReport | undefined, now: number): s
   const staleMarker = stale ? ' [stale]' : '';
   const prompt = truncatePrompt(job.prompt);
 
-  return `- ${job.name} [${job.status} ${duration}] ${job.branch} ${job.mode} | "${prompt}" | ${reportStr}${staleMarker}`;
+  return `- ${job.name} [${job.status} ${duration}] ${job.branch} | "${prompt}" | ${reportStr}${staleMarker}`;
 }
 
 export async function getCompactionContext(): Promise<string> {
@@ -88,13 +89,12 @@ export async function getCompactionContext(): Promise<string> {
   return lines.join('\n');
 }
 
-export async function getJobCompactionContext(cwd: string = process.cwd()): Promise<string> {
+export async function getJobCompactionContext(cwd: string = getProjectDirectory()): Promise<string> {
   const context = await getWorktreeContext(cwd);
 
   if (context.isInJob && context.jobName) {
-    const mode = context.mode || 'unknown';
     const jobPrompt = context.jobPrompt || 'Complete your assigned work';
-    return `Mission Control Job Agent: You are working on job '${context.jobName}' (${mode} mode). Your task: ${jobPrompt}. Focus on YOUR task only. Use mc_report to report status. Do NOT manage other jobs.`;
+    return `Mission Control Job Agent: You are working on job '${context.jobName}'. Your task: ${jobPrompt}. Focus on YOUR task only. Use mc_report to report status. Do NOT manage other jobs.`;
   }
 
   return 'Mission Control Job Agent: Focus on your assigned task. Use mc_report to report status.';

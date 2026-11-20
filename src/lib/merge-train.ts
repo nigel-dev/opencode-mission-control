@@ -2,9 +2,8 @@ import { join } from 'path';
 import { existsSync, lstatSync, rmSync } from 'fs';
 import type { JobSpec } from './plan-types';
 import { gitCommand } from './git';
-import { getIntegrationWorktree } from './integration';
 import { extractConflicts } from './utils';
-import { createJobClient, sendPrompt, waitForServer } from './sdk-client';
+import { promptJobSession } from './job-runtime';
 
 export type MergeResult =
   | { success: true; mergedAt: string; testReport: MergeTestReport }
@@ -93,6 +92,18 @@ export async function validateTouchSet(
   };
 }
 
+/**
+ * Run a cleanup command whose exit code does not matter ("no merge to abort"
+ * is not an error). Only a git that cannot be started at all is reported.
+ */
+async function cleanupGit(args: string[]): Promise<void> {
+  try {
+    await gitCommand(args);
+  } catch (error) {
+    console.warn(`[MergeTrain] Could not run git ${args.join(' ')}:`, error);
+  }
+}
+
 export async function checkMergeability(
   integrationWorktree: string,
   jobBranch: string,
@@ -103,9 +114,9 @@ export async function checkMergeability(
   ]);
 
   // Always clean up — leave worktree pristine
-  await gitCommand(['-C', integrationWorktree, 'merge', '--abort']).catch(() => {});
-  await gitCommand(['-C', integrationWorktree, 'reset', '--hard', 'HEAD']).catch(() => {});
-  await gitCommand(['-C', integrationWorktree, 'clean', '-fd']).catch(() => {});
+  await cleanupGit(['-C', integrationWorktree, 'merge', '--abort']);
+  await cleanupGit(['-C', integrationWorktree, 'reset', '--hard', 'HEAD']);
+  await cleanupGit(['-C', integrationWorktree, 'clean', '-fd']);
 
   if (testMerge.exitCode !== 0) {
     const conflicts = extractConflicts(
@@ -122,40 +133,84 @@ export async function checkMergeability(
 
 async function rollbackMerge(worktreePath: string): Promise<void> {
   // Try merge --abort first
-  await gitCommand(['-C', worktreePath, 'merge', '--abort']).catch(() => {});
+  await cleanupGit(['-C', worktreePath, 'merge', '--abort']);
 
   // Always reset the index and working tree to be safe
-  await gitCommand(['-C', worktreePath, 'reset', '--hard', 'HEAD']).catch(() => {});
-  await gitCommand(['-C', worktreePath, 'clean', '-fd']).catch(() => {});
+  await cleanupGit(['-C', worktreePath, 'reset', '--hard', 'HEAD']);
+  await cleanupGit(['-C', worktreePath, 'clean', '-fd']);
 }
 
 async function rollbackMergeToHead(worktreePath: string, targetHead: string): Promise<void> {
   // Try merge --abort first
-  await gitCommand(['-C', worktreePath, 'merge', '--abort']).catch(() => {});
+  await cleanupGit(['-C', worktreePath, 'merge', '--abort']);
 
   // Reset to the target HEAD
-  await gitCommand(['-C', worktreePath, 'reset', '--hard', targetHead]).catch(() => {});
-  await gitCommand(['-C', worktreePath, 'clean', '-fd']).catch(() => {});
+  await cleanupGit(['-C', worktreePath, 'reset', '--hard', targetHead]);
+  await cleanupGit(['-C', worktreePath, 'clean', '-fd']);
 }
 
+type PackageManager = 'bun' | 'pnpm' | 'yarn' | 'npm';
+
+const PACKAGE_MANAGER_BY_LOCKFILE: ReadonlyArray<{ file: string; manager: PackageManager }> = [
+  { file: 'bun.lockb', manager: 'bun' },
+  { file: 'bun.lock', manager: 'bun' },
+  { file: 'pnpm-lock.yaml', manager: 'pnpm' },
+  { file: 'yarn.lock', manager: 'yarn' },
+  { file: 'package-lock.json', manager: 'npm' },
+  { file: 'npm-shrinkwrap.json', manager: 'npm' },
+];
+
+const TEST_COMMAND_BY_MANAGER: Record<PackageManager, string> = {
+  bun: 'bun run test',
+  pnpm: 'pnpm test',
+  yarn: 'yarn test',
+  npm: 'npm test',
+};
+
+/** The project's package manager: from its lockfile, then `packageManager`, then npm. */
+async function detectPackageManager(
+  worktreePath: string,
+  packageJson: { packageManager?: unknown },
+): Promise<PackageManager> {
+  for (const entry of PACKAGE_MANAGER_BY_LOCKFILE) {
+    if (await Bun.file(join(worktreePath, entry.file)).exists()) {
+      return entry.manager;
+    }
+  }
+
+  const declared = typeof packageJson.packageManager === 'string' ? packageJson.packageManager.toLowerCase() : '';
+  for (const manager of ['bun', 'pnpm', 'yarn', 'npm'] as const) {
+    if (declared.startsWith(`${manager}@`)) {
+      return manager;
+    }
+  }
+  return 'npm';
+}
+
+/**
+ * The command that runs the project's `test` script, or null when it has none.
+ * The script runs through the package manager (`bun run test`, `npm test`, ...)
+ * so binaries in `node_modules/.bin` resolve; its raw text is never executed.
+ */
 export async function detectTestCommand(worktreePath: string): Promise<string | null> {
+  let packageJson: { scripts?: Record<string, unknown>; packageManager?: unknown };
   try {
     const packageJsonFile = Bun.file(join(worktreePath, 'package.json'));
     if (!(await packageJsonFile.exists())) {
       return null;
     }
-
-    const packageJson = JSON.parse(await packageJsonFile.text()) as {
-      scripts?: Record<string, unknown>;
-    };
-
-    const testScript = packageJson.scripts?.test;
-    return typeof testScript === 'string' && testScript.trim() !== ''
-      ? testScript
-      : null;
-  } catch {
+    packageJson = JSON.parse(await packageJsonFile.text());
+  } catch (error) {
+    console.warn(`[MergeTrain] Could not read package.json in ${worktreePath}; no test command detected:`, error);
     return null;
   }
+
+  const testScript = packageJson.scripts?.test;
+  if (typeof testScript !== 'string' || testScript.trim() === '') {
+    return null;
+  }
+
+  return TEST_COMMAND_BY_MANAGER[await detectPackageManager(worktreePath, packageJson)];
 }
 
 export async function detectInstallCommand(worktreePath: string): Promise<string | null> {
@@ -187,8 +242,23 @@ export async function detectInstallCommand(worktreePath: string): Promise<string
     }
 
     return null;
-  } catch {
+  } catch (error) {
+    console.warn(`[MergeTrain] Could not detect an install command in ${worktreePath}:`, error);
     return null;
+  }
+}
+
+/** Kill a command and everything it started. The command leads its own process group. */
+function killProcessGroup(proc: { pid: number; kill: (signal?: number | NodeJS.Signals) => void }): void {
+  try {
+    process.kill(-proc.pid, 'SIGKILL');
+  } catch (error) {
+    // No such group (the command already exited) or no permission to signal
+    // it: fall back to the command itself.
+    if ((error as NodeJS.ErrnoException).code !== 'ESRCH') {
+      console.warn(`[MergeTrain] Could not kill process group ${proc.pid}:`, error);
+    }
+    proc.kill('SIGKILL');
   }
 }
 
@@ -196,32 +266,49 @@ export async function runTestCommand(
   worktreePath: string,
   command: string,
   timeoutMs: number,
-): Promise<{ success: boolean; output: string; timedOut: boolean }> {
+  signal?: AbortSignal,
+): Promise<{ success: boolean; output: string; timedOut: boolean; aborted: boolean }> {
+  if (signal?.aborted) {
+    return { success: false, output: '', timedOut: false, aborted: true };
+  }
+
+  // Detached: the shell leads its own process group, so a timeout can kill the
+  // test runner's children too. Killing only `sh` leaves them running and
+  // holding the output pipes open, which would hang this call.
   const proc = Bun.spawn(['sh', '-c', command], {
     cwd: worktreePath,
     stdout: 'pipe',
     stderr: 'pipe',
+    detached: true,
   });
 
   const stdoutPromise = new Response(proc.stdout).text();
   const stderrPromise = new Response(proc.stderr).text();
 
   let timedOut = false;
+  let aborted = false;
   const timeoutHandle = setTimeout(() => {
     timedOut = true;
-    proc.kill();
+    killProcessGroup(proc);
   }, timeoutMs);
+  const onAbort = (): void => {
+    aborted = true;
+    killProcessGroup(proc);
+  };
+  signal?.addEventListener('abort', onAbort, { once: true });
 
   const exitCode = await proc.exited;
   clearTimeout(timeoutHandle);
+  signal?.removeEventListener('abort', onAbort);
 
   const [stdout, stderr] = await Promise.all([stdoutPromise, stderrPromise]);
   const output = [stdout.trim(), stderr.trim()].filter(Boolean).join('\n');
 
   return {
-    success: !timedOut && exitCode === 0,
+    success: !timedOut && !aborted && exitCode === 0,
     output,
     timedOut,
+    aborted,
   };
 }
 
@@ -243,7 +330,9 @@ function getNodeModulesStatus(worktreePath: string): 'present' | 'missing' | 'da
     if (stat.isSymbolicLink()) {
       return 'dangling_symlink';
     }
-  } catch {}
+  } catch {
+    // lstat throws when the path does not exist at all: that is 'missing'.
+  }
 
   return 'missing';
 }
@@ -252,17 +341,19 @@ async function ensureTestDependencies(
   worktreePath: string,
   timeoutMs: number,
   setupCommands?: string[],
+  signal?: AbortSignal,
 ): Promise<{
   success: boolean;
   output: string;
   timedOut: boolean;
+  aborted: boolean;
   commands: string[];
   status: 'passed' | 'failed' | 'skipped';
 }> {
   const configuredSetupCommands = normalizeCommands(setupCommands);
   if (configuredSetupCommands.length > 0) {
     for (const command of configuredSetupCommands) {
-      const setupResult = await runTestCommand(worktreePath, command, timeoutMs);
+      const setupResult = await runTestCommand(worktreePath, command, timeoutMs, signal);
       if (setupResult.success) {
         continue;
       }
@@ -285,6 +376,7 @@ async function ensureTestDependencies(
       success: true,
       output: '',
       timedOut: false,
+      aborted: false,
       commands: configuredSetupCommands,
       status: 'passed',
     };
@@ -296,6 +388,7 @@ async function ensureTestDependencies(
       success: true,
       output: '',
       timedOut: false,
+      aborted: false,
       commands: [],
       status: 'skipped',
     };
@@ -307,6 +400,7 @@ async function ensureTestDependencies(
       success: true,
       output: '',
       timedOut: false,
+      aborted: false,
       commands: [],
       status: 'skipped',
     };
@@ -319,7 +413,7 @@ async function ensureTestDependencies(
     });
   }
 
-  const installResult = await runTestCommand(worktreePath, installCommand, timeoutMs);
+  const installResult = await runTestCommand(worktreePath, installCommand, timeoutMs, signal);
   if (installResult.success) {
     return {
       ...installResult,
@@ -344,19 +438,31 @@ async function ensureTestDependencies(
 
 export class MergeTrain {
   private queue: JobSpec[] = [];
+  private readonly abortController = new AbortController();
 
   constructor(
     private readonly integrationWorktree: string,
     private readonly config?: MergeTrainConfig,
   ) {}
 
-  static async forPlan(planId: string, config?: MergeTrainConfig): Promise<MergeTrain> {
-    const integrationWorktree = await getIntegrationWorktree(planId);
-    return new MergeTrain(integrationWorktree, config);
+  enqueue(job: JobSpec): void {
+    if (this.stopped) {
+      return;
+    }
+    this.queue.push(job);
   }
 
-  enqueue(job: JobSpec): void {
-    this.queue.push(job);
+  /**
+   * Stop for good: drop queued jobs, refuse new ones, and abort a setup or
+   * test command that is running. The merge in progress is rolled back.
+   */
+  stop(): void {
+    this.queue = [];
+    this.abortController.abort();
+  }
+
+  get stopped(): boolean {
+    return this.abortController.signal.aborted;
   }
 
   getQueue(): JobSpec[] {
@@ -373,6 +479,7 @@ export class MergeTrain {
     }
 
     const job = this.queue.shift()!;
+    const signal = this.abortController.signal;
 
     if (!job.branch) {
       return {
@@ -522,6 +629,7 @@ export class MergeTrain {
       this.integrationWorktree,
       timeoutMs,
       this.config?.setupCommands,
+      signal,
     );
 
     if (!dependencySetupResult.success) {
@@ -543,7 +651,16 @@ export class MergeTrain {
       };
     }
 
-    const testResult = await runTestCommand(this.integrationWorktree, testCommand, timeoutMs);
+    const testResult = await runTestCommand(this.integrationWorktree, testCommand, timeoutMs, signal);
+
+    if (testResult.aborted) {
+      await rollbackMergeToHead(this.integrationWorktree, headBeforeStr);
+      return {
+        success: false,
+        type: 'test_failure',
+        output: 'The merge train was stopped before the tests finished',
+      };
+    }
 
     if (testResult.timedOut) {
       await rollbackMergeToHead(this.integrationWorktree, headBeforeStr);
@@ -568,16 +685,16 @@ export class MergeTrain {
 
     if (!testResult.success) {
       const fixTimeout = this.config?.fixBeforeRollbackTimeout ?? DEFAULT_FIX_BEFORE_ROLLBACK_TIMEOUT_MS;
-      const isServeMode = job.port !== undefined;
+      const hasSession = job.sessionID !== undefined;
 
-      if (isServeMode && fixTimeout > 0) {
+      if (hasSession && fixTimeout > 0) {
         const fixPrompt = this.buildFixPrompt(job.name, testCommand, testResult.output);
         const fixPrompted = await this.promptAgentForFix(job, fixPrompt);
 
         if (fixPrompted) {
-          await this.sleep(fixTimeout);
+          await this.sleep(fixTimeout, signal);
 
-          const retestResult = await runTestCommand(this.integrationWorktree, testCommand, timeoutMs);
+          const retestResult = await runTestCommand(this.integrationWorktree, testCommand, timeoutMs, signal);
 
           if (retestResult.success) {
             return {
@@ -632,18 +749,6 @@ export class MergeTrain {
     };
   }
 
-  async processAll(): Promise<Array<{ job: JobSpec; result: MergeResult }>> {
-    const results: Array<{ job: JobSpec; result: MergeResult }> = [];
-
-    while (this.queue.length > 0) {
-      const job = this.queue[0];
-      const result = await this.processNext();
-      results.push({ job, result });
-    }
-
-    return results;
-  }
-
   private buildFixPrompt(jobName: string, testCommand: string, testOutput: string): string {
     return `[AUTO-GENERATED] Test Failure in Merge Train
 
@@ -658,20 +763,32 @@ Please fix the failing tests. You have a limited time window to apply fixes befo
   }
 
   private async promptAgentForFix(job: JobSpec, prompt: string): Promise<boolean> {
-    if (!job.port || !job.launchSessionID) {
+    if (!job.sessionID) {
       return false;
     }
 
     try {
-      const client = await waitForServer(job.port, { timeoutMs: 10000 });
-      await sendPrompt(client, job.launchSessionID, prompt);
+      await promptJobSession(job.sessionID, prompt);
       return true;
-    } catch {
+    } catch (error) {
+      console.warn(`[MergeTrain] Could not prompt job "${job.name}" for a fix:`, error);
       return false;
     }
   }
 
-  private sleep(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
+  private sleep(ms: number, signal: AbortSignal): Promise<void> {
+    return new Promise((resolve) => {
+      if (signal.aborted) {
+        resolve();
+        return;
+      }
+      const done = (): void => {
+        clearTimeout(timer);
+        signal.removeEventListener('abort', done);
+        resolve();
+      };
+      const timer = setTimeout(done, ms);
+      signal.addEventListener('abort', done, { once: true });
+    });
   }
 }

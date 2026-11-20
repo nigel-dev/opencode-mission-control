@@ -86,6 +86,9 @@ export const mc_plan_status = {
       `Next: ${getNextActions(plan)}`,
     ];
 
+    if (plan.failureReason) {
+      lines.push(`Failure: ${plan.failureReason}`);
+    }
     if (plan.prUrl) {
       lines.push(`PR: ${plan.prUrl}`);
     }

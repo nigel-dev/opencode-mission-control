@@ -1,10 +1,12 @@
 import { describe, it, expect, beforeEach, vi, type Mock } from 'vitest';
 import type { Job } from '../../src/lib/job-state';
 import * as jobState from '../../src/lib/job-state';
+import * as jobRuntime from '../../src/lib/job-runtime';
 
 const { mc_jobs } = await import('../../src/tools/jobs');
 
 let mockLoadJobState: Mock;
+let mockGetJobUsage: Mock;
 
 const mockContext = {
   sessionID: 'test-session',
@@ -21,6 +23,11 @@ describe('mc_jobs', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockLoadJobState = vi.spyOn(jobState, 'loadJobState').mockImplementation(() => ({ version: 1, jobs: [], updatedAt: new Date().toISOString() } as any));
+    mockGetJobUsage = vi.spyOn(jobRuntime, 'getJobUsage').mockResolvedValue({
+      cost: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+    }) as unknown as Mock;
   });
 
   describe('tool definition', () => {
@@ -78,7 +85,6 @@ describe('mc_jobs', () => {
       expect(result.content).toContain('feature-auth');
       expect(result.content).toContain('Add OAuth support');
       expect(result.content).toContain('mc/feature-auth');
-      expect(result.content).toContain('plan');
     });
 
     it('should list completed jobs', async () => {
@@ -412,10 +418,10 @@ describe('mc_jobs', () => {
   });
 
   describe('output formatting', () => {
-    it('should include job name, status, branch, and mode', async () => {
+    it('should include job name, status, branch, session, agent and model', async () => {
       const now = new Date().toISOString();
       mockLoadJobState.mockResolvedValue({
-        version: 1,
+        version: 4,
         jobs: [
           {
             id: 'job-1',
@@ -423,22 +429,113 @@ describe('mc_jobs', () => {
             branch: 'mc/feature-auth',
             status: 'running',
             prompt: 'Add OAuth support',
-            mode: 'plan',
             createdAt: now,
             worktreePath: '/tmp/wt1',
-            tmuxTarget: 'mc-feature-auth',
-            placement: 'session',
+            sessionID: 'ses_auth',
+            agent: 'build',
+            model: 'openai/gpt-5',
           } as Job,
         ],
         updatedAt: now,
       });
 
-      const result = await mc_jobs.execute({}, mockContext);
+      const result = await mc_jobs.execute({});
 
       expect(result.content).toContain('feature-auth');
       expect(result.content).toContain('[running]');
-      expect(result.content).toContain('mc/feature-auth');
-      expect(result.content).toContain('Mode: plan');
+      expect(result.content).toContain('Branch: mc/feature-auth | Started:');
+      expect(result.content).toContain('Session: ses_auth | Agent: build | Model: openai/gpt-5');
+      expect(result.content).not.toContain('Mode:');
+    });
+
+    it('should show cost and tokens for running jobs only', async () => {
+      const now = new Date().toISOString();
+      mockLoadJobState.mockResolvedValue({
+        version: 4,
+        jobs: [
+          {
+            id: 'job-1',
+            name: 'running-job',
+            branch: 'mc/running-job',
+            status: 'running',
+            prompt: 'Work',
+            createdAt: now,
+            worktreePath: '/tmp/wt1',
+            sessionID: 'ses_running',
+          } as Job,
+          {
+            id: 'job-2',
+            name: 'done-job',
+            branch: 'mc/done-job',
+            status: 'completed',
+            prompt: 'Work',
+            createdAt: now,
+            completedAt: now,
+            worktreePath: '/tmp/wt2',
+            sessionID: 'ses_done',
+          } as Job,
+        ],
+        updatedAt: now,
+      });
+      mockGetJobUsage.mockResolvedValue({ cost: 0.25, inputTokens: 5000, outputTokens: 700 });
+
+      const result = await mc_jobs.execute({});
+
+      expect(mockGetJobUsage).toHaveBeenCalledTimes(1);
+      expect(mockGetJobUsage).toHaveBeenCalledWith('ses_running');
+      expect(result.content).toContain('Cost: $0.2500 | Tokens: 5000 in / 700 out');
+      expect(result.content).toContain('Session: ses_done');
+    });
+
+    it('should omit usage when it cannot be read', async () => {
+      const now = new Date().toISOString();
+      mockLoadJobState.mockResolvedValue({
+        version: 4,
+        jobs: [
+          {
+            id: 'job-1',
+            name: 'running-job',
+            branch: 'mc/running-job',
+            status: 'running',
+            prompt: 'Work',
+            createdAt: now,
+            worktreePath: '/tmp/wt1',
+            sessionID: 'ses_running',
+          } as Job,
+        ],
+        updatedAt: now,
+      });
+      mockGetJobUsage.mockRejectedValue(new Error('session not found'));
+
+      const result = await mc_jobs.execute({});
+
+      expect(result.content).toContain('running-job [running]');
+      expect(result.content).not.toContain('Cost:');
+    });
+
+    it('should omit the session line for a job without session details', async () => {
+      const now = new Date().toISOString();
+      mockLoadJobState.mockResolvedValue({
+        version: 4,
+        jobs: [
+          {
+            id: 'job-1',
+            name: 'legacy-job',
+            branch: 'mc/legacy-job',
+            status: 'stopped',
+            prompt: 'Work',
+            createdAt: now,
+            worktreePath: '/tmp/wt1',
+          } as Job,
+        ],
+        updatedAt: now,
+      });
+
+      const result = await mc_jobs.execute({ status: 'all' });
+
+      expect(result.content).toContain('legacy-job [stopped]');
+      expect(result.content).not.toContain('Session:');
+      expect(mockGetJobUsage).not.toHaveBeenCalled();
     });
 
     it('should show duration for running jobs', async () => {

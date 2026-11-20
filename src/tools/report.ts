@@ -1,6 +1,7 @@
+import { getProjectDirectory } from '../lib/project-context';
 import { z } from 'zod';
 import { isInManagedWorktree } from '../lib/worktree';
-import { getJobByName, loadJobState } from '../lib/job-state';
+import { loadJobState } from '../lib/job-state';
 import { writeReport, type ReportStatus } from '../lib/reports';
 
 export const mc_report = {
@@ -14,7 +15,7 @@ export const mc_report = {
   }).strict(),
   async execute(
     args: { status: 'working' | 'blocked' | 'needs_review' | 'completed' | 'progress'; message: string; progress?: number },
-    cwd: string = process.env.MC_WORKTREE_PATH ?? process.cwd(),
+    cwd: string = getProjectDirectory(),
   ) {
     const managed = await isInManagedWorktree(cwd);
 

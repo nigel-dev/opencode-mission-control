@@ -3,6 +3,7 @@ import * as jobState from '../../src/lib/job-state';
 import * as planState from '../../src/lib/plan-state';
 import * as reports from '../../src/lib/reports';
 import * as orchestratorSingleton from '../../src/lib/orchestrator-singleton';
+import * as jobRuntime from '../../src/lib/job-runtime';
 
 const { mc_overview } = await import('../../src/tools/overview');
 
@@ -11,6 +12,7 @@ let mockGetRunningJobs: Mock;
 let mockLoadPlan: Mock;
 let mockReadAllReports: Mock;
 let mockGetSharedMonitor: Mock;
+let mockGetJobUsage: Mock;
 
 function createMockJob(overrides?: Partial<jobState.Job>): jobState.Job {
   return {
@@ -18,11 +20,8 @@ function createMockJob(overrides?: Partial<jobState.Job>): jobState.Job {
     name: 'test-job',
     worktreePath: '/tmp/mc-worktrees/test-job',
     branch: 'mc/test-job',
-    tmuxTarget: 'mc-test-job',
-    placement: 'session',
     status: 'running',
     prompt: 'Test prompt',
-    mode: 'vanilla',
     createdAt: new Date(Date.now() - 3600000).toISOString(),
     ...overrides,
   };
@@ -47,6 +46,12 @@ describe('mc_overview', () => {
     mockGetSharedMonitor = vi.spyOn(orchestratorSingleton, 'getSharedMonitor').mockReturnValue({
       getEventAccumulator: vi.fn().mockReturnValue(undefined),
     } as any) as unknown as Mock;
+
+    mockGetJobUsage = vi.spyOn(jobRuntime, 'getJobUsage').mockResolvedValue({
+      cost: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+    }) as unknown as Mock;
   });
 
   describe('tool definition', () => {
@@ -239,6 +244,60 @@ describe('mc_overview', () => {
     });
   });
 
+  describe('running job details', () => {
+    it('should show cost and tokens for a running job with a session', async () => {
+      mockGetRunningJobs.mockResolvedValue([
+        createMockJob({ id: 'job-1', name: 'priced-job', sessionID: 'ses_priced' }),
+      ]);
+      mockGetJobUsage.mockResolvedValue({ cost: 0.5, inputTokens: 2000, outputTokens: 300 });
+
+      const result = await mc_overview.execute();
+
+      expect(mockGetJobUsage).toHaveBeenCalledWith('ses_priced');
+      expect(result.content).toContain('$0.5000, 2000 in / 300 out');
+    });
+
+    it('should omit usage when it cannot be read', async () => {
+      mockGetRunningJobs.mockResolvedValue([
+        createMockJob({ id: 'job-1', name: 'priced-job', sessionID: 'ses_priced' }),
+      ]);
+      mockGetJobUsage.mockRejectedValue(new Error('session not found'));
+
+      const result = await mc_overview.execute();
+
+      expect(result.content).toContain('- priced-job | idle | ');
+      expect(result.content).toContain('| mc/test-job | last report: none');
+      expect(result.content).not.toContain('$');
+    });
+
+    it('should not ask for usage of a job without a session', async () => {
+      mockGetRunningJobs.mockResolvedValue([createMockJob({ id: 'job-1', name: 'old-job' })]);
+
+      await mc_overview.execute();
+
+      expect(mockGetJobUsage).not.toHaveBeenCalled();
+    });
+
+    it('should show agent and model when set', async () => {
+      mockGetRunningJobs.mockResolvedValue([
+        createMockJob({ id: 'job-1', name: 'custom-job', agent: 'build', model: 'openai/gpt-5' }),
+      ]);
+
+      const result = await mc_overview.execute();
+
+      expect(result.content).toContain('agent: build');
+      expect(result.content).toContain('model: openai/gpt-5');
+    });
+
+    it('should not mention tmux for running jobs', async () => {
+      mockGetRunningJobs.mockResolvedValue([createMockJob({ id: 'job-1', name: 'plain-job' })]);
+
+      const result = await mc_overview.execute();
+
+      expect(result.content).not.toContain('tmux');
+    });
+  });
+
   describe('plan status', () => {
     it('should show active plan with progress', async () => {
       mockLoadPlan.mockResolvedValue({
@@ -415,6 +474,26 @@ describe('mc_overview', () => {
 
       expect(result.content).toContain('Recent Failures');
       expect(result.content).toContain('failed-job');
+    });
+
+    it('should say why a job failed', async () => {
+      mockLoadJobState.mockResolvedValue({
+        version: 4,
+        jobs: [
+          createMockJob({
+            id: 'job-1',
+            name: 'failed-job',
+            status: 'failed',
+            completedAt: new Date().toISOString(),
+            failureReason: 'its session ended with an error',
+          }),
+        ],
+        updatedAt: new Date().toISOString(),
+      });
+
+      const result = await mc_overview.execute({});
+
+      expect(result.content).toMatch(/- failed-job \| failed .* \| mc\/\S+ \| its session ended with an error/);
     });
   });
 });

@@ -1,14 +1,13 @@
 import { z } from 'zod';
 import { getJobByName, updateJob } from '../lib/job-state';
-import { killSession, killWindow } from '../lib/tmux';
-import { releasePort } from '../lib/port-allocator';
+import { stopJobSession } from '../lib/job-runtime';
 
 export const mc_kill = {
   name: 'mc_kill',
   description: 'Stop a running job',
   input: z.object({
     name: z.string().describe('Job name'),
-    force: z.boolean().optional().describe('Force kill (SIGKILL)'),
+    force: z.boolean().optional().describe('Accepted for compatibility; stopping a job always interrupts its session'),
   }).strict(),
   async execute(args: { name: string; force?: boolean }) {
     // 1. Find job by name
@@ -17,42 +16,18 @@ export const mc_kill = {
       throw new Error(`Job "${args.name}" not found`);
     }
 
-    // 2. Check if job is already stopped
+    // 2. Only a running job can be stopped. A finished job keeps its status:
+    //    rewriting "completed" or "failed" to "stopped" would lose the outcome.
     if (job.status === 'stopped') {
       return { content: `Job "${args.name}" is already stopped.` };
     }
-
-    // 3. Kill tmux session or window
-    try {
-      if (job.placement === 'session') {
-        // Extract session name from tmuxTarget (e.g., "mc-job-name")
-        await killSession(job.tmuxTarget);
-      } else {
-        // Extract session and window from tmuxTarget (e.g., "session:window")
-        const [session, window] = job.tmuxTarget.split(':');
-        if (!session || !window) {
-          throw new Error(
-            `Invalid tmux target format: ${job.tmuxTarget}. Expected "session:window"`,
-          );
-        }
-        await killWindow(session, window);
-      }
-    } catch (error) {
-      throw new Error(
-        `Failed to kill tmux ${job.placement}: ${error instanceof Error ? error.message : String(error)}`,
-      );
+    if (job.status !== 'running') {
+      return { content: `Job "${args.name}" is not running (status: ${job.status}); nothing to stop.` };
     }
 
-    // 4. Release port if allocated
-    if (job.port) {
-      try {
-        await releasePort(job.port);
-      } catch {
-        // Non-fatal: port will be reclaimed on next allocation scan
-      }
-    }
-
-    // 5. Update job status to 'stopped'
+    // 3. Mark the job stopped first. Interrupting the session makes it emit
+    //    an "interrupted" event, which the monitor would otherwise record as
+    //    a failure of a job that is still marked running.
     try {
       await updateJob(job.id, {
         status: 'stopped',
@@ -64,14 +39,27 @@ export const mc_kill = {
       );
     }
 
+    // 4. Interrupt the job's session. A job that never got a session (or whose
+    //    session is already gone) has nothing left to stop.
+    let warning: string | undefined;
+    if (job.sessionID) {
+      try {
+        await stopJobSession(job.sessionID);
+      } catch (error) {
+        warning = `Warning: could not interrupt session ${job.sessionID}: ${error instanceof Error ? error.message : String(error)}`;
+        console.warn(`[Mission Control] ${warning}`);
+      }
+    }
+
     // 5. Return success message
     return { content: [
       `Job "${args.name}" stopped successfully.`,
       '',
       `  ID:        ${job.id}`,
       `  Status:    stopped`,
-      `  Placement: ${job.placement}`,
+      ...(job.sessionID ? [`  Session:   ${job.sessionID}`] : []),
       `  Worktree:  ${job.worktreePath}`,
+      ...(warning ? ['', warning] : []),
       '',
       'Note: Worktree is preserved. Use mc_cleanup to remove it.',
     ].join('\n') };

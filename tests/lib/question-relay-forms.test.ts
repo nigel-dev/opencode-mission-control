@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'bun:test';
 import type { FormField, FormInfo } from '@opencode/client';
 import { buildFormAnswer, findQuestionForm } from '../../src/lib/question-relay';
+import * as formAnswer from '../../src/lib/form-answer';
 
 function makeForm(overrides: Partial<FormInfo> = {}): FormInfo {
   return {
@@ -24,6 +25,22 @@ const stringField: FormField = {
   ],
   custom: true,
 };
+
+describe('form-answer module', () => {
+  it('is the implementation question-relay re-exports', () => {
+    expect(formAnswer.buildFormAnswer).toBe(buildFormAnswer);
+    expect(formAnswer.findQuestionForm).toBe(findQuestionForm);
+  });
+
+  it('has only type-only imports so the TUI part can use it', async () => {
+    const source = await Bun.file(new URL('../../src/lib/form-answer.ts', import.meta.url)).text();
+    const imports = source.split('\n').filter((line) => /^import\b/.test(line));
+    expect(imports.length).toBeGreaterThan(0);
+    for (const line of imports) {
+      expect(line.startsWith('import type ')).toBe(true);
+    }
+  });
+});
 
 describe('findQuestionForm', () => {
   it('matches the form whose metadata tool id equals the question part id', () => {

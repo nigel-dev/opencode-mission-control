@@ -1,3 +1,4 @@
+import { getProjectDirectory } from '../lib/project-context';
 import { isInManagedWorktree } from '../lib/worktree';
 import { loadJobState } from '../lib/job-state';
 
@@ -5,10 +6,9 @@ export interface WorktreeContext {
   isInJob: boolean;
   jobName?: string;
   jobPrompt?: string;
-  mode?: string;
 }
 
-export async function getWorktreeContext(cwd: string = process.cwd()): Promise<WorktreeContext> {
+export async function getWorktreeContext(cwd: string = getProjectDirectory()): Promise<WorktreeContext> {
   const { isManaged, worktreePath } = await isInManagedWorktree(cwd);
 
   if (!isManaged) {
@@ -23,6 +23,5 @@ export async function getWorktreeContext(cwd: string = process.cwd()): Promise<W
     isInJob: true,
     jobName: job?.name,
     jobPrompt: job?.prompt,
-    mode: job?.mode,
   };
 }

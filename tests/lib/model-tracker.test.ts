@@ -2,13 +2,13 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   setCurrentModel,
   getCurrentModel,
-  getCurrentModelInfo,
-  clearCurrentModel,
+  clearProjectModels,
   setConfigFallbackModel,
   setCurrentModelFromSDK,
   _resetForTesting,
   _getSessionMapSize,
 } from '../../src/lib/model-tracker';
+import { runInProject } from '../../src/lib/project-context';
 
 describe('model-tracker', () => {
   beforeEach(() => {
@@ -55,26 +55,36 @@ describe('model-tracker', () => {
     expect(getCurrentModel()).toBeUndefined();
   });
 
-  it('clearCurrentModel() clears lastSetModel', () => {
-    setCurrentModel({ providerID: 'anthropic', modelID: 'claude-4' });
-    expect(getCurrentModel()).toBe('anthropic/claude-4');
-    clearCurrentModel();
-    expect(getCurrentModel()).toBeUndefined();
+  it("keeps each project's models apart", () => {
+    runInProject('/projects/a', () => {
+      setCurrentModel({ providerID: 'anthropic', modelID: 'claude-4' }, 'ses_a');
+      setConfigFallbackModel('anthropic/fallback-a');
+    });
+    runInProject('/projects/b', () => {
+      setCurrentModel({ providerID: 'openai', modelID: 'gpt-4o' }, 'ses_b');
+    });
+
+    // Project A's last model is not overwritten by a session of project B,
+    // and B never sees A's sessions or fallback.
+    expect(runInProject('/projects/a', () => getCurrentModel())).toBe('anthropic/claude-4');
+    expect(runInProject('/projects/b', () => getCurrentModel())).toBe('openai/gpt-4o');
+    expect(runInProject('/projects/b', () => getCurrentModel('ses_a'))).toBe('openai/gpt-4o');
+    expect(runInProject('/projects/c', () => getCurrentModel())).toBeUndefined();
   });
 
-  it('clearCurrentModel(sessionID) clears only that session', () => {
-    setCurrentModel({ providerID: 'anthropic', modelID: 'claude-4' }, 'ses_a');
-    setCurrentModel({ providerID: 'openai', modelID: 'gpt-4o' }, 'ses_b');
-    clearCurrentModel('ses_a');
-    expect(getCurrentModel('ses_a')).toBe('openai/gpt-4o'); // falls back to lastSetModel
-    expect(getCurrentModel('ses_b')).toBe('openai/gpt-4o'); // still in session map
+  it("clearProjectModels forgets only the current project's models", () => {
+    runInProject('/projects/a', () => setCurrentModel({ providerID: 'anthropic', modelID: 'claude-4' }, 'ses_a'));
+    runInProject('/projects/b', () => setCurrentModel({ providerID: 'openai', modelID: 'gpt-4o' }, 'ses_b'));
+
+    runInProject('/projects/a', () => clearProjectModels());
+
+    expect(runInProject('/projects/a', () => getCurrentModel('ses_a'))).toBeUndefined();
+    expect(runInProject('/projects/b', () => getCurrentModel('ses_b'))).toBe('openai/gpt-4o');
   });
 
   it('setCurrentModelFromSDK maps id to modelID correctly', () => {
     setCurrentModelFromSDK({ id: 'claude-opus-4', providerID: 'anthropic' }, 'ses_sdk');
     expect(getCurrentModel('ses_sdk')).toBe('anthropic/claude-opus-4');
-    const info = getCurrentModelInfo('ses_sdk');
-    expect(info).toEqual({ providerID: 'anthropic', modelID: 'claude-opus-4' });
   });
 
   it('session Map evicts oldest at 20 entries', () => {

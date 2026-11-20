@@ -1,3 +1,4 @@
+import { getProjectDirectory } from '../lib/project-context';
 import { join } from 'path';
 import { getRunningJobs } from '../lib/job-state';
 import { getDataDir } from '../lib/paths';
@@ -41,7 +42,9 @@ export async function shouldShowAutoStatus(cwd?: string): Promise<boolean> {
     }
 
     return true;
-  } catch {
+  } catch (error) {
+    // Auto-status is a convenience: when the state cannot be read, show nothing.
+    console.debug('[Mission Control] Skipping auto-status:', error);
     return false;
   }
 }
@@ -59,7 +62,7 @@ export async function getAutoStatusMessage(): Promise<string> {
 
     const jobSummaries = runningJobs.map((job) => {
       const duration = calculateDuration(job.createdAt);
-      return `  • ${job.name} (${job.mode}) - ${duration}`;
+      return `  • ${job.name} - ${duration}`;
     });
 
     const message = [
@@ -72,7 +75,8 @@ export async function getAutoStatusMessage(): Promise<string> {
     await updateLastStatusTime();
 
     return message;
-  } catch {
+  } catch (error) {
+    console.debug('[Mission Control] Could not build the auto-status message:', error);
     return '';
   }
 }
@@ -80,7 +84,7 @@ export async function getAutoStatusMessage(): Promise<string> {
 /**
  * Check if current directory is the command center (not in a managed worktree)
  */
-async function checkIsCommandCenter(cwd: string = process.cwd()): Promise<boolean> {
+async function checkIsCommandCenter(cwd: string = getProjectDirectory()): Promise<boolean> {
   const result = await isInManagedWorktree(cwd);
   return !result.isManaged;
 }
@@ -95,6 +99,7 @@ async function checkJobsFileExists(): Promise<boolean> {
     const file = Bun.file(jobsPath);
     return await file.exists();
   } catch {
+    // Not in a repository, or no state directory: Mission Control was not used here.
     return false;
   }
 }

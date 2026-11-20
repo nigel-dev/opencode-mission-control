@@ -1,33 +1,16 @@
-import { randomUUID } from 'crypto';
+import { bindToDirectory, getProjectDirectory } from './project-context';
 import type { MCConfig } from './config';
-import type { PlanSpec, JobSpec, PlanStatus, CheckpointType, CheckpointContext, AuditLogEntry } from './plan-types';
+import type { PlanSpec, JobSpec, PlanStatus, CheckpointType, CheckpointContext } from './plan-types';
 import { loadPlan, savePlan, updatePlanJob, updatePlanFields, clearPlan, validateGhAuth } from './plan-state';
 import { getDefaultBranch, gitCommand } from './git';
 import { createIntegrationBranch, deleteIntegrationBranch } from './integration';
 import { MergeTrain, checkMergeability, type MergeTestReport, validateTouchSet } from './merge-train';
-import { addJob, getRunningJobs, updateJob, loadJobState, removeJob, type Job } from './job-state';
+import { getRunningJobs, updateJob, loadJobState, type Job } from './job-state';
 import { JobMonitor } from './monitor';
-import { removeReport } from './reports';
-import { createWorktree, removeWorktree } from './worktree';
+import { removeWorktree } from './worktree';
 import { resolvePostCreateHook } from './worktree-setup';
-import { writePromptFile, cleanupPromptFile, writeLauncherScript, cleanupLauncherScript } from './prompt-file';
-import { getCurrentModel } from './model-tracker';
-import { detectOMO } from './omo';
-import { copyPlansToWorktree } from './plan-copier';
-import {
-  createSession,
-  createWindow,
-  getCurrentSession,
-  isInsideTmux,
-  isPaneRunning,
-  isTmuxHealthy,
-  killSession,
-  killWindow,
-  sendKeys,
-  setPaneDiedHook,
-} from './tmux';
-import { JobComms, type RelayContext } from './job-comms';
-import { forkJobSession, waitForServer } from './sdk-client';
+import { launchJob as launchSharedJob } from './job-launcher';
+import { removeJobSession, stopJobSession } from './job-runtime';
 
 type PlanSpecWithAuth = PlanSpec & { ghAuthenticated?: boolean };
 
@@ -39,6 +22,11 @@ export type ToastCallback = (
   duration: number,
 ) => void;
 export type NotifyCallback = (message: string, targetSessionID?: string) => void;
+/**
+ * Tells clients a supervisor checkpoint needs the user. Returns whether the
+ * request was sent; when it was not, the orchestrator falls back to a toast.
+ */
+export type CheckpointAttentionCallback = (checkpoint: CheckpointType, message: string) => boolean;
 
 const TERMINAL_PLAN_STATUSES: PlanStatus[] = ['completed', 'failed', 'canceled'];
 
@@ -61,6 +49,13 @@ function compactOutput(output?: string, maxLength = 180): string | null {
   }
 
   return `${normalized.slice(0, maxLength - 3)}...`;
+}
+
+function summarizeFiles(files: string[], max = 10): string {
+  if (files.length <= max) {
+    return files.join(', ');
+  }
+  return `${files.slice(0, max).join(', ')} (+${files.length - max} more)`;
 }
 
 function toAdjacencyMap(jobs: JobSpec[]): Map<string, string[]> {
@@ -168,16 +163,17 @@ export class Orchestrator {
   private activePlanId: string | null = null;
   private planModelSnapshot: string | undefined;
   private planLaunchSessionID: string | undefined;
-  private planPlacement: 'session' | 'window' | null = null;
   private subscriptionsActive = false;
   private checkpoint: CheckpointType | null = null;
   private toastCallback: ToastCallback | null = null;
   private notifyCallback: NotifyCallback | null = null;
+  private attentionCallback: CheckpointAttentionCallback | null = null;
   private jobsLaunchedCount = 0;
   private approvedForMerge = new Set<string>();
   private firstJobCompleted = false;
-  private jobComms: JobComms = new JobComms();
-  private pendingReplanActions: Map<string, () => Promise<void>> = new Map();
+  private disposed = false;
+  /** The reconcile pass in flight, if any; `dispose()` waits for it. */
+  private reconcileInFlight: Promise<void> | null = null;
 
   private getMergeTrainConfig(): {
     testCommand?: string;
@@ -186,25 +182,16 @@ export class Orchestrator {
     setupCommands?: string[];
     fixBeforeRollbackTimeout?: number;
   } {
-    const config = this.config as MCConfig & {
-      testCommand?: string;
-      testTimeout?: number;
-      mergeStrategy?: 'squash' | 'ff-only' | 'merge';
-      fixBeforeRollbackTimeout?: number;
-      worktreeSetup?: {
-        commands?: string[];
-      };
-    };
     return {
-      testCommand: config.testCommand,
-      testTimeout: config.testTimeout,
-      mergeStrategy: config.mergeStrategy,
-      setupCommands: config.worktreeSetup?.commands,
-      fixBeforeRollbackTimeout: config.fixBeforeRollbackTimeout,
+      testCommand: this.config.testCommand,
+      testTimeout: this.config.testTimeout,
+      mergeStrategy: this.config.mergeStrategy,
+      setupCommands: this.config.worktreeSetup?.commands,
+      fixBeforeRollbackTimeout: this.config.fixBeforeRollbackTimeout,
     };
   }
 
-  constructor(monitor: JobMonitor, config: MCConfig, callbacks?: ToastCallback | { toast?: ToastCallback; notify?: NotifyCallback }) {
+  constructor(monitor: JobMonitor, config: MCConfig, callbacks?: ToastCallback | { toast?: ToastCallback; notify?: NotifyCallback; attention?: CheckpointAttentionCallback }) {
     this.monitor = monitor;
     this.config = config;
     if (typeof callbacks === 'function') {
@@ -213,11 +200,35 @@ export class Orchestrator {
     } else {
       this.toastCallback = callbacks?.toast ?? null;
       this.notifyCallback = callbacks?.notify ?? null;
+      this.attentionCallback = callbacks?.attention ?? null;
     }
   }
 
+  /**
+   * Model for plan jobs that name none, when the plan itself records none
+   * (plans created before the model was stored in plan.json).
+   */
   setPlanModelSnapshot(model: string | undefined): void {
     this.planModelSnapshot = model;
+  }
+
+  /**
+   * Stop this orchestrator for good: no more reconcile ticks, no reaction to
+   * monitor events, no new launches or merges, and a merge test that is
+   * running is aborted. Resolves once a reconcile pass that was already in
+   * flight has returned, so a successor never works on the plan concurrently.
+   * Idempotent.
+   */
+  dispose(): Promise<void> {
+    this.disposed = true;
+    this.stopReconciler();
+    this.unsubscribeFromMonitorEvents();
+    this.mergeTrain?.stop();
+    return this.reconcileInFlight ?? Promise.resolve();
+  }
+
+  isDisposed(): boolean {
+    return this.disposed;
   }
 
   private showToast(title: string, message: string, variant: ToastVariant): void {
@@ -368,7 +379,6 @@ export class Orchestrator {
     await savePlan(plan);
 
     this.activePlanId = plan.id;
-    this.planPlacement = spec.placement ?? null;
     this.planLaunchSessionID = spec.launchSessionID;
     this.mergeTrain = new MergeTrain(plan.integrationWorktree, this.getMergeTrainConfig());
     this.subscribeToMonitorEvents();
@@ -379,16 +389,21 @@ export class Orchestrator {
   }
 
   private startReconciler(): void {
-    if (this.isRunning) {
+    if (this.isRunning || this.disposed) {
       return;
     }
 
     this.isRunning = true;
-    this.reconcilerInterval = setInterval(() => {
-      this.reconcile().catch((error) => {
-        console.error('Orchestrator reconcile error:', error);
-      });
-    }, 5000);
+    // Bound to the project this orchestrator runs for: a timer tick must work
+    // on this project's plan whatever async context it fires in.
+    this.reconcilerInterval = setInterval(
+      bindToDirectory(getProjectDirectory(), () => {
+        this.reconcile().catch((error) => {
+          console.error('Orchestrator reconcile error:', error);
+        });
+      }),
+      5000,
+    );
 
     this.reconcile().catch((error) => {
       console.error('Orchestrator initial reconcile error:', error);
@@ -411,6 +426,12 @@ export class Orchestrator {
       checkpointContext: context ?? null,
     });
     this.stopReconciler();
+    const detail = context
+      ? ` Job "${context.jobName}": ${context.failureKind}${context.reason ? ` (${context.reason})` : ''}.`
+      : '';
+    if (this.attentionCallback?.(type, `Plan "${plan.name}" is paused at the ${type} checkpoint.${detail}`)) {
+      return;
+    }
     this.showToast(
       'Mission Control',
       `Supervisor checkpoint: ${type}. Approve to continue with mc_plan_approve.`,
@@ -418,33 +439,92 @@ export class Orchestrator {
     );
   }
 
+  /**
+   * Pause the plan on a job failure. The checkpoint is claimed synchronously,
+   * so when a monitor event and a reconcile pass notice the same failure only
+   * one of them pauses the plan and notifies.
+   */
+  private async pauseForFailure(
+    plan: PlanSpec,
+    context: CheckpointContext,
+    toast: string,
+    notification: string,
+  ): Promise<void> {
+    if (this.checkpoint || this.disposed) {
+      return;
+    }
+    this.checkpoint = 'on_error';
+    try {
+      await this.setCheckpoint('on_error', plan, context);
+    } catch (error) {
+      // The pause was not recorded (the plan is gone, or the write failed).
+      // Release the claim so the next reconcile pass tries again.
+      this.checkpoint = null;
+      throw error;
+    }
+    this.showToast('Mission Control', toast, 'error');
+    this.notify(notification);
+  }
+
   private isSupervisor(plan: PlanSpec): boolean {
     return plan.mode === 'supervisor';
   }
 
   private async reconcile(): Promise<void> {
+    if (this.disposed) {
+      return;
+    }
     if (this.isReconciling) {
       this.reconcilePending = true;
       return;
     }
 
     this.isReconciling = true;
+    const pass = (async () => {
+      try {
+        do {
+          this.reconcilePending = false;
+          await this._doReconcile();
+        } while (this.reconcilePending && !this.disposed);
+      } finally {
+        this.isReconciling = false;
+      }
+    })();
+    // dispose() only waits for the pass to end; its failure is reported to
+    // this method's caller through `await pass` below.
+    const settled = pass.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.reconcileInFlight = settled;
     try {
-      do {
-        this.reconcilePending = false;
-        await this._doReconcile();
-      } while (this.reconcilePending);
+      await pass;
     } finally {
-      this.isReconciling = false;
+      if (this.reconcileInFlight === settled) {
+        this.reconcileInFlight = null;
+      }
     }
   }
 
   private async _doReconcile(): Promise<void> {
+      if (this.disposed) {
+        return;
+      }
+
       const plan = await loadPlan();
 
       if (!plan || isTerminalPlanStatus(plan.status)) {
         this.stopReconciler();
         this.unsubscribeFromMonitorEvents();
+        return;
+      }
+
+      if (plan.checkpoint && plan.status !== 'paused') {
+        // A checkpoint with a non-paused status cannot be approved. Restore the
+        // pause so mc_plan_approve can clear it.
+        this.checkpoint = plan.checkpoint;
+        await updatePlanFields(plan.id, { status: 'paused' });
+        this.stopReconciler();
         return;
       }
 
@@ -458,7 +538,7 @@ export class Orchestrator {
         plan.status = 'running';
       }
 
-      const maxParallel = (this.config as MCConfig & { maxParallel?: number }).maxParallel ?? 3;
+      const maxParallel = this.config.maxParallel ?? 3;
       const runningJobs = (await getRunningJobs()).filter((job) => job.planId === plan.id);
       let runningCount = runningJobs.length;
 
@@ -474,18 +554,37 @@ export class Orchestrator {
         const stateJob = jobState.jobs.find(
           (j) => j.name === planJob.name && j.planId === plan.id,
         );
+
         if (!stateJob) continue;
 
         if (stateJob.status === 'completed') {
           await updatePlanJob(plan.id, planJob.name, { status: 'completed' });
           planJob.status = 'completed';
         } else if (stateJob.status === 'failed' || stateJob.status === 'stopped') {
-          await updatePlanJob(plan.id, planJob.name, {
-            status: 'failed',
-            error: 'recovered from missed completion event',
-          });
+          const error =
+            stateJob.status === 'stopped'
+              ? 'the job was stopped'
+              : stateJob.failureReason ?? 'the job failed';
+          await updatePlanJob(plan.id, planJob.name, { status: 'failed', error });
           planJob.status = 'failed';
+          planJob.error = error;
         }
+      }
+
+      // A failed job that no checkpoint covers would stall the plan forever:
+      // nothing merges it, and everything that depends on it waits. Pause and
+      // tell the user instead.
+      const unhandledFailure = plan.jobs.find((job) => job.status === 'failed');
+      if (unhandledFailure) {
+        const reason = unhandledFailure.error ?? 'the job failed';
+        await this.pauseForFailure(
+          plan,
+          { jobName: unhandledFailure.name, failureKind: 'job_failed', reason },
+          `Job "${unhandledFailure.name}" failed. Plan paused.`,
+          `❌ Job "${unhandledFailure.name}" failed: ${reason}.\n` +
+            `Fix its branch and retry with mc_plan_approve(checkpoint: "on_error", retry: "${unhandledFailure.name}"), or cancel the plan with mc_plan_cancel.`,
+        );
+        return;
       }
 
       const mergeOrder = [...plan.jobs].sort(
@@ -493,7 +592,8 @@ export class Orchestrator {
       );
       const byName = new Map(plan.jobs.map((job) => [job.name, job]));
 
-      let launchedThisCycle = 0;
+      const launched: string[] = [];
+      let launchFailure: { job: JobSpec; error: string } | undefined;
       for (const job of mergeOrder) {
         if (job.status !== 'queued' && job.status !== 'waiting_deps') {
           continue;
@@ -515,25 +615,76 @@ export class Orchestrator {
           continue;
         }
 
-        await this.launchJob(job);
+        if (this.disposed) {
+          return;
+        }
+
+        const error = await this.launchJob(job, plan);
+        if (error) {
+          job.status = 'failed';
+          job.error = error;
+          launchFailure = { job, error };
+          // The plan is about to pause; do not start more work.
+          break;
+        }
+
         runningCount += 1;
-        launchedThisCycle += 1;
+        launched.push(job.name);
         job.status = 'running';
       }
 
-      if (launchedThisCycle > 0) {
-        this.jobsLaunchedCount += launchedThisCycle;
-        const launched = mergeOrder.filter(j => j.status === 'running').map(j => j.name);
+      if (launched.length > 0) {
+        this.jobsLaunchedCount += launched.length;
         this.showToast(
           'Mission Control',
-          `Launched ${launchedThisCycle} job(s) (${this.jobsLaunchedCount} total).`,
+          `Launched ${launched.length} job(s) (${this.jobsLaunchedCount} total).`,
           'info',
         );
-        this.notify(`🚀 Launched ${launchedThisCycle} job(s): ${launched.join(', ')}. (${this.jobsLaunchedCount}/${mergeOrder.length} total launched)`);
+        this.notify(`🚀 Launched ${launched.length} job(s): ${launched.join(', ')}. (${this.jobsLaunchedCount}/${mergeOrder.length} total launched)`);
+      }
+
+      if (launchFailure) {
+        const { job, error } = launchFailure;
+        await this.pauseForFailure(
+          plan,
+          { jobName: job.name, failureKind: 'launch_failed', reason: error },
+          `Job "${job.name}" could not be launched. Plan paused.`,
+          `❌ Job "${job.name}" could not be launched: ${error}\n` +
+            `Fix the cause and launch it again with mc_plan_approve(checkpoint: "on_error", retry: "${job.name}"), or cancel the plan with mc_plan_cancel.`,
+        );
+        return;
+      }
+
+      if (this.disposed) {
+        return;
       }
 
       for (const job of mergeOrder) {
         if (job.status === 'completed') {
+          // The monitor flags a job that finished with changes it never
+          // committed. Merging its branch would silently leave them out.
+          const stateJob = jobState.jobs.find(
+            (candidate) => candidate.name === job.name && candidate.planId === plan.id,
+          );
+          const uncommitted = stateJob?.uncommittedChanges ?? [];
+          if (uncommitted.length > 0) {
+            const reason = `uncommitted changes in its worktree: ${summarizeFiles(uncommitted)}`;
+            await updatePlanJob(plan.id, job.name, { status: 'failed', error: reason });
+            job.status = 'failed';
+            await this.pauseForFailure(
+              plan,
+              { jobName: job.name, failureKind: 'uncommitted_changes', reason },
+              `Job "${job.name}" finished with uncommitted changes. Plan paused.`,
+              `❌ Job "${job.name}" finished with uncommitted changes in ${stateJob?.worktreePath ?? 'its worktree'}:\n` +
+                `  ${summarizeFiles(uncommitted)}\n` +
+                `They are not on its branch, so merging now would leave them out.\n\n` +
+                `Options:\n` +
+                `  Commit them in the worktree, then: mc_plan_approve(checkpoint: "on_error", retry: "${job.name}")\n` +
+                `  Merge the branch without them:    mc_plan_approve(checkpoint: "on_error")`,
+            );
+            return;
+          }
+
           if (job.touchSet && job.touchSet.length > 0 && job.branch && plan.integrationBranch) {
             const validation = await validateTouchSet(job.branch, plan.integrationBranch, job.touchSet);
             if (!validation.valid && validation.violations) {
@@ -543,8 +694,15 @@ export class Orchestrator {
               });
               job.status = 'failed';
 
-              this.showToast('Mission Control', `Job "${job.name}" touched files outside its touchSet. Plan paused.`, 'error');
-              this.notify(
+              await this.pauseForFailure(
+                plan,
+                {
+                  jobName: job.name,
+                  failureKind: 'touchset',
+                  touchSetViolations: validation.violations,
+                  touchSetPatterns: job.touchSet,
+                },
+                `Job "${job.name}" touched files outside its touchSet. Plan paused.`,
                 `❌ Job "${job.name}" modified files outside its touchSet:\n` +
                 `  Violations: ${validation.violations.join(', ')}\n` +
                 `  Allowed: ${job.touchSet.join(', ')}\n\n` +
@@ -553,12 +711,6 @@ export class Orchestrator {
                 `  Agent fixes branch: mc_plan_approve(checkpoint: "on_error", relaunch: "${job.name}")\n` +
                 `  You fix, re-check:  mc_plan_approve(checkpoint: "on_error", retry: "${job.name}")`,
               );
-              await this.setCheckpoint('on_error', plan, {
-                jobName: job.name,
-                failureKind: 'touchset',
-                touchSetViolations: validation.violations,
-                touchSetPatterns: job.touchSet,
-              });
               return;
             }
           }
@@ -584,6 +736,10 @@ export class Orchestrator {
           continue;
         }
 
+        if (this.disposed) {
+          return;
+        }
+
         if (job.branch && plan.integrationWorktree) {
           const mergeCheck = await checkMergeability(plan.integrationWorktree, job.branch);
           if (!mergeCheck.canMerge) {
@@ -593,12 +749,12 @@ export class Orchestrator {
             });
             job.status = 'needs_rebase';
 
-            this.showToast('Mission Control', `Job "${job.name}" has merge conflicts. Plan paused.`, 'error');
-            this.notify(`❌ Job "${job.name}" would conflict with the integration branch.\n  Files: ${mergeCheck.conflicts?.join(', ') ?? 'unknown'}\nRebase the job branch and retry with mc_plan_approve(checkpoint: "on_error", retry: "${job.name}").`);
-            await this.setCheckpoint('on_error', plan, {
-              jobName: job.name,
-              failureKind: 'merge_conflict',
-            });
+            await this.pauseForFailure(
+              plan,
+              { jobName: job.name, failureKind: 'merge_conflict' },
+              `Job "${job.name}" has merge conflicts. Plan paused.`,
+              `❌ Job "${job.name}" would conflict with the integration branch.\n  Files: ${mergeCheck.conflicts?.join(', ') ?? 'unknown'}\nRebase the job branch and retry with mc_plan_approve(checkpoint: "on_error", retry: "${job.name}").`,
+            );
             return;
           }
         }
@@ -621,6 +777,10 @@ export class Orchestrator {
           });
         }
 
+        if (this.disposed) {
+          return;
+        }
+
         this.mergeTrain ??= new MergeTrain(plan.integrationWorktree!, this.getMergeTrainConfig());
         this.mergeTrain.enqueue(job);
         await updatePlanJob(plan.id, job.name, { status: 'merging' });
@@ -628,13 +788,19 @@ export class Orchestrator {
         this.approvedForMerge.delete(job.name);
       }
 
-      if (this.mergeTrain && this.mergeTrain.getQueue().length > 0) {
+      if (this.mergeTrain && this.mergeTrain.getQueue().length > 0 && !this.disposed) {
         plan.status = 'merging';
 
         const nextJob = this.mergeTrain.getQueue()[0];
         this.showToast('Mission Control', `Merging job "${nextJob.name}"...`, 'info');
         this.notify(`⇄ Merging job "${nextJob.name}" into integration branch...`);
         const mergeResult = await this.mergeTrain.processNext();
+
+        if (this.disposed) {
+          // A successor owns the plan now. The job is still `merging` in
+          // plan.json, which makes the successor redo this merge from scratch.
+          return;
+        }
 
         const mergedCount = mergeOrder.filter(j => j.status === 'merged').length;
 
@@ -660,12 +826,12 @@ export class Orchestrator {
             error: mergeResult.files?.join(', ') ?? 'merge conflict',
           });
 
-          this.showToast('Mission Control', `Merge conflict in job "${nextJob.name}". Plan paused.`, 'error');
-          this.notify(`❌ Merge conflict in job "${nextJob.name}". Files: ${mergeResult.files?.join(', ') ?? 'unknown'}. Fix the branch and retry with mc_plan_approve(checkpoint: "on_error", retry: "${nextJob.name}").`);
-          await this.setCheckpoint('on_error', plan, {
-            jobName: nextJob.name,
-            failureKind: 'merge_conflict',
-          });
+          await this.pauseForFailure(
+            plan,
+            { jobName: nextJob.name, failureKind: 'merge_conflict' },
+            `Merge conflict in job "${nextJob.name}". Plan paused.`,
+            `❌ Merge conflict in job "${nextJob.name}". Files: ${mergeResult.files?.join(', ') ?? 'unknown'}. Fix the branch and retry with mc_plan_approve(checkpoint: "on_error", retry: "${nextJob.name}").`,
+          );
           return;
         } else {
           await updatePlanJob(plan.id, nextJob.name, {
@@ -678,12 +844,12 @@ export class Orchestrator {
             this.notify(`🧪 ${nextJob.name}: ${testSummary}`);
           }
 
-          this.showToast('Mission Control', `Job "${nextJob.name}" failed merge tests. Plan paused.`, 'error');
-          this.notify(`❌ Job "${nextJob.name}" failed merge tests. Fix the branch and retry with mc_plan_approve(checkpoint: "on_error", retry: "${nextJob.name}").`);
-          await this.setCheckpoint('on_error', plan, {
-            jobName: nextJob.name,
-            failureKind: 'test_failure',
-          });
+          await this.pauseForFailure(
+            plan,
+            { jobName: nextJob.name, failureKind: 'test_failure' },
+            `Job "${nextJob.name}" failed merge tests. Plan paused.`,
+            `❌ Job "${nextJob.name}" failed merge tests. Fix the branch and retry with mc_plan_approve(checkpoint: "on_error", retry: "${nextJob.name}").`,
+          );
           return;
         }
       }
@@ -693,20 +859,28 @@ export class Orchestrator {
       }
 
       const latestPlan = await loadPlan();
-      if (!latestPlan) {
+      if (!latestPlan || this.disposed) {
+        return;
+      }
+
+      // A failure handler may have paused the plan while this pass was
+      // launching or merging. Never write a status back over a pause or a
+      // checkpoint: the plan could then no longer be approved.
+      if (latestPlan.status === 'paused' || latestPlan.checkpoint || this.checkpoint) {
         return;
       }
 
       const allMerged = latestPlan.jobs.length > 0 && latestPlan.jobs.every((job) => job.status === 'merged');
       // Guard: don't re-enter PR creation if already in progress or terminal
       if (allMerged && latestPlan.status !== 'creating_pr' && latestPlan.status !== 'completed' && latestPlan.status !== 'failed') {
-        this.showToast('Mission Control', 'All jobs merged. Creating PR...', 'info');
-        this.notify(`🎯 All ${latestPlan.jobs.length} jobs merged. Creating PR...`);
-
         if (this.isSupervisor(latestPlan) && !latestPlan.approvedPrePr) {
+          this.showToast('Mission Control', 'All jobs merged. Waiting for approval to create the PR.', 'info');
           await this.setCheckpoint('pre_pr', latestPlan);
           return;
         }
+
+        this.showToast('Mission Control', 'All jobs merged. Creating PR...', 'info');
+        this.notify(`🎯 All ${latestPlan.jobs.length} jobs merged. Creating PR...`);
 
         await updatePlanFields(latestPlan.id, {
           status: 'creating_pr',
@@ -727,13 +901,14 @@ export class Orchestrator {
           this.notify(`🎉 Plan "${latestPlan.name}" completed! PR created: ${prUrl}`);
         } catch (prError) {
           const completedAt = new Date().toISOString();
+          const errMsg = prError instanceof Error ? prError.message : String(prError);
           await updatePlanFields(latestPlan.id, {
             status: 'failed',
             completedAt,
+            failureReason: `PR creation failed: ${errMsg}`,
           });
           this.stopReconciler();
           this.unsubscribeFromMonitorEvents();
-          const errMsg = prError instanceof Error ? prError.message : String(prError);
           this.showToast('Mission Control', `PR creation failed: ${errMsg}`, 'error');
           this.notify(`❌ Plan "${latestPlan.name}" failed: ${errMsg}`);
         }
@@ -741,208 +916,61 @@ export class Orchestrator {
       }
 
       if (latestPlan.status !== plan.status) {
-        const updates: { status: typeof plan.status; completedAt?: string } = {
-          status: plan.status,
-        };
-        if (plan.status === 'failed') {
-          updates.completedAt = new Date().toISOString();
-          this.stopReconciler();
-          this.unsubscribeFromMonitorEvents();
-          this.showToast('Mission Control', `Plan "${latestPlan.name}" failed.`, 'error');
-          this.notify(`❌ Plan "${latestPlan.name}" failed.`);
-        }
-        await updatePlanFields(latestPlan.id, updates);
+        await updatePlanFields(latestPlan.id, { status: plan.status });
       }
   }
 
-  private async launchJob(job: JobSpec): Promise<void> {
-    const planId = this.activePlanId;
-    if (!planId) {
-      throw new Error('No active plan for job launch');
-    }
+  /**
+   * Launch a plan job. Returns the reason when the launch failed (the plan job
+   * is then recorded as `failed`), or null when the job is running.
+   */
+  private async launchJob(job: JobSpec, plan: PlanSpec): Promise<string | null> {
+    const planId = plan.id;
+    const branch = job.branch ?? `mc/plan/${planId.slice(0, 8)}/${job.name}`;
 
-    const placement = this.planPlacement ?? this.config.defaultPlacement ?? 'session';
-    const shortPlanId = planId ? planId.slice(0, 8) : '';
-    const branch = job.branch ?? `mc/plan/${shortPlanId}/${job.name}`;
-    const mode = job.mode ?? this.config.omo?.defaultMode ?? 'vanilla';
-    const sanitizedName = job.name.replace(/[^a-zA-Z0-9_-]/g, '-');
-    const tmuxSessionName = `mc-${sanitizedName}`;
-    const tmuxTarget =
-      placement === 'session'
-        ? tmuxSessionName
-        : (() => {
-            const currentSession = getCurrentSession();
-            if (!currentSession && !isInsideTmux()) {
-              throw new Error('Window placement requires running inside tmux');
-            }
-            return `${currentSession}:${sanitizedName}`;
-          })();
-
-    await updatePlanJob(planId, job.name, { status: 'running', branch });
-
-    let worktreePath = '';
-    let promptFilePath: string | undefined;
     try {
-      const postCreate = resolvePostCreateHook(
-        this.config.worktreeSetup,
-        {
-          copyFiles: job.copyFiles,
-          symlinkDirs: job.symlinkDirs,
-          commands: job.commands,
-        },
-      );
+      await updatePlanJob(planId, job.name, { status: 'running', branch });
 
       // Plan jobs branch from a deterministic start point:
       // - Jobs WITH dependencies → integration branch HEAD (sees upstream changes)
       // - Root jobs (no deps) → baseCommit (consistent starting state)
-      const plan = await loadPlan();
       const hasDeps = job.dependsOn && job.dependsOn.length > 0;
-      const startPoint = plan ? (hasDeps ? plan.integrationBranch : plan.baseCommit) : undefined;
+      const startPoint = hasDeps ? plan.integrationBranch : plan.baseCommit;
 
-      worktreePath = await createWorktree({ branch, startPoint, postCreate });
-
-      if (mode !== 'vanilla') {
-        const omoStatus = await detectOMO();
-        if (!omoStatus.detected) {
-          throw new Error(
-            `OMO mode "${mode}" requires Oh-My-OpenCode to be installed and detected`,
-          );
-        }
-
-        if (mode === 'plan' || mode === 'ralph' || mode === 'ulw') {
-          try {
-            const sourcePlansPath = './.sisyphus/plans';
-            const targetPlansPath = `${worktreePath}/.sisyphus/plans`;
-            await copyPlansToWorktree(sourcePlansPath, targetPlansPath);
-          } catch {
-            // Non-fatal: plans might not exist
-          }
-        }
-      }
-
-      const mcReportSuffix = `\n\nCRITICAL — STATUS REPORTING REQUIRED:
-You MUST call the mc_report tool at these points — this is NOT optional:
-
-1. IMMEDIATELY when you start: mc_report(status: "working", message: "Starting: <brief description>")
-2. At each major milestone: mc_report(status: "progress", message: "<what you accomplished>", progress: <0-100>)
-3. If you get stuck or need input: mc_report(status: "blocked", message: "<what's blocking you>")
-4. WHEN YOU ARE COMPLETELY DONE: mc_report(status: "completed", message: "<summary of what was done>")
-
-The "completed" call is MANDATORY — it signals Mission Control that your job is finished. Without it, your job will appear stuck as "running" and block the pipeline. Always call mc_report(status: "completed", ...) as your FINAL action.
-
-If your work needs human review before it can proceed: mc_report(status: "needs_review", message: "<what needs review>")`;
-      const autoCommitSuffix = (this.config.autoCommit !== false)
-        ? `\n\nIMPORTANT: When you have completed ALL of your work, you MUST commit your changes before finishing. Stage all modified and new files, then create a commit with a conventional commit message (e.g. "feat: ...", "fix: ...", "docs: ...", "refactor: ...", "chore: ..."). Do NOT skip this step.`
-        : '';
-      let jobPrompt = job.prompt + mcReportSuffix + autoCommitSuffix;
-      if (mode === 'ralph') {
-        jobPrompt = `/ralph-loop ${jobPrompt}`;
-      } else if (mode === 'ulw') {
-        jobPrompt = `/ulw-loop ${jobPrompt}`;
-      }
-      promptFilePath = await writePromptFile(worktreePath, jobPrompt);
-      const model = this.planModelSnapshot ?? getCurrentModel();
-      const launcherPath = await writeLauncherScript(worktreePath, promptFilePath, model, {
-        run: mode === 'vanilla',
-      });
-
-      const initialCommand = `bash '${launcherPath}'`;
-      if (placement === 'session') {
-        await createSession({
-          name: tmuxSessionName,
-          workdir: worktreePath,
-          command: initialCommand,
-        });
-      } else {
-        await createWindow({
-          session: getCurrentSession()!,
-          name: sanitizedName,
-          workdir: worktreePath,
-          command: initialCommand,
-        });
-      }
-
-      await setPaneDiedHook(tmuxTarget, `run-shell "echo '${job.id}' >> .mission-control/completed-jobs.log"`);
-      cleanupPromptFile(promptFilePath);
-      cleanupLauncherScript(worktreePath);
-
-      if (mode !== 'vanilla') {
-        try {
-          await new Promise((resolve) => setTimeout(resolve, 2000));
-          switch (mode) {
-            case 'plan':
-              await sendKeys(tmuxTarget, '/start-work');
-              await sendKeys(tmuxTarget, 'Enter');
-              break;
-            case 'ralph':
-              await sendKeys(tmuxTarget, '/ralph-loop');
-              await sendKeys(tmuxTarget, 'Enter');
-              break;
-            case 'ulw':
-              await sendKeys(tmuxTarget, '/ulw-loop');
-              await sendKeys(tmuxTarget, 'Enter');
-              break;
-          }
-        } catch {
-          // Non-fatal: OMO command delivery is best-effort
-        }
-      }
-
-      const existingState = await loadJobState();
-      const staleJobs = existingState.jobs.filter(
-        (j) => j.name === job.name && j.status !== 'running',
-      );
-      for (const stale of staleJobs) {
-        await removeReport(stale.id).catch(() => {});
-        await removeJob(stale.id).catch(() => {});
-      }
-
-      const jobId = randomUUID();
-      await addJob({
-        id: jobId,
+      // Same launch path as mc_launch: worktree, session, job record. It
+      // removes the worktree and session again if any step fails.
+      const launched = await launchSharedJob({
         name: job.name,
-        worktreePath,
-        branch,
-        tmuxTarget,
-        placement,
-        status: 'running',
         prompt: job.prompt,
-        mode,
-        createdAt: new Date().toISOString(),
+        branch,
+        startPoint,
+        agent: job.agent,
+        model: job.model ?? plan.model ?? this.planModelSnapshot,
+        copyFiles: job.copyFiles,
+        symlinkDirs: job.symlinkDirs,
+        commands: job.commands,
         planId,
         launchSessionID: this.planLaunchSessionID,
+        config: this.config,
+        // A retried plan job is launched again under its original name.
+        replaceFinished: true,
       });
 
       await updatePlanJob(planId, job.name, {
         status: 'running',
         branch,
-        worktreePath,
-        tmuxTarget,
+        worktreePath: launched.worktreePath,
       });
+      return null;
     } catch (error) {
-      if (promptFilePath) {
-        cleanupPromptFile(promptFilePath, 0);
-      }
-
+      const message = error instanceof Error ? error.message : String(error);
       try {
-        if (placement === 'session') {
-          await killSession(tmuxSessionName);
-        } else {
-          const [session, window] = tmuxTarget.split(':');
-          if (session && window) {
-            await killWindow(session, window);
-          }
-        }
-      } catch {}
-
-      if (worktreePath) {
-        await removeWorktree(worktreePath, true).catch(() => {});
+        await updatePlanJob(planId, job.name, { status: 'failed', error: message });
+      } catch (updateError) {
+        // The plan is gone (canceled while this job was launching).
+        console.warn(`[Orchestrator] Could not record the failed launch of job "${job.name}":`, updateError);
       }
-
-      await updatePlanJob(planId, job.name, {
-        status: 'failed',
-        error: error instanceof Error ? error.message : String(error),
-      });
+      return message;
     }
   }
 
@@ -964,33 +992,21 @@ If your work needs human review before it can proceed: mc_report(status: "needs_
       throw new Error(`Job "${jobName}" has no worktree or branch — cannot relaunch`);
     }
 
-    const placement = this.planPlacement ?? this.config.defaultPlacement ?? 'session';
-    const mode = job.mode ?? this.config.omo?.defaultMode ?? 'vanilla';
-    const sanitizedName = job.name.replace(/[^a-zA-Z0-9_-]/g, '-');
-    const tmuxSessionName = `mc-${sanitizedName}`;
-    const tmuxTarget =
-      placement === 'session'
-        ? tmuxSessionName
-        : (() => {
-            const currentSession = getCurrentSession();
-            if (!currentSession && !isInsideTmux()) {
-              throw new Error('Window placement requires running inside tmux');
-            }
-            return `${currentSession}:${sanitizedName}`;
-          })();
-
-    // Kill old tmux session if still alive
-    try {
-      if (placement === 'session') {
-        await killSession(tmuxSessionName);
-      } else {
-        const [session, window] = tmuxTarget.split(':');
-        if (session && window) {
-          await killWindow(session, window);
-        }
+    // Stop the job's previous run if it is somehow still going, so the
+    // correction does not race it in the same worktree.
+    const previousRuns = (await loadJobState()).jobs.filter(
+      (j) => j.name === job.name && j.planId === plan.id && j.status === 'running',
+    );
+    for (const previous of previousRuns) {
+      await updateJob(previous.id, {
+        status: 'stopped',
+        completedAt: new Date().toISOString(),
+      });
+      if (previous.sessionID) {
+        await stopJobSession(previous.sessionID).catch((error: unknown) => {
+          console.warn(`[Orchestrator] Failed to stop the previous run of job "${jobName}":`, error);
+        });
       }
-    } catch {
-      // Session may already be dead — that's fine
     }
 
     // Build correction prompt with context from the original task
@@ -1006,127 +1022,27 @@ If your work needs human review before it can proceed: mc_report(status: "needs_
       `3. If a violating file is genuinely required, explain why in your commit message\n` +
       `4. Commit your corrections and report completion`;
 
-    const mcReportSuffix = `\n\nCRITICAL — STATUS REPORTING REQUIRED:
-You MUST call the mc_report tool at these points — this is NOT optional:
-
-1. IMMEDIATELY when you start: mc_report(status: "working", message: "Starting: <brief description>")
-2. At each major milestone: mc_report(status: "progress", message: "<what you accomplished>", progress: <0-100>)
-3. If you get stuck or need input: mc_report(status: "blocked", message: "<what's blocking you>")
-4. WHEN YOU ARE COMPLETELY DONE: mc_report(status: "completed", message: "<summary of what was done>")
-
-The "completed" call is MANDATORY — it signals Mission Control that your job is finished. Without it, your job will appear stuck as "running" and block the pipeline. Always call mc_report(status: "completed", ...) as your FINAL action.
-
-If your work needs human review before it can proceed: mc_report(status: "needs_review", message: "<what needs review>")`;
-    const autoCommitSuffix = (this.config.autoCommit !== false)
-      ? `\n\nIMPORTANT: When you have completed ALL of your work, you MUST commit your changes before finishing. Stage all modified and new files, then create a commit with a conventional commit message (e.g. "feat: ...", "fix: ...", "docs: ...", "refactor: ...", "chore: ..."). Do NOT skip this step.`
-      : '';
-
-    let fullPrompt = correctionPrompt + mcReportSuffix + autoCommitSuffix;
-    if (mode === 'ralph') {
-      fullPrompt = `/ralph-loop ${fullPrompt}`;
-    } else if (mode === 'ulw') {
-      fullPrompt = `/ulw-loop ${fullPrompt}`;
-    }
-
-    const worktreePath = job.worktreePath;
-    let promptFilePath: string | undefined;
-
     try {
-      promptFilePath = await writePromptFile(worktreePath, fullPrompt);
-      const model = this.planModelSnapshot ?? getCurrentModel();
-      const launcherPath = await writeLauncherScript(worktreePath, promptFilePath, model, {
-        run: mode === 'vanilla',
-      });
-
-      const initialCommand = `bash '${launcherPath}'`;
-      if (placement === 'session') {
-        await createSession({
-          name: tmuxSessionName,
-          workdir: worktreePath,
-          command: initialCommand,
-        });
-      } else {
-        await createWindow({
-          session: getCurrentSession()!,
-          name: sanitizedName,
-          workdir: worktreePath,
-          command: initialCommand,
-        });
-      }
-
-      await setPaneDiedHook(tmuxTarget, `run-shell "echo '${job.id}' >> .mission-control/completed-jobs.log"`);
-      cleanupPromptFile(promptFilePath);
-      cleanupLauncherScript(worktreePath);
-
-      if (mode !== 'vanilla') {
-        try {
-          await new Promise((resolve) => setTimeout(resolve, 2000));
-          switch (mode) {
-            case 'plan':
-              await sendKeys(tmuxTarget, '/start-work');
-              await sendKeys(tmuxTarget, 'Enter');
-              break;
-            case 'ralph':
-              await sendKeys(tmuxTarget, '/ralph-loop');
-              await sendKeys(tmuxTarget, 'Enter');
-              break;
-            case 'ulw':
-              await sendKeys(tmuxTarget, '/ulw-loop');
-              await sendKeys(tmuxTarget, 'Enter');
-              break;
-          }
-        } catch {
-          // Non-fatal: OMO command delivery is best-effort
-        }
-      }
-
-      // Clean up stale job entries and create fresh one for the relaunch
-      const existingState = await loadJobState();
-      const staleJobs = existingState.jobs.filter(
-        (j) => j.name === job.name && j.status !== 'running',
-      );
-      for (const stale of staleJobs) {
-        await removeReport(stale.id).catch(() => {});
-        await removeJob(stale.id).catch(() => {});
-      }
-
-      const jobId = randomUUID();
-      await addJob({
-        id: jobId,
+      // Relaunch in the job's existing worktree, on its existing branch. The
+      // stale job entry (and its report) is replaced by a fresh one.
+      await launchSharedJob({
         name: job.name,
-        worktreePath,
-        branch: job.branch,
-        tmuxTarget,
-        placement,
-        status: 'running',
         prompt: correctionPrompt,
-        mode,
-        createdAt: new Date().toISOString(),
+        branch: job.branch,
+        worktreePath: job.worktreePath,
+        agent: job.agent,
+        model: job.model ?? plan.model ?? this.planModelSnapshot,
         planId: plan.id,
         launchSessionID: this.planLaunchSessionID,
+        config: this.config,
+        replaceFinished: true,
       });
 
       await updatePlanJob(plan.id, job.name, {
         status: 'running',
-        tmuxTarget,
         error: undefined,
       });
     } catch (error) {
-      if (promptFilePath) {
-        cleanupPromptFile(promptFilePath, 0);
-      }
-
-      try {
-        if (placement === 'session') {
-          await killSession(tmuxSessionName);
-        } else {
-          const [session, window] = tmuxTarget.split(':');
-          if (session && window) {
-            await killWindow(session, window);
-          }
-        }
-      } catch {}
-
       throw new Error(
         `Failed to relaunch job "${jobName}" for correction: ${error instanceof Error ? error.message : String(error)}`,
       );
@@ -1134,7 +1050,7 @@ If your work needs human review before it can proceed: mc_report(status: "needs_
   }
 
   private handleJobComplete = (job: Job): void => {
-    if (!job.planId || !this.activePlanId || job.planId !== this.activePlanId) {
+    if (this.disposed || !job.planId || !this.activePlanId || job.planId !== this.activePlanId) {
       return;
     }
 
@@ -1155,33 +1071,31 @@ If your work needs human review before it can proceed: mc_report(status: "needs_
   }
 
   private handleJobFailed = (job: Job): void => {
-    if (job.planId && this.activePlanId && job.planId === this.activePlanId) {
-      updatePlanJob(job.planId, job.name, {
-        status: 'failed',
-        error: 'job monitor reported failure',
-      }).catch(() => {});
-
-      loadPlan()
-        .then(async (plan) => {
-          if (!plan || plan.id !== job.planId) {
-            return;
-          }
-
-          this.showToast('Mission Control', `Job "${job.name}" failed. Plan paused.`, 'error');
-          this.notify(`❌ Job "${job.name}" failed. Fix and retry with mc_plan_approve(checkpoint: "on_error", retry: "${job.name}").`);
-          await this.setCheckpoint('on_error', plan, {
-            jobName: job.name,
-            failureKind: 'job_failed',
-          });
-        })
-        .catch(() => {})
-        .finally(() => {
-          if (!this.checkpoint) {
-            this.stopReconciler();
-            this.unsubscribeFromMonitorEvents();
-          }
-        });
+    if (this.disposed || !job.planId || !this.activePlanId || job.planId !== this.activePlanId) {
+      return;
     }
+
+    const planId = job.planId;
+    const reason = job.failureReason ?? 'job monitor reported failure';
+    (async () => {
+      await updatePlanJob(planId, job.name, { status: 'failed', error: reason });
+
+      const plan = await loadPlan();
+      if (!plan || plan.id !== planId) {
+        return;
+      }
+
+      await this.pauseForFailure(
+        plan,
+        { jobName: job.name, failureKind: 'job_failed', reason },
+        `Job "${job.name}" failed. Plan paused.`,
+        `❌ Job "${job.name}" failed: ${reason}. Fix and retry with mc_plan_approve(checkpoint: "on_error", retry: "${job.name}").`,
+      );
+    })().catch((error) => {
+      // The failed job stays `failed` in plan.json (or is found by the
+      // reconcile safety net), so the next reconcile pass pauses the plan.
+      console.error(`[Orchestrator] Failed to pause the plan after job "${job.name}" failed:`, error);
+    });
   }
 
   async cancelPlan(): Promise<void> {
@@ -1197,303 +1111,151 @@ If your work needs human review before it can proceed: mc_report(status: "needs_
     this.unsubscribeFromMonitorEvents();
     this.activePlanId = null;
 
+    // Mark the plan canceled before stopping anything: a reconcile tick that
+    // sees running jobs disappear would otherwise launch the queued ones.
+    if (!isTerminalPlanStatus(plan.status)) {
+      await updatePlanFields(plan.id, { status: 'canceled' });
+    }
+
     const runningJobs = (await getRunningJobs()).filter((job) => job.planId === plan.id);
     for (const job of runningJobs) {
       try {
-        if (job.placement === 'session') {
-          await killSession(job.tmuxTarget);
-        } else {
-          const [session, window] = job.tmuxTarget.split(':');
-          if (session && window) {
-            await killWindow(session, window);
-          }
-        }
+        // Mark the job stopped before interrupting it, so the monitor does not
+        // record the interruption as a failure of a running job.
         await updateJob(job.id, {
           status: 'stopped',
           completedAt: new Date().toISOString(),
         });
-      } catch {}
+        if (job.sessionID) {
+          await stopJobSession(job.sessionID);
+        }
+      } catch (error) {
+        console.warn(`[Orchestrator] Failed to stop job "${job.name}" while canceling the plan:`, error);
+      }
     }
 
     const state = await loadJobState();
     const planJobs = state.jobs.filter((job) => job.planId === plan.id);
     for (const job of planJobs) {
+      if (job.sessionID) {
+        // The worktree is about to be deleted; a session left pointing at it
+        // would be unusable.
+        await removeJobSession(job.sessionID).catch((error: unknown) => {
+          console.warn(`[Orchestrator] Failed to remove the session of job "${job.name}" while canceling the plan:`, error);
+        });
+      }
       if (job.worktreePath) {
-        await removeWorktree(job.worktreePath, true).catch(() => {});
+        await removeWorktree(job.worktreePath, true).catch((error: unknown) => {
+          // Usually already gone; mc_cleanup removes anything left behind.
+          console.warn(`[Orchestrator] Could not remove the worktree of job "${job.name}" while canceling the plan:`, error);
+        });
       }
       if (job.branch) {
-        await gitCommand(['branch', '-D', job.branch]).catch(() => {});
+        const deleted = await gitCommand(['branch', '-D', job.branch]);
+        if (deleted.exitCode !== 0 && !deleted.stderr.includes('not found')) {
+          console.warn(`[Orchestrator] Could not delete branch ${job.branch} while canceling the plan: ${deleted.stderr}`);
+        }
       }
     }
     await deleteIntegrationBranch(plan.id);
     await clearPlan();
   }
 
-  async skipJob(jobName: string, reason?: string): Promise<void> {
-    const plan = await loadPlan();
-    if (!plan) {
-      throw new Error('No active plan');
-    }
-
-    const jobIndex = plan.jobs.findIndex((j) => j.name === jobName);
-    if (jobIndex === -1) {
-      throw new Error(`Job "${jobName}" not found in plan`);
-    }
-
-    const job = plan.jobs[jobIndex];
-    const requiresApproval = plan.mode === 'supervisor' || plan.mode === 'copilot';
-
-    if (requiresApproval && !this.pendingReplanActions.has(`skip-${jobName}`)) {
-      this.pendingReplanActions.set(`skip-${jobName}`, async () => {
-        await this.executeSkipJob(plan, job, reason);
-        this.pendingReplanActions.delete(`skip-${jobName}`);
-      });
-      this.showToast('Mission Control', `Approval required to skip job "${jobName}"`, 'warning');
-      return;
-    }
-
-    await this.executeSkipJob(plan, job, reason);
-  }
-
-  private async executeSkipJob(plan: PlanSpec, job: JobSpec, reason?: string): Promise<void> {
-    await updatePlanJob(plan.id, job.name, { status: 'canceled' });
-    this.jobComms.unregisterJob(job.name);
-
-    const auditEntry: AuditLogEntry = {
-      timestamp: new Date().toISOString(),
-      action: 'skip_job',
-      jobName: job.name,
-      details: { reason: reason ?? 'No reason provided' },
-      userApproved: plan.mode !== 'autopilot',
-    };
-
-    await this.appendAuditLog(plan.id, auditEntry);
-    this.showToast('Mission Control', `Job "${job.name}" skipped`, 'info');
-    await this.reconcile();
-  }
-
-  async addJob(jobSpec: Omit<JobSpec, 'id' | 'status'>, options?: { forkFrom?: string }): Promise<void> {
-    const plan = await loadPlan();
-    if (!plan) {
-      throw new Error('No active plan');
-    }
-
-    const requiresApproval = plan.mode === 'supervisor' || plan.mode === 'copilot';
-
-    if (requiresApproval && !this.pendingReplanActions.has(`add-${jobSpec.name}`)) {
-      this.pendingReplanActions.set(`add-${jobSpec.name}`, async () => {
-        await this.executeAddJob(plan, jobSpec, options);
-        this.pendingReplanActions.delete(`add-${jobSpec.name}`);
-      });
-      this.showToast('Mission Control', `Approval required to add job "${jobSpec.name}"`, 'warning');
-      return;
-    }
-
-    await this.executeAddJob(plan, jobSpec, options);
-  }
-
-  private async executeAddJob(
-    plan: PlanSpec,
-    jobSpec: Omit<JobSpec, 'id' | 'status'>,
-    options?: { forkFrom?: string },
-  ): Promise<void> {
-    const newJob: JobSpec = {
-      ...jobSpec,
-      id: randomUUID(),
-      status: 'queued',
-    };
-
-    if (options?.forkFrom) {
-      const sourceJob = plan.jobs.find((j) => j.name === options.forkFrom);
-      if (sourceJob?.port && sourceJob?.launchSessionID) {
-        try {
-          const client = await waitForServer(sourceJob.port, { timeoutMs: 10000 });
-          await forkJobSession(client, sourceJob.launchSessionID, {
-            sourceJobName: sourceJob.name,
-            newJobName: newJob.name,
-            additionalPrompt: newJob.prompt,
-          });
-          newJob.port = sourceJob.port;
-          newJob.launchSessionID = sourceJob.launchSessionID;
-        } catch {
-        }
-      }
-    }
-
-    plan.jobs.push(newJob);
-    await savePlan(plan);
-    this.jobComms.registerJob(newJob);
-
-    const auditEntry: AuditLogEntry = {
-      timestamp: new Date().toISOString(),
-      action: 'add_job',
-      jobName: newJob.name,
-      details: { forkFrom: options?.forkFrom },
-      userApproved: plan.mode !== 'autopilot',
-    };
-
-    await this.appendAuditLog(plan.id, auditEntry);
-    this.showToast('Mission Control', `Job "${newJob.name}" added to plan`, 'info');
-    await this.reconcile();
-  }
-
-  async reorderJobs(newOrder: string[]): Promise<void> {
-    const plan = await loadPlan();
-    if (!plan) {
-      throw new Error('No active plan');
-    }
-
-    if (newOrder.length !== plan.jobs.length) {
-      throw new Error('New order must contain all jobs');
-    }
-
-    const currentNames = new Set(plan.jobs.map((j) => j.name));
-    const newNames = new Set(newOrder);
-    if (![...currentNames].every((name) => newNames.has(name))) {
-      throw new Error('New order contains unknown job names');
-    }
-
-    const requiresApproval = plan.mode === 'supervisor' || plan.mode === 'copilot';
-
-    if (requiresApproval && !this.pendingReplanActions.has('reorder')) {
-      this.pendingReplanActions.set('reorder', async () => {
-        await this.executeReorderJobs(plan, newOrder);
-        this.pendingReplanActions.delete('reorder');
-      });
-      this.showToast('Mission Control', 'Approval required to reorder jobs', 'warning');
-      return;
-    }
-
-    await this.executeReorderJobs(plan, newOrder);
-  }
-
-  private async executeReorderJobs(plan: PlanSpec, newOrder: string[]): Promise<void> {
-    const jobMap = new Map(plan.jobs.map((j) => [j.name, j]));
-    const reorderedJobs = newOrder.map((name) => jobMap.get(name)!);
-
-    for (let i = 0; i < reorderedJobs.length; i++) {
-      reorderedJobs[i].mergeOrder = i;
-    }
-
-    plan.jobs = reorderedJobs;
-    await savePlan(plan);
-
-    const auditEntry: AuditLogEntry = {
-      timestamp: new Date().toISOString(),
-      action: 'reorder_jobs',
-      details: { newOrder },
-      userApproved: plan.mode !== 'autopilot',
-    };
-
-    await this.appendAuditLog(plan.id, auditEntry);
-    this.showToast('Mission Control', 'Jobs reordered', 'info');
-    await this.reconcile();
-  }
-
-  private async appendAuditLog(planId: string, entry: AuditLogEntry): Promise<void> {
-    const plan = await loadPlan();
-    if (!plan || plan.id !== planId) {
-      return;
-    }
-
-    const auditLog = plan.auditLog ?? [];
-    auditLog.push(entry);
-    await updatePlanFields(planId, { auditLog });
-  }
-
-  relayFinding(fromJob: string, toJob: string, context: RelayContext): void {
-    this.jobComms.relayFinding(fromJob, toJob, context);
-    this.showToast('Mission Control', `Finding relayed from "${fromJob}" to "${toJob}"`, 'info');
-  }
-
-  async approveReplanAction(actionId: string): Promise<void> {
-    const action = this.pendingReplanActions.get(actionId);
-    if (!action) {
-      throw new Error(`No pending replan action with ID "${actionId}"`);
-    }
-    await action();
-  }
-
-  getPendingReplanActions(): Array<{ id: string; description: string }> {
-    return Array.from(this.pendingReplanActions.entries()).map(([id, _]) => ({
-      id,
-      description: this.getReplanDescription(id),
-    }));
-  }
-
-  private getReplanDescription(actionId: string): string {
-    if (actionId.startsWith('skip-')) {
-      return `Skip job "${actionId.slice(5)}"`;
-    }
-    if (actionId.startsWith('add-')) {
-      return `Add job "${actionId.slice(4)}"`;
-    }
-    if (actionId === 'reorder') {
-      return 'Reorder jobs';
-    }
-    return actionId;
-  }
-
   async resumePlan(): Promise<void> {
-    const plan = await loadPlan();
-    if (!plan || (plan.status !== 'running' && plan.status !== 'paused')) {
+    let plan = await loadPlan();
+    if (!plan || isTerminalPlanStatus(plan.status)) {
       return;
+    }
+
+    if (plan.status === 'pending' && plan.mode === 'copilot') {
+      // Waiting for mc_plan_approve; nothing has started yet.
+      return;
+    }
+
+    if (plan.checkpoint && plan.status !== 'paused') {
+      // A checkpoint with a non-paused status cannot be approved. Restore the
+      // pause so mc_plan_approve can clear it.
+      await updatePlanFields(plan.id, { status: 'paused' });
+      plan = { ...plan, status: 'paused' };
     }
 
     if (plan.status === 'paused') {
-      await updatePlanFields(plan.id, {
-        status: 'running',
-        checkpoint: null,
-        checkpointContext: null,
-      });
+      // A plan waiting at a checkpoint stays there across reloads and restarts.
+      // Only mc_plan_approve may clear a checkpoint; it marks the plan running
+      // before it resumes it.
+      this.checkpoint = plan.checkpoint ?? null;
+      this.activePlanId = plan.id;
+      this.planLaunchSessionID = plan.launchSessionID;
+      return;
     }
     this.checkpoint = null;
 
+    if (plan.status !== 'running') {
+      // `pending` (started but not reconciled yet), `merging` and
+      // `creating_pr` were cut off by a restart. The reconciler redoes the
+      // interrupted step from the job statuses.
+      await updatePlanFields(plan.id, { status: 'running' });
+    }
+
     this.activePlanId = plan.id;
-    this.planPlacement = plan.placement ?? null;
     this.planLaunchSessionID = plan.launchSessionID;
     this.mergeTrain = new MergeTrain(plan.integrationWorktree!, this.getMergeTrainConfig());
 
-    const runningJobs = (await getRunningJobs()).filter((job) => job.planId === plan.id);
-    let hasDeadRunningJob = false;
-
-    const tmuxHealthy = await isTmuxHealthy();
-    if (!tmuxHealthy) {
-      console.warn('tmux server is not responsive, skipping pane checks during resumePlan');
-    } else {
-      for (const runningJob of runningJobs) {
-        try {
-          const paneAlive = await isPaneRunning(runningJob.tmuxTarget);
-          if (!paneAlive) {
-            hasDeadRunningJob = true;
-            await updateJob(runningJob.id, {
-              status: 'failed',
-              completedAt: new Date().toISOString(),
-            });
-            await updatePlanJob(plan.id, runningJob.name, {
-              status: 'failed',
-              error: 'tmux pane is not running',
-            });
-          }
-        } catch (error) {
-          console.warn(
-            `tmux error checking job ${runningJob.name} during resumePlan, skipping:`,
-            error instanceof Error ? error.message : error,
-          );
-        }
+    // The merge queue lives in memory. A job left in `merging` was cut off by
+    // the restart and would otherwise wait forever: undo its partial merge and
+    // hand it back to the reconciler, which merges and tests it again.
+    for (const job of plan.jobs) {
+      if (job.status === 'merging') {
+        await this.recoverInterruptedMerge(plan.id, plan.integrationWorktree!, job.name);
       }
     }
 
-    if (hasDeadRunningJob) {
-      await updatePlanFields(plan.id, {
+    const runningJobs = (await getRunningJobs()).filter((job) => job.planId === plan.id);
+
+    // Jobs with a session are picked up by the monitor, which reconciles them
+    // against the session's outcome. A running job without a session has
+    // nothing behind it and can never finish: fail it, and let the reconciler
+    // pause the plan on the failed job.
+    for (const runningJob of runningJobs) {
+      if (runningJob.sessionID) {
+        continue;
+      }
+
+      const reason = 'the job has no session to resume after a restart';
+      await updateJob(runningJob.id, {
         status: 'failed',
         completedAt: new Date().toISOString(),
+        failureReason: reason,
       });
+      await updatePlanJob(plan.id, runningJob.name, {
+        status: 'failed',
+        error: reason,
+      });
+    }
+
+    if (this.disposed) {
       return;
     }
 
     this.subscribeToMonitorEvents();
     this.startReconciler();
+  }
+
+  private async recoverInterruptedMerge(planId: string, worktree: string, jobName: string): Promise<void> {
+    // No-op when no merge is in progress; the exit code is not an error here.
+    await gitCommand(['-C', worktree, 'merge', '--abort']);
+
+    // The merge commit may already exist with its tests unfinished. Drop it so
+    // the job is merged and tested from scratch.
+    const head = await gitCommand(['-C', worktree, 'log', '-1', '--format=%s']);
+    const target = head.exitCode === 0 && head.stdout === `Merge ${jobName}` ? 'HEAD~1' : 'HEAD';
+    const reset = await gitCommand(['-C', worktree, 'reset', '--hard', target]);
+    if (reset.exitCode !== 0) {
+      console.warn(`[Mission Control] Could not reset the integration worktree for job ${jobName}: ${reset.stderr}`);
+    }
+    await gitCommand(['-C', worktree, 'clean', '-fd']);
+
+    await updatePlanJob(planId, jobName, { status: 'ready_to_merge' });
   }
 
   private async createPR(): Promise<string> {
@@ -1567,7 +1329,18 @@ If your work needs human review before it can proceed: mc_report(status: "needs_
     ]);
 
     if (prResult.exitCode !== 0) {
-      throw new Error(`Failed to create PR: ${prResult.stderr || prResult.stdout}`);
+      const output = prResult.stderr || prResult.stdout;
+      if (/already exists/i.test(output)) {
+        // A restart can interrupt the plan after the PR was opened but before
+        // its URL was recorded. Use the PR that is already there.
+        const existing = await this.runCommand([
+          'gh', 'pr', 'view', plan.integrationBranch, '--json', 'url', '--jq', '.url',
+        ]);
+        if (existing.exitCode === 0 && existing.stdout) {
+          return existing.stdout;
+        }
+      }
+      throw new Error(`Failed to create PR: ${output}`);
     }
 
     return prResult.stdout.trim();
@@ -1578,7 +1351,7 @@ If your work needs human review before it can proceed: mc_report(status: "needs_
     cwd?: string,
   ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
     const proc = Bun.spawn(command, {
-      cwd,
+      cwd: cwd ?? getProjectDirectory(),
       stdout: 'pipe',
       stderr: 'pipe',
     });
@@ -1615,7 +1388,7 @@ If your work needs human review before it can proceed: mc_report(status: "needs_
   }
 
   private subscribeToMonitorEvents(): void {
-    if (this.subscriptionsActive) {
+    if (this.subscriptionsActive || this.disposed) {
       return;
     }
 

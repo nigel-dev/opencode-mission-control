@@ -19,6 +19,18 @@ async function getBaseBranch(cwd: string): Promise<string> {
   throw new Error('Could not find main or master branch');
 }
 
+/**
+ * Undo a failed merge. The exit code does not matter (nothing to abort is not
+ * an error); only a git that cannot be started at all is reported.
+ */
+async function cleanupGit(args: string[], cwd?: string): Promise<void> {
+  try {
+    await gitCommand(args, cwd ? { cwd } : undefined);
+  } catch (error) {
+    console.warn(`[Mission Control] Could not run git ${args.join(' ')} to undo a failed merge:`, error);
+  }
+}
+
 async function assertCleanWorktree(cwd: string): Promise<void> {
   const status = await gitCommand(['status', '--porcelain'], { cwd });
   if (status.exitCode !== 0) {
@@ -85,12 +97,8 @@ export const mc_merge = {
       });
 
       if (squashResult.exitCode !== 0) {
-        await gitCommand(['reset', '--hard', 'HEAD'], {
-          cwd: mainWorktreePath,
-        }).catch(() => {});
-        await gitCommand(['clean', '-fd'], {
-          cwd: mainWorktreePath,
-        }).catch(() => {});
+        await cleanupGit(['reset', '--hard', 'HEAD'], mainWorktreePath);
+        await cleanupGit(['clean', '-fd'], mainWorktreePath);
         throw new Error(
           `Squash merge failed: ${squashResult.stderr || squashResult.stdout}`,
         );
@@ -102,12 +110,8 @@ export const mc_merge = {
       });
 
       if (commitResult.exitCode !== 0) {
-        await gitCommand(['reset', '--hard', 'HEAD'], {
-          cwd: mainWorktreePath,
-        }).catch(() => {});
-        await gitCommand(['clean', '-fd'], {
-          cwd: mainWorktreePath,
-        }).catch(() => {});
+        await cleanupGit(['reset', '--hard', 'HEAD'], mainWorktreePath);
+        await cleanupGit(['clean', '-fd'], mainWorktreePath);
         throw new Error(
           `Commit after squash failed: ${commitResult.stderr || commitResult.stdout}`,
         );
@@ -125,7 +129,7 @@ export const mc_merge = {
 
       if (rebaseResult.exitCode !== 0) {
         // Abort the rebase in the job's worktree
-        await gitCommand(['-C', job.worktreePath, 'rebase', '--abort']).catch(() => {});
+        await cleanupGit(['-C', job.worktreePath, 'rebase', '--abort']);
         throw new Error(
           `Rebase of job branch onto ${baseBranch} failed. ` +
           `Conflicts detected. Try running mc_sync --strategy rebase first to resolve conflicts. ` +
@@ -154,9 +158,7 @@ export const mc_merge = {
       );
 
       if (mergeResult.exitCode !== 0) {
-        await gitCommand(['merge', '--abort'], {
-          cwd: mainWorktreePath,
-        }).catch(() => {});
+        await cleanupGit(['merge', '--abort'], mainWorktreePath);
         throw new Error(
           `Merge failed: ${mergeResult.stderr || mergeResult.stdout}`,
         );

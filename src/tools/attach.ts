@@ -1,10 +1,32 @@
 import { z } from 'zod';
-import { getJobByName } from '../lib/job-state';
-import { isInsideTmux, createWindow, getCurrentSession, setWindowOption } from '../lib/tmux';
+import { getJobByName, type Job } from '../lib/job-state';
+import { jobSessionTitle } from '../lib/job-runtime';
+import { emitOpen } from '../lib/rpc-events';
+
+export interface AttachInfo {
+  sessionID: string;
+  worktreePath: string;
+  title: string;
+}
+
+/**
+ * What a client needs to open a job's session. Returns undefined for a job
+ * that has no session (launched by a pre-2.0 release).
+ */
+export function getAttachInfo(job: Job): AttachInfo | undefined {
+  if (!job.sessionID) {
+    return undefined;
+  }
+  return {
+    sessionID: job.sessionID,
+    worktreePath: job.worktreePath,
+    title: jobSessionTitle(job.name),
+  };
+}
 
 export const mc_attach = {
   name: 'mc_attach',
-  description: 'Get instructions for attaching to a job\'s terminal',
+  description: 'Get instructions for opening a job\'s session',
   input: z.object({
     name: z.string().describe('Job name'),
   }).strict(),
@@ -15,59 +37,32 @@ export const mc_attach = {
       throw new Error(`Job "${args.name}" not found`);
     }
 
-    // Check if this is a serve-mode job (has port/serverUrl)
-    const isServeMode = job.port !== undefined && job.serverUrl !== undefined;
-
-    if (isServeMode) {
-      // Serve-mode job: open TUI in new tmux window if inside tmux, otherwise return command
-      if (isInsideTmux()) {
-        // Create new tmux window with opencode attach command
-        const windowName = `mc-${job.name}`;
-        const sessionFlag = job.remoteSessionID ? ` --session ${job.remoteSessionID}` : '';
-        const attachCommand = `opencode attach ${job.serverUrl} --dir ${job.worktreePath}${sessionFlag}`;
-        const currentSession = getCurrentSession();
-
-        if (!currentSession) {
-          return { content: `Run: opencode attach ${job.serverUrl}` };
-        }
-
-        await createWindow({
-          session: currentSession,
-          name: windowName,
-          workdir: job.worktreePath,
-          command: attachCommand,
-        });
-
-        try {
-          await setWindowOption(`${currentSession}:${windowName}`, '@mc_job_id', job.id);
-        } catch {
-          // Best-effort: tagging failure should not block attach
-        }
-
-        return { content: `Opened TUI for job '${job.name}' in new tmux window` };
-      } else {
-        // Not inside tmux, return the command to run
-        return { content: `Run: opencode attach ${job.serverUrl}` };
-      }
+    const info = getAttachInfo(job);
+    if (!info) {
+      return { content: [
+        `Job "${args.name}" has no session to open (it was launched by an older version of Mission Control).`,
+        '',
+        `  Worktree: ${job.worktreePath}`,
+      ].join('\n') };
     }
 
-    // TUI-mode job: preserve existing behavior (return tmux attach/select command)
-    const lines: string[] = [
-      `To attach to job "${args.name}":`,
+    // Ask a connected TUI to focus the job's tab. Best-effort: with no TUI
+    // listening nothing happens, so the instructions below stay the fallback.
+    await emitOpen({ sessionID: info.sessionID, title: info.title });
+
+    return { content: [
+      `To open job "${args.name}":`,
       '',
-    ];
-
-    if (job.placement === 'session') {
-      lines.push(`# Session mode:`);
-      lines.push(`tmux attach -t ${job.tmuxTarget}`);
-    } else {
-      lines.push(`# Window mode (select window in current session):`);
-      lines.push(`tmux select-window -t ${job.tmuxTarget}`);
-    }
-
-    lines.push('');
-    lines.push('# To detach: Ctrl+B, D');
-
-    return { content: lines.join('\n') };
+      `  Session:  ${info.sessionID}`,
+      `  Worktree: ${info.worktreePath}`,
+      '',
+      'A tab for this session was requested in the TUI. If it did not open:',
+      '',
+      '# In the TUI: open the session list (Ctrl+X then L, or /sessions) and pick:',
+      `${info.title}`,
+      '',
+      '# From a shell:',
+      `cd ${info.worktreePath} && opencode --session ${info.sessionID}`,
+    ].join('\n') };
   },
 };

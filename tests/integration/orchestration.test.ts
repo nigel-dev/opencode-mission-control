@@ -10,7 +10,7 @@ import { Orchestrator } from '../../src/lib/orchestrator';
 import { loadPlan, updatePlanJob } from '../../src/lib/plan-state';
 import type { JobSpec, PlanSpec } from '../../src/lib/plan-types';
 import * as pathsMod from '../../src/lib/paths';
-import * as tmuxMod from '../../src/lib/tmux';
+import * as jobRuntimeMod from '../../src/lib/job-runtime';
 
 type TestRepo = {
   path: string;
@@ -18,11 +18,10 @@ type TestRepo = {
   rootDir: string;
 };
 
-type MockTmuxResult = {
-  createSession: Mock<any>;
-  sendKeys: Mock<any>;
-  killSession: Mock<any>;
-  isPaneRunning: Mock<any>;
+type MockRuntimeResult = {
+  startJobSession: Mock<any>;
+  stopJobSession: Mock<any>;
+  removeJobSession: Mock<any>;
 };
 
 type MockGhResult = {
@@ -32,11 +31,8 @@ type MockGhResult = {
 class FakeMonitor extends EventEmitter {}
 
 const DEFAULT_CONFIG = {
-  defaultPlacement: 'session' as const,
   pollInterval: 10_000,
-  idleThreshold: 300_000,
   worktreeBasePath: '/tmp',
-  omo: { enabled: false, defaultMode: 'vanilla' as const },
   maxParallel: 3,
 };
 
@@ -132,23 +128,15 @@ async function createTestRepo(): Promise<{ path: string; cleanup: () => void }> 
   return { path: repoPath, cleanup };
 }
 
-function mockTmux(): MockTmuxResult {
-  const createSession = spyOn(tmuxMod, 'createSession').mockResolvedValue(undefined);
-  spyOn(tmuxMod, 'createWindow').mockResolvedValue(undefined);
-  spyOn(tmuxMod, 'getCurrentSession').mockReturnValue('main');
-  spyOn(tmuxMod, 'isInsideTmux').mockReturnValue(true);
-  spyOn(tmuxMod, 'isTmuxHealthy').mockResolvedValue(true);
-  const sendKeys = spyOn(tmuxMod, 'sendKeys').mockResolvedValue(undefined);
-  const killSession = spyOn(tmuxMod, 'killSession').mockResolvedValue(undefined);
-  spyOn(tmuxMod, 'killWindow').mockResolvedValue(undefined);
-  spyOn(tmuxMod, 'setPaneDiedHook').mockResolvedValue(undefined);
-  const isPaneRunning = spyOn(tmuxMod, 'isPaneRunning').mockResolvedValue(true);
+function mockRuntime(): MockRuntimeResult {
+  const startJobSession = spyOn(jobRuntimeMod, 'startJobSession').mockResolvedValue('ses_unexpected');
+  const stopJobSession = spyOn(jobRuntimeMod, 'stopJobSession').mockResolvedValue(undefined);
+  const removeJobSession = spyOn(jobRuntimeMod, 'removeJobSession').mockResolvedValue(undefined);
 
   return {
-    createSession: createSession as unknown as Mock<any>,
-    sendKeys: sendKeys as unknown as Mock<any>,
-    killSession: killSession as unknown as Mock<any>,
-    isPaneRunning: isPaneRunning as unknown as Mock<any>,
+    startJobSession: startJobSession as unknown as Mock<any>,
+    stopJobSession: stopJobSession as unknown as Mock<any>,
+    removeJobSession: removeJobSession as unknown as Mock<any>,
   };
 }
 
@@ -293,20 +281,17 @@ function installLaunchJobStub(orchestrator: Orchestrator): void {
       name: job.name,
       worktreePath,
       branch,
-      tmuxTarget: `mc-${slug}`,
-      placement: 'session',
       status: 'running',
       prompt: job.prompt,
-      mode: 'vanilla',
       createdAt: new Date().toISOString(),
       planId: plan.id,
+      sessionID: `ses_${slug}`,
     });
 
     await updatePlanJob(plan.id, job.name, {
       status: 'running',
       branch,
       worktreePath,
-      tmuxTarget: `mc-${slug}`,
     });
   });
 }
@@ -357,7 +342,7 @@ describe('orchestration integration', () => {
 
   it('runs full orchestration flow from parallel jobs to PR', async () => {
     const monitor = new FakeMonitor();
-    const tmux = mockTmux();
+    const runtime = mockRuntime();
     const orchestrator = new Orchestrator(monitor as any, {
       ...DEFAULT_CONFIG,
       maxParallel: 2,
@@ -444,13 +429,13 @@ describe('orchestration integration', () => {
     expect(ghCommand).toContain('pr');
     expect(ghCommand).toContain('create');
 
-    expect(tmux.createSession).toHaveBeenCalledTimes(0);
-    expect(tmux.sendKeys).toHaveBeenCalledTimes(0);
+    expect(runtime.startJobSession).toHaveBeenCalledTimes(0);
+    expect(runtime.stopJobSession).toHaveBeenCalledTimes(0);
   }, 30000);
 
   it('pauses plan on merge conflict for retry instead of failing', async () => {
     const monitor = new FakeMonitor();
-    mockTmux();
+    mockRuntime();
     const orchestrator = new Orchestrator(monitor as any, {
       ...DEFAULT_CONFIG,
       maxParallel: 2,
@@ -522,7 +507,7 @@ describe('orchestration integration', () => {
   it('resumes a persisted plan after orchestrator restart', async () => {
     const monitor1 = new FakeMonitor();
     const monitor2 = new FakeMonitor();
-    const tmux = mockTmux();
+    const runtime = mockRuntime();
 
     const orchestrator1 = new Orchestrator(monitor1 as any, {
       ...DEFAULT_CONFIG,
@@ -592,7 +577,13 @@ describe('orchestration integration', () => {
     expect(resumedPlan?.jobs.find((job) => job.id === 'job-a')?.status).toBe('merged');
     expect(resumedPlan?.jobs.find((job) => job.id === 'job-b')?.status).toBe('running');
     expect(resumedPlan?.jobs.find((job) => job.id === 'job-c')?.status).toBe('running');
-    expect(tmux.isPaneRunning).toHaveBeenCalled();
+    // Running jobs keep their sessions across a restart: nothing is stopped
+    // or relaunched, the monitor simply picks them up again.
+    expect(runtime.stopJobSession).not.toHaveBeenCalled();
+    expect(runtime.startJobSession).not.toHaveBeenCalled();
+    const resumedJobs = (await loadJobState()).jobs.filter((job) => job.status === 'running');
+    expect(resumedJobs.map((job) => job.name).sort()).toEqual(['Resume B', 'Resume C']);
+    expect(resumedJobs.every((job) => typeof job.sessionID === 'string')).toBe(true);
 
     await commitInJobWorktree('job-b', 'src/resume-b.ts', 'export const resumeB = true;\n');
     await commitInJobWorktree('job-c', 'src/resume-c.ts', 'export const resumeC = true;\n');
@@ -605,7 +596,7 @@ describe('orchestration integration', () => {
 
   it('enforces dependencies so dependent jobs wait for merged prerequisites', async () => {
     const monitor = new FakeMonitor();
-    mockTmux();
+    mockRuntime();
     const orchestrator = new Orchestrator(monitor as any, {
       ...DEFAULT_CONFIG,
       maxParallel: 3,

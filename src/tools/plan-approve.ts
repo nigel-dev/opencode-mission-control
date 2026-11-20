@@ -1,10 +1,10 @@
 import { z } from 'zod';
 import { loadPlan, savePlan } from '../lib/plan-state';
-import { Orchestrator } from '../lib/orchestrator';
-import { getSharedMonitor, getSharedOrchestratorCallbacks, setSharedOrchestrator } from '../lib/orchestrator-singleton';
+import { replaceSharedOrchestrator } from '../lib/orchestrator-singleton';
 import type { CheckpointType } from '../lib/plan-types';
 import { loadConfig } from '../lib/config';
-import { getCurrentModel } from '../lib/model-tracker';
+import { loadJobState } from '../lib/job-state';
+import { findUncommittedChanges } from '../lib/worktree-status';
 import { createIntegrationBranch } from '../lib/integration';
 import { resolvePostCreateHook } from '../lib/worktree-setup';
 import { validateTouchSet } from '../lib/merge-train';
@@ -23,14 +23,14 @@ export const mc_plan_approve = {
       throw new Error('Cannot specify both "retry" and "relaunch". Use "retry" for manual fixes (re-validates) or "relaunch" to spawn an agent to fix violations.');
     }
 
-    const plan = await loadPlan();
-    if (!plan) {
+    const initial = await loadPlan();
+    if (!initial) {
       throw new Error('No active plan to approve');
     }
 
     const targetJobName = args.retry ?? args.relaunch;
     if (targetJobName) {
-      const job = plan.jobs.find((j) => j.name === targetJobName);
+      const job = initial.jobs.find((j) => j.name === targetJobName);
       if (!job) {
         throw new Error(`Job "${targetJobName}" not found in plan`);
       }
@@ -39,9 +39,32 @@ export const mc_plan_approve = {
       }
     }
 
+    if (initial.status !== 'pending' && !(initial.status === 'paused' && initial.checkpoint)) {
+      throw new Error(
+        `Plan "${initial.name}" is not pending or paused (current status: ${initial.status})`,
+      );
+    }
+
+    // From here on the plan is going to be resumed. Retire the orchestrator
+    // that paused it first and wait for a reconcile pass it still has in
+    // flight, then read the plan again: that pass may have changed job states.
+    const config = await loadConfig();
+    const orchestrator = await replaceSharedOrchestrator(config);
+    const settledPlan = await loadPlan();
+    if (!settledPlan || settledPlan.id !== initial.id) {
+      throw new Error('No active plan to approve');
+    }
+    const plan = settledPlan;
+    if (plan.status !== 'pending' && !(plan.status === 'paused' && plan.checkpoint)) {
+      // The retired orchestrator's last pass moved the plan on; pick it up as is.
+      await orchestrator.resumePlan();
+      throw new Error(
+        `Plan "${plan.name}" is not pending or paused (current status: ${plan.status})`,
+      );
+    }
+
     if (plan.status === 'paused' && plan.checkpoint) {
       const checkpoint = (args.checkpoint ?? plan.checkpoint) as CheckpointType;
-      const config = await loadConfig();
 
       // Supervisor approvals must survive the process boundary: mc_plan_approve
       // creates a new Orchestrator, so in-memory approval sets are empty on
@@ -68,10 +91,6 @@ export const mc_plan_approve = {
         plan.checkpointContext = null;
         approveForMerge(args.relaunch);
         await savePlan(plan);
-
-        const orchestrator = new Orchestrator(getSharedMonitor(), config, getSharedOrchestratorCallbacks());
-        setSharedOrchestrator(orchestrator);
-        orchestrator.setPlanModelSnapshot(getCurrentModel());
 
         await orchestrator.relaunchJobForCorrection(
           args.relaunch,
@@ -109,23 +128,40 @@ export const mc_plan_approve = {
           }
         }
 
+        if (ctx?.failureKind === 'uncommitted_changes' && ctx.jobName === args.retry) {
+          const stateJob = (await loadJobState()).jobs.find(
+            (candidate) => candidate.name === args.retry && candidate.planId === plan.id,
+          );
+          if (stateJob) {
+            const remaining = await findUncommittedChanges(stateJob);
+            if (remaining.length > 0) {
+              throw new Error(
+                `Job "${args.retry}" still has uncommitted changes in ${stateJob.worktreePath}:\n` +
+                `  ${remaining.join(', ')}\n` +
+                `Commit them and retry again, or approve without "retry" to merge the branch without them.`,
+              );
+            }
+          }
+        }
+
+        // A job that never launched has no work to merge: queue it again.
+        const relaunch = ctx?.failureKind === 'launch_failed' && ctx.jobName === args.retry;
         const retryJob = plan.jobs.find(j => j.name === args.retry)!;
-        retryJob.status = 'ready_to_merge';
+        retryJob.status = relaunch ? 'queued' : 'ready_to_merge';
         retryJob.error = undefined;
 
         plan.status = 'running';
         plan.checkpoint = null;
         plan.checkpointContext = null;
-        approveForMerge(args.retry);
+        if (!relaunch) {
+          approveForMerge(args.retry);
+        }
         await savePlan(plan);
 
-        const orchestrator = new Orchestrator(getSharedMonitor(), config, getSharedOrchestratorCallbacks());
-        setSharedOrchestrator(orchestrator);
-        orchestrator.setPlanModelSnapshot(getCurrentModel());
         await orchestrator.resumePlan();
 
         return { content: [
-          `Checkpoint "${checkpoint}" cleared. Job "${args.retry}" reset to ready_to_merge.`,
+          `Checkpoint "${checkpoint}" cleared. Job "${args.retry}" reset to ${retryJob.status}.`,
           '',
           `  ID:   ${plan.id}`,
           `  Mode: ${plan.mode}`,
@@ -135,7 +171,10 @@ export const mc_plan_approve = {
       }
 
       const ctx = plan.checkpointContext;
-      if (ctx?.failureKind === 'touchset') {
+      // Approving these without "retry" accepts the job as it is: its
+      // touchSet violations, or its branch without the uncommitted changes.
+      const accepted = ctx?.failureKind === 'touchset' || ctx?.failureKind === 'uncommitted_changes';
+      if (ctx && accepted) {
         const job = plan.jobs.find(j => j.name === ctx.jobName);
         if (job && job.status === 'failed') {
           job.status = 'ready_to_merge';
@@ -152,7 +191,7 @@ export const mc_plan_approve = {
           }
         } else if (checkpoint === 'pre_pr') {
           plan.approvedPrePr = true;
-        } else if (ctx?.failureKind === 'touchset' && ctx.jobName) {
+        } else if (ctx && accepted && ctx.jobName) {
           approveForMerge(ctx.jobName);
         }
       }
@@ -162,14 +201,13 @@ export const mc_plan_approve = {
       plan.checkpointContext = null;
       await savePlan(plan);
 
-      const orchestrator = new Orchestrator(getSharedMonitor(), config, getSharedOrchestratorCallbacks());
-      setSharedOrchestrator(orchestrator);
-      orchestrator.setPlanModelSnapshot(getCurrentModel());
       await orchestrator.resumePlan();
 
       const acceptMsg = ctx?.failureKind === 'touchset'
         ? ` TouchSet violations for job "${ctx.jobName}" accepted.`
-        : '';
+        : ctx?.failureKind === 'uncommitted_changes'
+          ? ` Job "${ctx.jobName}" will be merged without its uncommitted changes.`
+          : '';
       return { content: [
         `Checkpoint "${checkpoint}" cleared.${acceptMsg} Plan "${plan.name}" resuming.`,
         '',
@@ -180,13 +218,6 @@ export const mc_plan_approve = {
       ].join('\n') };
     }
 
-    if (plan.status !== 'pending') {
-      throw new Error(
-        `Plan "${plan.name}" is not pending or paused (current status: ${plan.status})`,
-      );
-    }
-
-    const config = await loadConfig();
     const integrationPostCreate = resolvePostCreateHook(config.worktreeSetup);
     const integration = plan.baseBranch
       ? await createIntegrationBranch(plan.id, integrationPostCreate, plan.baseBranch)
@@ -196,9 +227,6 @@ export const mc_plan_approve = {
     plan.status = 'running';
     await savePlan(plan);
 
-    const orchestrator = new Orchestrator(getSharedMonitor(), config, getSharedOrchestratorCallbacks());
-    setSharedOrchestrator(orchestrator);
-    orchestrator.setPlanModelSnapshot(getCurrentModel());
     await orchestrator.resumePlan();
 
     return { content: [
