@@ -1,6 +1,6 @@
 import { existsSync } from 'fs';
-import { join } from 'path';
 import { z } from 'zod';
+import { loadPrTemplate } from '../lib/pr-template';
 import { getDefaultBranch } from '../lib/git';
 import { getJobByName, type Job } from '../lib/job-state';
 import { assertToolPermission, type ToolCallContext } from '../lib/job-runtime';
@@ -24,28 +24,6 @@ export async function executeGhCommand(args: string[]): Promise<string> {
   }
 
   return stdout.trim();
-}
-
-async function loadPrTemplate(cwd: string): Promise<string | null> {
-  const candidates = [
-    '.github/pull_request_template.md',
-    '.github/PULL_REQUEST_TEMPLATE.md',
-    'pull_request_template.md',
-    'PULL_REQUEST_TEMPLATE.md',
-    '.github/PULL_REQUEST_TEMPLATE/pull_request_template.md',
-  ];
-
-  for (const candidate of candidates) {
-    try {
-      const file = Bun.file(join(cwd, candidate));
-      if (await file.exists()) {
-        return await file.text();
-      }
-    } catch (error) {
-      console.warn(`[Mission Control] Could not read the PR template ${candidate}:`, error);
-    }
-  }
-  return null;
 }
 
 function buildDefaultBody(job: Job): string {

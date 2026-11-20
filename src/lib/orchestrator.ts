@@ -3,6 +3,7 @@ import type { MCConfig } from './config';
 import type { PlanSpec, JobSpec, PlanStatus, CheckpointType, CheckpointContext } from './plan-types';
 import { loadPlan, savePlan, updatePlanJob, updatePlanFields, clearPlan, validateGhAuth } from './plan-state';
 import { getDefaultBranch, gitCommand } from './git';
+import { fillPrTemplate, loadPrTemplate } from './pr-template';
 import { createIntegrationBranch, deleteIntegrationBranch } from './integration';
 import { MergeTrain, checkMergeability, type MergeTestReport, validateTouchSet } from './merge-train';
 import { getRunningJobs, updateJob, loadJobState, type Job } from './job-state';
@@ -1289,31 +1290,31 @@ export class Orchestrator {
       testingLines.push('- No test command configured');
     }
 
-    const body = [
-      '## Summary',
-      '',
-      `Orchestrated plan **${plan.name}** with ${plan.jobs.length} job(s).`,
-      '',
-      '## Jobs',
-      '',
-      '| Job | Status | Merged At |',
-      '|-----|--------|-----------|',
-      jobLines,
-      '',
-      '## Testing',
-      '',
-      ...testingLines,
-      '',
-      '## Notes',
-      '',
+    const summary = `Orchestrated plan **${plan.name}** with ${plan.jobs.length} job(s).`;
+    const jobsTable = ['| Job | Status | Merged At |', '|-----|--------|-----------|', jobLines].join('\n');
+    const notes = [
       `- Integration branch: \`${plan.integrationBranch}\``,
       `- Base commit: \`${plan.baseCommit.slice(0, 8)}\``,
       `- Mode: ${plan.mode}`,
-      '',
-      '---',
-      '',
-      '🚀 *Automated PR from [Mission Control](https://github.com/nigel-dev/opencode-mission-control)*',
     ].join('\n');
+    const attribution = '🚀 *Automated PR from [Mission Control](https://github.com/nigel-dev/opencode-mission-control)*';
+
+    // Use the repository's PR template when it has one, filled with the plan's data.
+    const template = plan.integrationWorktree ? await loadPrTemplate(plan.integrationWorktree) : null;
+    const filled = template
+      ? fillPrTemplate(template, {
+          Summary: summary,
+          Changes: jobsTable,
+          Testing: testingLines.join('\n'),
+          Notes: notes,
+        })
+      : [
+          '## Summary', '', summary, '',
+          '## Jobs', '', jobsTable, '',
+          '## Testing', '', ...testingLines, '',
+          '## Notes', '', notes,
+        ].join('\n');
+    const body = `${filled}\n\n---\n\n${attribution}`;
     const prResult = await this.runCommand([
       'gh',
       'pr',

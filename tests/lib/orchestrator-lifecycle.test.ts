@@ -1,3 +1,6 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { join } from 'path';
+import { tmpdir } from 'os';
 import { EventEmitter } from 'events';
 import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import type { Job, JobState } from '../../src/lib/job-state';
@@ -561,6 +564,42 @@ describe('orchestrator lifecycle', () => {
         'gh pr create',
         'gh pr view',
       ]);
+    });
+
+    it("fills the repository's PR template with the plan's data", async () => {
+      const worktree = mkdtempSync(join(tmpdir(), 'mc-pr-template-plan-'));
+      try {
+        mkdirSync(join(worktree, '.github'));
+        writeFileSync(
+          join(worktree, '.github', 'pull_request_template.md'),
+          '## Summary\n\nDescribe it.\n\n## Changes\n\n- \n\n## Checklist\n\n- [ ] Reviewed\n',
+        );
+        planState = makePlan({
+          status: 'running',
+          integrationWorktree: worktree,
+          jobs: [makeJob('done', { status: 'merged' })],
+        });
+        const orchestrator = create();
+        let body = '';
+        spyOn(orchestrator as never, 'runCommand').mockImplementation((async (command: string[]) => {
+          if (command[1] === 'pr' && command[2] === 'create') {
+            body = command[command.indexOf('--body') + 1];
+            return { stdout: 'https://github.com/acme/repo/pull/8', stderr: '', exitCode: 0 };
+          }
+          return { stdout: '', stderr: '', exitCode: 0 };
+        }) as never);
+
+        await reconcile(orchestrator);
+
+        expect(body).toContain('## Summary\n\nOrchestrated plan');
+        expect(body).toContain('## Changes\n\n| Job | Status | Merged At |');
+        expect(body).not.toContain('Describe it.');
+        expect(body).toContain('## Checklist\n\n- [ ] Reviewed');
+        expect(body).toContain('## Notes');
+        expect(body).toContain('Automated PR from [Mission Control]');
+      } finally {
+        rmSync(worktree, { recursive: true, force: true });
+      }
     });
   });
 });
