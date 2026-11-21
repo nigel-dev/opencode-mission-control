@@ -52,7 +52,7 @@
     "conventional-changelog-conventionalcommits": "^9.3.1",
     "semantic-release": "^25.0.3",
     "solid-js": "^1.9.0",
-    "typescript": "^5.0.0"
+    "typescript": "^7.0.0"
   },
   "author": "Nigel Bazzeghin <nbazzeghin@gmail.com>",
   "license": "MIT",
