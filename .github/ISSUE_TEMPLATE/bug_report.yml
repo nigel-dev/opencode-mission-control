@@ -1,0 +1,94 @@
+name: Bug Report
+description: Report a bug or unexpected behavior
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug! Please fill out the sections below so we can reproduce and fix the issue.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: A clear description of the bug.
+      placeholder: What happened? What did you expect to happen?
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Minimal steps to reproduce the behavior.
+      placeholder: |
+        1. Run `opencode`
+        2. Launch a job with `mc_launch`
+        3. See error
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What you expected to happen instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Screenshots / terminal output
+      description: If applicable, add screenshots or paste terminal output to help explain the problem.
+
+  - type: input
+    id: mc-version
+    attributes:
+      label: Mission Control version
+      description: The opencode-mission-control version OpenCode loaded (the version pinned in your OpenCode config, or the latest release if unpinned).
+      placeholder: "2.0.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS
+        - Linux
+        - Windows (WSL)
+        - Windows (native)
+    validations:
+      required: true
+
+  - type: input
+    id: opencode-version
+    attributes:
+      label: OpenCode version
+      description: Output of `opencode --version`. Mission Control 2.x requires OpenCode 2.x.
+      placeholder: "2.3.0"
+    validations:
+      required: true
+
+  - type: input
+    id: git-version
+    attributes:
+      label: git version
+      description: Output of `git --version`.
+      placeholder: "git version 2.50.0"
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Paste any error output, the job's transcript (`mc_capture`), or OpenCode logs.
+      render: shell
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Anything else that might help — config, worktree state, workarounds tried.
