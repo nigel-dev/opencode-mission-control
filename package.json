@@ -46,8 +46,8 @@
   },
   "devDependencies": {
     "@opencode/theme": "2.3.0",
-    "@opentui/core": "0.8.4",
-    "@opentui/solid": "0.8.4",
+    "@opentui/core": "0.9.7",
+    "@opentui/solid": "0.9.7",
     "@types/bun": "latest",
     "conventional-changelog-conventionalcommits": "^9.3.1",
     "semantic-release": "^25.0.3",
