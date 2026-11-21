@@ -52,6 +52,7 @@ src/
     monitor.ts          # Event-stream subscription + periodic reconcile of running jobs
     question-relay.ts   # Pending questions; relays permission requests to the user and denies unanswered ones
     permission-policy.ts # Decides how job permission requests are answered
+    job-permissions.ts  # Permission gate: applies that policy from the job worktree's plugin instance
     config.ts           # MCConfig, load/save, defaults
     schemas.ts          # Zod schemas for jobs, plans and config
     job-state.ts        # Job persistence (JSON on disk) and state migration
@@ -59,6 +60,7 @@ src/
     orchestrator-singleton.ts # Per-project monitor and orchestrator instances
     merge-train.ts      # Sequential merge + test pipeline for plans
     integration.ts      # Integration branch management
+    pr-template.ts      # Finds the repository's PR template for plan PRs
     worktree.ts         # Git worktree creation/deletion
     worktree-setup.ts   # Post-create hooks (copy files, symlinks, commands)
     git.ts              # Low-level git command runner
@@ -67,6 +69,7 @@ src/
     plan-types.ts       # TypeScript types for plans and job specs
     paths.ts            # Data directory resolution, cached project id, canonical paths
     job-name.ts         # The job name rule (shared with the TUI part)
+    form-answer.ts      # Helpers for answering session forms (dependency-free, shared with the TUI part)
     worktree-status.ts  # Uncommitted changes in a job worktree, ignoring setup artifacts
     rpc-handlers.ts     # RPC methods served to the TUI part
     rpc-events.ts       # RPC events emitted to the TUI part
