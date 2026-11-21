@@ -1,5 +1,7 @@
 # OpenCode Mission Control: Master Technical Audit & Ecosystem Strategy Report
 
+> **Historical document (1.x, February 2026).** This audit describes the 1.x plugin, which hosted jobs in tmux (optionally with a per-job `opencode serve`) on the OpenCode V1 plugin API. Mission Control 2.0 removed that hosting layer: jobs are native OpenCode sessions in git worktrees. File names, line numbers, counts, "fixed" and "pending" statuses and the tmux, `omo` and placement findings below do not describe the current code. For current behavior, see `README.md` and the source.
+
 **Date:** February 7, 2026 (Cross-referenced: February 10, 2026; Updated: February 11, 2026; Updated: February 13, 2026)  
 **Version:** 0.1.0 Audit + Ecosystem Analysis (Updated: Phase 0 Complete, Phase 1 Complete, GitHub Issues Sprint Complete)  
 **Method:** 3 codebase analysis agents + 21 ecosystem research agents (24 parallel jobs total)  

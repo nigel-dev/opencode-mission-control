@@ -8,8 +8,9 @@ Brief description of the changes.
 
 ## Testing
 
+- [ ] `bun run typecheck` passes
 - [ ] `bun run build` passes
-- [ ] `bun test` passes
+- [ ] `bun run test` passes
 - [ ] Manual testing done (if applicable)
 
 ## Notes

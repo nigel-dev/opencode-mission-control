@@ -23,9 +23,9 @@ A clear and concise description of what actually happened.
 
 ## Environment
 - OS: [e.g. macOS, Linux]
-- tmux version:
-- opencode version:
-- bun version:
+- opencode version (2.x):
+- opencode-mission-control version:
+- git version:
 
 ## Additional Context
 Add any other context about the problem here.

@@ -55,10 +55,10 @@ If tests fail, identify whether failures are pre-existing vs introduced by your 
 
 ## CI & GitHub Workflows
 
-- **CI** (`.github/workflows/ci.yml`) — Runs `bun run build`, `bun run typecheck` and then `bun test` once per test file on PRs and pushes to `main`.
+- **CI** (`.github/workflows/ci.yml`) — Pins Bun 1.3.14, installs with `bun install --frozen-lockfile`, then runs `bun run build`, `bun run typecheck` and `bun test` once per test file (`tests/**/*.test.ts`) on PRs and pushes to `main`.
 - **Conventional Commits** (`.github/workflows/conventional-commits.yml`) — Validates PR titles follow the convention.
 - **CodeQL** (`.github/workflows/codeql.yml`) — Static analysis for TypeScript; runs on PRs, pushes to `main`, and weekly.
-- **Publish** (`.github/workflows/publish.yml`) — semantic-release to npm on `main`.
+- **Publish** (`.github/workflows/publish.yml`) — On pushes to `main` (or manually, with an optional dry run): build, per-file tests, then semantic-release to npm.
 - **Renovate** (`renovate.json`) — Automated dependency updates via the Renovate GitHub App. Groups non-major npm updates, creates separate PRs for majors, and auto-merges minor/patch. Uses `chore(deps):` and `ci(deps):` commit prefixes.
 
 ## Branch & Merge Rules
@@ -70,9 +70,9 @@ If tests fail, identify whether failures are pre-existing vs introduced by your 
 
 ## Release Notes for Agents
 
-- The npm package ships `src/` (`package.json -> files`); OpenCode loads the server part, the TUI part and the RPC contract from there (`package.json -> exports`). `bun run build` only checks that the server part bundles.
+- The npm package ships `src/` (`package.json -> files`); OpenCode loads the server part, the TUI part and the RPC contract from there (`package.json -> exports`). `bun run build` only checks that the server part (`src/index.ts`) and the RPC contract (`src/rpc.ts`) bundle; it does not bundle the TUI part.
 - Automated release path is semantic-release via `.github/workflows/publish.yml` on `main`.
-- Required secret for release workflow: `NPM_TOKEN`.
+- npm publishing uses OIDC trusted publishing with provenance (`id-token: write` in `publish.yml`, `publishConfig.provenance` in `package.json`); no `NPM_TOKEN` secret is used.
 - Use Conventional Commits (`feat:`, `fix:`, `perf:`, `chore:`) so semantic versioning can compute releases. A breaking change is `!` after the type (`feat!:`) or a `BREAKING CHANGE:` footer; both produce a major release (`.releaserc.json` uses the `conventionalcommits` preset, checked by `tests/release-config.test.ts`).
 
 ## Collaboration Norms

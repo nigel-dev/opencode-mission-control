@@ -672,7 +672,7 @@ default. A job launched from the dashboard has no launching session (Phase 14E).
 | 7.6 | Explicit agent | `mc_launch` name=tmc-agent, prompt=`$IDLE_PROMPT`, agent=`<an agent that exists in this setup>` | Launch output, `mc_status` and `mc_jobs` show `Agent:` |
 | 7.7 | `defaultModel` config | Set `"defaultModel": "<provider/model>"` in `$STATE_DIR/config.json`; `mc_launch` name=tmc-model-config, prompt=`$IDLE_PROMPT` | Job shows the configured model |
 | 7.8 | Restore config | Remove `defaultModel` (delete `config.json` if it did not exist in Phase 0) | Config restored |
-| 7.9 | Usage shown while running | `mc_launch` name=tmc-usage, prompt=`$LONG_PROMPT`; `mc_jobs`; `mc_status` name=tmc-usage | `Cost: $… \| Tokens: … in / … out` for the running job |
+| 7.9 | Usage shown while running | `mc_launch` name=tmc-usage, prompt=`$LONG_PROMPT`; `mc_jobs`; `mc_status` name=tmc-usage | `mc_jobs` shows `Cost: $… \| Tokens: … in / … out` for the running job; `mc_status` shows `Cost:` and `Tokens:` on separate lines |
 | 7.10 | Cleanup | `mc_kill` name=tmc-usage; `mc_cleanup` all=true, deleteBranch=true; `mc_jobs` | Empty |
 
 ---
@@ -808,11 +808,14 @@ Simulates a `jobs.json` written by 1.x. Requires an empty job list (`mc_jobs` �
 
 ## Phase 13 — Permission Policy
 
-The monitor answers permission requests raised by job sessions from the permission policy:
+Permission requests raised by job sessions are answered from the permission policy:
 `auto-approve`, `deny`, or `ask-user` (never approved by Mission Control: relayed to the
-launching session and to the TUI, and denied after 2 minutes if unanswered). Policy evaluation
-is covered by unit tests (`tests/lib/permission-policy.test.ts`, `tests/lib/question-relay.test.ts`,
-`tests/lib/monitor.test.ts`). Live permission
+launching session and to the TUI, and denied after 2 minutes if unanswered). The policy is applied
+by the permission gate that the plugin instance in the job's worktree installs
+(`src/lib/job-permissions.ts`), and only to requests OpenCode's own rules left as `ask`. The
+command center's monitor relays `ask-user` requests and tracks unanswered ones. Policy evaluation
+is covered by unit tests (`tests/lib/permission-policy.test.ts`, `tests/lib/job-permissions.test.ts`,
+`tests/lib/question-relay.test.ts`, `tests/lib/monitor.test.ts`). Live permission
 prompts depend on the agent and the OpenCode permission settings, so the live check is
 observational.
 
@@ -1075,7 +1078,7 @@ None recorded against the current source. Two earlier entries no longer apply:
 8. **Cost**: Every test job is a real model session. `$LONG_PROMPT` jobs keep spending until they are killed — kill them as soon as the step is verified.
 9. **TouchSet testing on feature branches**: TouchSet validation compares the job branch against the integration branch. Root plan jobs and the integration branch both start from the tip of the plan's base branch (the default branch unless `baseBranch` is given) when the plan is created, not from the branch checked out in the main worktree.
 10. **Permission non-determinism**: Live permission requests depend on the agent triggering them and on the OpenCode permission configuration. Unit tests are the source of truth for policy evaluation.
-11. **Unanswered `ask-user` requests are approved after 2 minutes**: keep this in mind when a test job is left waiting on a permission request.
+11. **Unanswered `ask-user` requests are denied after 2 minutes**: keep this in mind when a test job is left waiting on a permission request.
 
 ---
 
@@ -1097,7 +1100,7 @@ directory is automatically symlinked into every worktree (`BUILTIN_SYMLINKS` in
 | Git operations | **YES** | Full git access within the worktree |
 | Plan awareness | **NO** | Plan context is not part of the job prompt |
 | Job monitor | **NO** | The monitor only runs in the command-center instance |
-| Permission policy | **PASSIVE** | The monitor answers the job's permission requests from the policy; the agent does not see or control it |
+| Permission policy | **PASSIVE** | The permission gate in the job worktree's plugin instance applies the policy to the job's permission requests; the agent does not see or control it (it sees only the reason for a denial) |
 
 ### Monitor Mechanisms
 
@@ -1110,7 +1113,7 @@ directory is automatically symlinked into every worktree (`BUILTIN_SYMLINKS` in
 | Reconcile (start, then every 10 seconds) | Session's recorded outcome and the `mc_report` file | `completed` / `failed`; a `completed` or `needs_review` report takes effect once the session is idle; a session that no longer exists fails the job |
 | Job without a session | Running job with no `sessionID` | `failed` |
 | Event accumulator | Tracks files edited, current activity and last activity time per job | Powers `mc_status`, `mc_capture` (with `filter`), `mc_overview` |
-| Permission policy | `permission.asked` events and the pending list on first reconcile | `auto-approve`, `deny`, or relay (`ask-user`: never approved here, denied after 2 minutes unanswered) |
+| Permission policy | `permission.asked` events and the pending list on first reconcile; the job worktree's permission gate decides first (`evaluate` hook) | `auto-approve`, `deny`, or relay (`ask-user`: never approved here, denied after 2 minutes unanswered) |
 
 ---
 

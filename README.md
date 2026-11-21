@@ -85,7 +85,7 @@ mc_launch
 ```
 
 - **Jobs are native OpenCode sessions.** They run on the same OpenCode server as the session that launched them. There is no tmux, no per-job server, no port and no password.
-- **Worktrees are created by Mission Control with git**, not through OpenCode's worktree API, so branch names stay deterministic (`mc/<name>`, `mc/plan/<plan>/<job>`).
+- **Worktrees are created by Mission Control with git**, not through OpenCode's worktree API, so branch names stay deterministic (`mc/<name>`, `mc/plan/<first 8 characters of the plan id>/<job>`).
 - **Job sessions are restricted.** A session running inside a managed worktree only gets `mc_report` and `mc_status`, and the interactive `question` tool is removed from it: jobs ask through `mc_report(status: "blocked")` instead.
 - **Shared-server safe.** OpenCode V2 loads plugins into a shared background server whose working directory is not your project. Mission Control tracks the project per plugin instance internally (`src/lib/project-context.ts`), so several projects can be loaded at once.
 - **The TUI part** gets job and plan state, events and actions from the server part over the plugin RPC channel (`src/rpc.ts`).
@@ -98,7 +98,7 @@ State is stored under:
 ├── state/plan.json      # active plan
 ├── state/config.json    # configuration (optional)
 ├── reports/<job-id>.json
-└── <branch>/            # one worktree per job
+└── <branch>/            # one worktree per job (a "/" in the branch name becomes "-")
 ```
 
 ---
@@ -486,7 +486,7 @@ Exactly one of `name` or `all` must be given.
 
 Two things are protected unless you force them:
 
-- **Uncommitted work.** A worktree with uncommitted changes is not removed: by name the cleanup fails and lists the files, with `all` the job is skipped and reported. Files and symlinks Mission Control itself placed in the worktree (`copyFiles`, `symlinkDirs`, `.opencode`) do not count.
+- **Uncommitted work.** A worktree with uncommitted changes is not removed: by name the cleanup fails and lists the files, with `all` the job is skipped and reported. Files and symlinks Mission Control itself placed in the worktree (`copyFiles`, `symlinkDirs`, `.opencode`) and `.hindsight` do not count.
 - **Jobs of an active plan.** While a plan is not finished, its jobs' worktrees and branches are still needed for merging. `all` always skips them (even with `force`) and says so; a named plan job is refused unless `force` is given.
 
 ---
@@ -536,7 +536,7 @@ Push the job's branch and create a GitHub Pull Request. Requires the `gh` CLI to
 |-----------|------|----------|---------|-------------|
 | `name` | `string` | Yes | — | Job name |
 | `title` | `string` | No | Job name | PR title — use [Conventional Commits](https://www.conventionalcommits.org/) format (e.g. `feat: add login`, `fix: resolve timeout`) |
-| `body` | `string` | No | PR template or auto-generated | PR body. If omitted, uses `.github/pull_request_template.md` if found, otherwise generates a summary. |
+| `body` | `string` | No | PR template or auto-generated | PR body. If omitted, uses the repository's PR template as it is (looked up in `.github/pull_request_template.md`, `.github/PULL_REQUEST_TEMPLATE.md`, `pull_request_template.md`, `PULL_REQUEST_TEMPLATE.md` and `.github/PULL_REQUEST_TEMPLATE/pull_request_template.md`), otherwise generates a summary. |
 | `baseBranch` | `string` | No | Job's base branch or default | Target branch for the PR (falls back to job's `baseBranch`, then default branch) |
 | `draft` | `boolean` | No | `false` | Create as draft PR |
 
@@ -589,7 +589,7 @@ Root jobs (those without `dependsOn`) start from the plan's base branch — the 
 | `dependsOn` | `string[]` | No | Job names this job depends on (must complete and merge first) |
 | `touchSet` | `string[]` | No | File globs this job expects to modify. After completion, the orchestrator validates that only files matching these patterns were changed. Violations pause the plan — see [TouchSet Enforcement](#touchset-enforcement). |
 | `agent` | `string` | No | Agent for this job (defaults to the `defaultAgent` config, then the session default) |
-| `model` | `string` | No | Model for this job as `provider/model` or `provider/model#variant` (defaults to the model of the session that created the plan, which is stored with the plan and survives restarts) |
+| `model` | `string` | No | Model for this job as `provider/model` or `provider/model#variant` (defaults to the model of the session that created the plan, which is stored with the plan and survives restarts, then `defaultModel`) |
 | `copyFiles` | `string[]` | No | Files to copy into the worktree |
 | `symlinkDirs` | `string[]` | No | Directories to symlink into the worktree |
 | `commands` | `string[]` | No | Post-creation shell commands. Held to the calling session's `shell` permission when the plan is created. |
@@ -616,7 +616,7 @@ mc_plan
   ├─ Launch jobs (respects maxParallel limit)
   │   • Root jobs branch from the base branch's commit at plan creation
   │   • Dependent jobs branch from integration HEAD (sees merged code)
-  │   • Branches use plan-scoped naming: mc/plan/{planId}/{jobName}
+  │   • Branches use plan-scoped naming: mc/plan/{first 8 characters of planId}/{jobName}
   │
   │   ┌──────── Reconciler Loop (5s) ────────┐
   │   │                                       │
@@ -629,10 +629,11 @@ mc_plan
   │   └───────────────────────────────────────┘
   │
   ├─ Merge Train: merge each job into integration branch
-  │   ├─ Merge (config mergeStrategy, default squash)
-  │   ├─ A job with no tracked changes merges as a no-op
+  │   ├─ Merge (config mergeStrategy, default squash; ff-only squashes here too)
+  │   ├─ A job with no tracked changes merges as a no-op (squash and ff-only; tests are skipped)
   │   ├─ Run test command (if configured or detected)
-  │   ├─ On failure → rollback merge, pause at on_error
+  │   ├─ On failure → ask the job's agent to fix it, wait fixBeforeRollbackTimeout, test again
+  │   ├─ Still failing → rollback merge, pause at on_error
   │   └─ On conflict → abort, pause at on_error
   │
   ├─ All jobs merged → push integration branch
@@ -760,9 +761,9 @@ The Merge Train is the engine behind plan integration. Each completed job's bran
 
 1. **Uncommitted work** — A job that finished with uncommitted changes pauses the plan before anything is merged (see [When Is a Job Done?](#when-is-a-job-done))
 2. **TouchSet validation** — If `touchSet` is configured, verify the job only modified allowed files (violations pause the plan)
-3. **Merge** — The job branch is merged into the integration worktree using the configured `mergeStrategy` (default `squash`)
-4. **Test** — If a `testCommand` is configured it runs after each merge. Without one, a project with a `test` script in `package.json` is tested through its package manager: `bun run test`, `pnpm test`, `yarn test` or `npm test`, chosen from the lockfile, then the `packageManager` field, then npm.
-5. **Rollback** — If tests fail or time out, the integration branch is reset to where it was before the merge. A timed-out test command is killed together with everything it started.
+3. **Merge** — The job branch is merged into the integration worktree using the configured `mergeStrategy` (default `squash`; `ff-only` is treated as `squash` here). With `squash` or `ff-only`, a job whose branch adds no tracked changes merges as a no-op and its tests are skipped.
+4. **Test** — If a `testCommand` is configured it runs after each merge. Without one, a project with a `test` script in `package.json` is tested through its package manager: `bun run test`, `pnpm test`, `yarn test` or `npm test`, chosen from the lockfile, then the `packageManager` field, then npm. Before the tests, the integration worktree runs the `worktreeSetup.commands` if there are any; otherwise it installs dependencies (for example `bun install --frozen-lockfile`) when a lockfile is present and `node_modules` is missing.
+5. **Fix window and rollback** — If the tests fail, the job's agent is asked to fix them, the merge train waits `fixBeforeRollbackTimeout` (default 2 minutes) and runs the tests once more. If they still fail, or they time out, the integration branch is reset to where it was before the merge. A timed-out test command is killed together with everything it started.
 6. **Conflict detection** — Merge conflicts are caught, reported with file-level detail, and the merge is aborted
 
 Once all jobs are merged and tests pass, the integration branch is pushed and a PR is created.
@@ -802,7 +803,7 @@ Mission Control runs an active background monitor — not a passive wrapper.
 |-----------|------|--------------|
 | **Event stream** | Continuous | One subscription to the OpenCode server's event stream. Each event is routed to the running job whose session ID it carries; events for other sessions are ignored. Reconnects with backoff if the stream drops. |
 | **Reconcile** | On start, then every 10 seconds | Reads each running job's recorded session outcome and its `mc_report` file. Covers anything the stream missed (a reload, a dropped connection). |
-| **Permission policy** | When a job's session asks for permission | Answers from the [permission policy](#permission-policy): approve, deny, or hand the request to you. |
+| **Permission policy** | When a job's session asks for permission | The [permission policy](#permission-policy) is applied in the job's own plugin instance (approve, deny, or leave the request open). The monitor tracks requests nobody has answered and relays them to you. |
 
 ### When Is a Job Done?
 
@@ -958,16 +959,17 @@ Configuration is optional and stored at `~/.local/share/opencode-mission-control
 | `autoCommit` | `boolean` | `true` | Append an instruction to every job prompt telling the agent to commit its work (Conventional Commits) before it reports completion, and ask a job once to commit changes it left uncommitted |
 | `defaultAgent` | `string` | — | Agent for jobs that do not specify one |
 | `defaultModel` | `string` | — | Model (`provider/model` or `provider/model#variant`) for jobs that do not specify one |
-| `mergeStrategy` | `"squash"` \| `"ff-only"` \| `"merge"` | `"squash"` | Default merge strategy for `mc_merge` (can be overridden per-merge via the `strategy` param) and for the plan merge train |
+| `mergeStrategy` | `"squash"` \| `"ff-only"` \| `"merge"` | `"squash"` | Default merge strategy for `mc_merge` (can be overridden per-merge via the `strategy` param) and for the plan merge train (where `ff-only` squashes) |
 | `testCommand` | `string` | — | Command to run after each merge in the merge train (e.g. `"bun test"`). Without it, a `test` script in `package.json` is run through the project's package manager (see [Merge Train](#merge-train)). |
 | `testTimeout` | `number` | `600000` | Timeout for test command in ms (default 10min) |
+| `fixBeforeRollbackTimeout` | `number` | `120000` | Plan merge train: when the tests fail after a merge, how long in ms to wait after asking the job's agent to fix them before testing again and rolling back. `0` skips the request. |
 | `worktreeSetup.copyFiles` | `string[]` | — | Files to copy into every new worktree (e.g. `.env`) |
 | `worktreeSetup.symlinkDirs` | `string[]` | — | Directories to symlink into every new worktree (e.g. `node_modules`) |
 | `worktreeSetup.commands` | `string[]` | — | Shell commands to run in every new worktree (e.g. `bun install`) |
 | `allowUnsafeCommands` | `boolean` | — | Silence the warning shown for worktree setup commands that contain risky shell syntax |
 | `defaultPermissionPolicy` | `object` | See [Permission Policy](#permission-policy) | How permission requests from job sessions are answered |
 
-The keys `pollInterval`, `worktreeBasePath` and `fixBeforeRollbackTimeout` are accepted in `config.json` but have no effect in this release: the monitor reconciles every 10 seconds, worktrees are always created under `~/.local/share/opencode-mission-control`, and the merge train rolls a failing merge back without first asking the job's agent to fix it.
+The keys `pollInterval` and `worktreeBasePath` are accepted in `config.json` but have no effect in this release: the monitor reconciles every 10 seconds, and worktrees are always created under `~/.local/share/opencode-mission-control`.
 
 Keys from 1.x that no longer exist (`defaultPlacement`, `useServeMode`, `portRangeStart`, `portRangeEnd`, `serverPassword`, `idleThreshold`, `omo`) are ignored if they are still in your `config.json`.
 
@@ -983,7 +985,7 @@ Per-job parameters are **merged** with the global `worktreeSetup` config. Absolu
 
 ### Permission Policy
 
-Jobs run without interactive approval. When a job's session asks for permission, the monitor answers from `defaultPermissionPolicy`:
+Jobs run without interactive approval. When a job's session asks for permission, Mission Control answers from `defaultPermissionPolicy`:
 
 ```json
 {
@@ -1009,7 +1011,7 @@ The policy only applies where OpenCode's own permission rules would ask a human:
 How requests are classified:
 
 - **File edits** are inside or outside the worktree by their path. A relative path is relative to the job's worktree.
-- **Shell commands** are decided by `shellCommand.insideWorktree`. A job's shell runs in its worktree, and what a command line touches cannot be told from its text, so no path is derived from the command and `shellCommand.outsideWorktree` does not come into play. Under the default policy every shell command a job asks about is approved; set `insideWorktree` to `ask-user` or `deny` if that is more than you want.
+- **Shell commands** are decided by `shellCommand.insideWorktree`. A job's shell runs in its worktree, and what a command line touches cannot be told from its text, so no path is derived from the command and `shellCommand.outsideWorktree` does not come into play. Under the default policy every shell command a job asks about is approved, except package installs (below); set `insideWorktree` to `ask-user` or `deny` if that is more than you want.
 - **Package installs** (`installPackages`) are shell commands whose command line contains `npm install`, `pnpm add`, `yarn add`, `bun add`, `pip install` or `apt install`.
 - **Network access** covers web fetches and searches; **MCP tools** covers MCP tool calls. Anything else is treated as `ask-user`.
 
@@ -1069,6 +1071,7 @@ Verified live on OpenCode 2.3.0 (macOS):
 **Not verified live:**
 
 - Retry from `on_error`
+- The no-op merge of a plan job with no tracked changes, and filling the repository's PR template for plan PRs (both are covered by tests only)
 - Background work keeping a job open
 - The uncommitted-changes check beyond the review flag (the one-time commit prompt, the plan pause)
 - System notifications reaching the desktop: Mission Control's request was checked (skipped while the terminal is focused, attempted when it is not), but OpenCode only shows them with `attention.notifications` enabled in `cli.json`, and delivery was not observed
@@ -1077,7 +1080,7 @@ Verified live on OpenCode 2.3.0 (macOS):
 Other limits:
 
 - **Large plans are not stress-tested.**
-- **Two repositories with the same folder name share state.** State and worktrees live under `~/.local/share/opencode-mission-control/<folder name>/`, so `~/work/api` and `~/personal/api` would see each other's jobs and plan. Give one of the checkouts a different folder name if you use Mission Control in both.
+- **Two repositories with the same folder name share state.** The project ID is the folder name of the repository's main checkout (the same from every worktree). State and worktrees live under `~/.local/share/opencode-mission-control/<folder name>/`, so `~/work/api` and `~/personal/api` would see each other's jobs and plan. Give one of the checkouts a different folder name if you use Mission Control in both.
 
 ---
 
@@ -1144,7 +1147,7 @@ Plan jobs use their own `model` if set, otherwise the model of the session that 
 <details>
 <summary><strong>How does the plan merge train handle test failures?</strong></summary>
 
-If the test command fails after a merge, the merge is automatically rolled back, the job is marked as failed, and the plan pauses at an `on_error` checkpoint. Fix the branch and continue with `mc_plan_approve(checkpoint: "on_error", retry: "<job>")`. Any other failure of a plan job (a job that fails or cannot be launched, a merge conflict, uncommitted changes) pauses the plan the same way; see [`mc_plan_approve`](#mc_plan_approve).
+If the test command fails after a merge, the job's agent is asked to fix it and the tests run once more after `fixBeforeRollbackTimeout` (default 2 minutes). If they still fail, the merge is automatically rolled back, the job is marked as failed, and the plan pauses at an `on_error` checkpoint. Fix the branch and continue with `mc_plan_approve(checkpoint: "on_error", retry: "<job>")`. Any other failure of a plan job (a job that fails or cannot be launched, a merge conflict, uncommitted changes) pauses the plan the same way; see [`mc_plan_approve`](#mc_plan_approve).
 </details>
 
 <details>
@@ -1216,10 +1219,7 @@ How it works:
 2. GitHub Actions runs build + tests.
 3. `semantic-release` calculates the next version, publishes to npm, creates a GitHub Release, and tags automatically.
 
-Expected repository secrets:
-
-- `NPM_TOKEN` — npm publish token with package publish rights.
-- `GITHUB_TOKEN` — provided automatically by GitHub Actions.
+npm publishing uses OIDC trusted publishing with provenance (`id-token: write` in the workflow, `publishConfig.provenance` in `package.json`). No `NPM_TOKEN` secret is needed. The workflow uses only `GITHUB_TOKEN`, which GitHub Actions provides automatically.
 
 If your commit messages are vague, semantic-release gets moody.
 
