@@ -327,6 +327,32 @@ describe('orchestrator lifecycle', () => {
       expect(notifications.some((message) => message.includes('mc_plan_approve(checkpoint: "on_error", retry: "broken")'))).toBe(true);
     });
 
+    it.each(['conflict', 'needs_rebase'] as const)(
+      'pauses again on a job left in %s after an approval without retry',
+      async (status) => {
+        planState = makePlan({
+          jobs: [
+            makeJob('clash', { status, error: 'src/a.ts' }),
+            makeJob('waiting', { status: 'waiting_deps', dependsOn: ['clash'] }),
+          ],
+        });
+        const launch = spyOn(jobLauncherMod, 'launchJob');
+        const orchestrator = create();
+
+        await reconcile(orchestrator);
+
+        expect(planState?.status).toBe('paused');
+        expect(planState?.checkpoint).toBe('on_error');
+        expect(planState?.checkpointContext).toEqual({
+          jobName: 'clash',
+          failureKind: 'merge_conflict',
+          reason: 'src/a.ts',
+        });
+        expect(launch).not.toHaveBeenCalled();
+        expect(notifications.some((message) => message.includes('mc_plan_approve(checkpoint: "on_error", retry: "clash")'))).toBe(true);
+      },
+    );
+
     it('notifies once when the monitor event and a reconcile pass see the same failure', async () => {
       planState = makePlan({ jobs: [makeJob('job-a', { status: 'running' })] });
       stateJobs = [makeStateJob('job-a')];

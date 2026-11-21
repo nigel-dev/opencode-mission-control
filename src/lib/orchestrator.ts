@@ -588,6 +588,23 @@ export class Orchestrator {
         return;
       }
 
+      // Likewise a job left in conflict (approved without "retry"): nothing
+      // merges it until its branch is fixed and retried.
+      const unhandledConflict = plan.jobs.find(
+        (job) => job.status === 'conflict' || job.status === 'needs_rebase',
+      );
+      if (unhandledConflict) {
+        const files = unhandledConflict.error ?? 'unknown';
+        await this.pauseForFailure(
+          plan,
+          { jobName: unhandledConflict.name, failureKind: 'merge_conflict', reason: files },
+          `Job "${unhandledConflict.name}" still has merge conflicts. Plan paused.`,
+          `❌ Job "${unhandledConflict.name}" still conflicts with the integration branch. Files: ${files}.\n` +
+            `Fix its branch and retry with mc_plan_approve(checkpoint: "on_error", retry: "${unhandledConflict.name}"), or cancel the plan with mc_plan_cancel.`,
+        );
+        return;
+      }
+
       const mergeOrder = [...plan.jobs].sort(
         (a, b) => (a.mergeOrder ?? Number.MAX_SAFE_INTEGER) - (b.mergeOrder ?? Number.MAX_SAFE_INTEGER),
       );
